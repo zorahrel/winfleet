@@ -18,8 +18,14 @@
 
   L'handle della finestra lo pubblica wf-place.ps1, che e' quello che l'ha trovata.
 
-  Endpoint (solo LAN, nessun dato, nessuna scrittura fuori da C:\winfleet):
+  Fa anche da sportello per il pannello sul Mac: elencare le finestre aperte sul PC e
+  aprirne una, senza dover passare da ssh (che per una tendina che si apre e si chiude
+  costerebbe mezzo secondo a colpo).
+
+  Endpoint (solo LAN, nessun dato personale, nessuna scrittura fuori da C:\winfleet):
     GET /rect?slot=0&w=1200&h=800   ->  "ok 1200 800"   (misura davvero applicata)
+    GET /windows                    ->  una riga per finestra: "<hwnd>\t<titolo>"
+    GET /raise?hwnd=123             ->  "ok"  porta quella finestra in primo piano
     GET /ping                       ->  "ok"
 
 .EXAMPLE
@@ -40,7 +46,34 @@ public class A {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  public delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
+  // Le finestre che una persona chiamerebbe "aperte": visibili, con un titolo, non
+  // di proprieta' di un'altra (dialoghi e tooltip) e non larghe due pixel.
+  public static string ListWindows() {
+    System.Text.StringBuilder outp = new System.Text.StringBuilder();
+    EnumWindows(delegate(IntPtr h, IntPtr p) {
+      if (!IsWindowVisible(h)) return true;
+      if (GetWindow(h, 4) != IntPtr.Zero) return true;
+      int len = GetWindowTextLength(h);
+      if (len == 0) return true;
+      RECT r; if (!GetWindowRect(h, out r)) return true;
+      if ((r.R - r.L) < 200 || (r.B - r.T) < 120) return true;
+      System.Text.StringBuilder t = new System.Text.StringBuilder(len + 1);
+      GetWindowText(h, t, len + 1);
+      outp.Append(h.ToInt64()).Append('\t').Append(t.ToString()).Append('\n');
+      return true;
+    }, IntPtr.Zero);
+    return outp.ToString();
+  }
 }
 '@
 
@@ -115,10 +148,19 @@ while ($listener.IsListening) {
             $got  = Set-AppSize $slot $w $h
             $body = if ($got) { "ok $got" } else { 'no' }
         }
+        elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
+        elseif ($req.Url.AbsolutePath -eq '/raise') {
+            $hw = [IntPtr][int64]$req.QueryString['hwnd']
+            if ([A]::IsWindow($hw)) {
+                [void][A]::ShowWindow($hw, 9)          # SW_RESTORE
+                [void][A]::SetForegroundWindow($hw)
+                $body = 'ok'
+            }
+        }
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
     } catch { $body = 'no' }
 
-    $bytes = [Text.Encoding]::ASCII.GetBytes($body)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($body)
     $ctx.Response.ContentLength64 = $bytes.Length
     $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     $ctx.Response.Close()

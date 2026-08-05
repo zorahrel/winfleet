@@ -13,6 +13,7 @@
 #   winfleet fit               riporta le finestre a filo dei pixel che ricevono
 #   winfleet stop [n]          chiude una finestra, o tutte
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
+#   winfleet panel             pannello in barra dei menu (finestre, app, strumenti)
 #   winfleet apps              lanciatori creati
 #   winfleet list              app pubblicate dall'host
 #   winfleet clean             toglie da Moonlight gli host che non rispondono più
@@ -1087,6 +1088,45 @@ LAUNCH
   touch "$app"   # LaunchServices rilegge il bundle
 }
 
+# Il pannello: un\'app in barra dei menu con la tendina. Si costruisce come la
+# libreria — sorgente nel repo, binario fuori — e si apre da solo se non gira gia\'.
+PANEL_APP="$HOME/Applications/WinFleet/WinFleet.app"
+
+build_panel(){
+  local src="$WF_ROOT/mac/wf-panel.m"
+  [ -f "$src" ] || return 1
+  command -v clang >/dev/null 2>&1 || return 1
+  local bin="$PANEL_APP/Contents/MacOS/WinFleet"
+  [ -x "$bin" ] && [ "$bin" -nt "$src" ] && return 0
+  mkdir -p "$PANEL_APP/Contents/MacOS" "$PANEL_APP/Contents/Resources"
+  cat > "$PANEL_APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>WinFleet</string>
+  <key>CFBundleDisplayName</key><string>WinFleet</string>
+  <key>CFBundleIdentifier</key><string>dev.winfleet.panel</string>
+  <key>CFBundleExecutable</key><string>WinFleet</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>
+PLIST
+  clang -framework Cocoa -o "$bin.new" "$src" >/dev/null 2>&1 || { rm -f "$bin.new"; return 1; }
+  mv -f "$bin.new" "$bin"
+  codesign --force -s - "$PANEL_APP" >/dev/null 2>&1 || true
+}
+
+cmd_panel(){
+  build_panel || die "Non riesco a compilare il pannello (serve clang)."
+  if pgrep -f "WinFleet.app/Contents/MacOS/WinFleet" >/dev/null 2>&1; then
+    ok "il pannello e già in barra dei menu"
+  else
+    open "$PANEL_APP"
+    ok "pannello aperto  ${c_dim}(icona in barra dei menu)${c_off}"
+  fi
+}
+
 cmd_dock(){
   need_ssh
   [ -s "$HOST_APPS" ] || cmd_scan
@@ -1274,6 +1314,7 @@ case "${1:-}" in
   list)     cmd_list;;
   apps)     cmd_apps;;
   dock)     shift; cmd_dock "$@";;
+  panel)    cmd_panel;;
   clean)    cmd_clean;;
   pair)     cmd_pair;;
   endpoint) cmd_endpoint;;

@@ -87,6 +87,19 @@ The icon is pulled off the Windows executable at full 256×256 through the shell
 factory — the same path Explorer uses — so it is the real icon, transparency included, not
 a blurry 32-pixel stamp.
 
+### The panel
+
+```sh
+winfleet panel
+```
+
+A menu bar item, not a Dock app, because it is something you reach for while doing
+something else. It rebuilds itself every time you open it — a list of windows is only
+true at the moment you look at it — and it shows: the windows open on the Mac (click to
+focus), every app installed on the PC (type to jump: macOS menus search themselves, so
+there is no search box to build), the windows currently open on Windows (click to raise
+one over there), and File Explorer / Task Manager / Control Panel / Command Prompt.
+
 ### Which apps
 
 `winfleet scan` reads the PC's Start Menu **and** its packaged apps. That second part
@@ -143,6 +156,7 @@ winfleet fit               snap windows back to the pixels they receive
 winfleet stop [n]          close one window, or all of them
 winfleet scan              re-read the PC's app list
 winfleet push              upload the host scripts to C:\winfleet
+winfleet panel             menu bar panel: open windows, app search, Windows tools
 winfleet clean             drop Moonlight hosts that answer with another identity
 winfleet doctor            diagnostics
 ```
@@ -175,6 +189,8 @@ winfleet doctor            diagnostics
 | `wf-rename.ps1` | renames an instance — that is what names the window on the Mac |
 | `wf-place.ps1` | opens the app and holds it at the size the Mac window asks for |
 | `wf-icon.ps1` | hands back an app's icon as a PNG |
+| `wf-agent.ps1` | resizes the app window on request and answers with the size it really got |
+| `mac/wf-panel.m` | the menu bar panel |
 | `scan-apps.ps1` | lists the installed apps, shortcuts and packaged alike |
 | `bin/winfleet` | picks a free window, follows resizes, keeps the Mac window honest |
 | `mac/wf-chrome.m` | injected into the client: drops the macOS title bar, publishes the window rectangle |
@@ -198,6 +214,12 @@ All of them are commented where they bite, so nobody re-discovers them the hard 
   immediately, works — Windows re-lays-out the desktop itself.
 - **`Set-Content -Encoding UTF8` writes a BOM**, which Sunshine treats as a broken
   `apps.json` and silently replaces with its defaults.
+- **Resolving an mDNS name costs 230 ms, every single time.** By address it is 19 ms.
+  That one lookup, repeated per request, was nearly all of the latency you could feel
+  while dragging a window. Resolved once and kept.
+- **Never kill `explorer.exe`.** It is the Windows shell, not an app: the "close other
+  instances first" rule that makes single-instance apps open on the right screen would
+  take the taskbar, the icons and the desktop with it.
 - **A failing `ssh` can kill a window silently.** The supervisor runs under `set -e`, so
   one non-zero exit from a fire-and-forget host command ended it with no log line
   anywhere and no window on screen. Every host call is now explicitly non-fatal.

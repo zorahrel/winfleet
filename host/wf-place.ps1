@@ -111,7 +111,12 @@ Note "slot $Slot -> $($mon.device) $($mon.width)x$($mon.height) @ $($mon.x),$($m
 # passa dalla cartella virtuale delle applicazioni, come fa il menu Start.
 $packaged = $Exe -like 'shell:AppsFolder\*'
 
-if (-not $packaged) {
+# Mai per explorer: e' la shell di Windows, non un'app. Chiuderlo fa sparire barra
+# delle applicazioni, icone e desktop dell'utente — un prezzo assurdo per aprire una
+# finestra di Esplora file, che tra l'altro si apre benissimo senza.
+$isShell = $Exe -match '(^|\\)explorer\.exe$'
+
+if (-not $packaged -and -not $isShell) {
     # Single-instance apps would otherwise just raise their existing window on another
     # screen instead of opening one here.
     $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
