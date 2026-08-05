@@ -40,6 +40,13 @@ WF_ROOT="$(cd "$(dirname "$WF_SELF")/.." && pwd)"
 
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
 CONFIG="$CONFIG_DIR/config.env"
+# Il Moonlight di WinFleet, se e' stato costruito (fork/build.sh): e' l'originale
+# piu' il ritaglio, cioe' l'unico che sappia mostrare la sola finestra dell'app.
+# Senza, si usa quello installato e si torna a far seguire la risoluzione.
+WINFLEET_MOONLIGHT="$HOME/.local/share/winfleet/Moonlight.app"
+if [ -z "${MOONLIGHT_APP:-}" ] && [ -d "$WINFLEET_MOONLIGHT" ]; then
+  MOONLIGHT_APP="$WINFLEET_MOONLIGHT"
+fi
 MOONLIGHT_APP="${MOONLIGHT_APP:-/Applications/Moonlight.app}"
 MOONLIGHT="${MOONLIGHT_BIN:-$MOONLIGHT_APP/Contents/MacOS/Moonlight}"
 
@@ -292,49 +299,36 @@ screen_guess(){
 # perche' una finestra "si ridimensiona da sola" senza starle davanti a guardarla.
 trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"$CONFIG_DIR/trace.log" || true; }
 
-# Cambiare risoluzione allo schermo virtuale NON fa cadere lo stream: Sunshine si
-# accorge del cambio, ricrea cattura ed encoder e la sessione prosegue (verificato:
-# "Desktop resolution [1280x800]" nel suo log, con il client mai disconnesso). E'
-# questo che permette il ridimensionamento dal vivo — prima si riavviava lo stream a
-# ogni ritocco, e una finestra che sparisce per sei secondi sembra un crash.
+# Ridimensionare dal vivo, davvero.
 #
-# Quindi la sessione si negozia UNA VOLTA alla misura piu' grande che sta sullo
-# schermo, e da li' in poi si tocca solo la risoluzione di Windows: l'app si ridispone
-# davvero mentre trascini, senza un solo taglio.
-follow_resize(){ # pid slot risoluzione-di-negoziazione
-  local pid="$1" slot="$2" smode="$3" cur last="" applied="$3" m cap fit
-  local sw="${smode%x*}" sh="${smode#*x}"
-  cap="$(usable_screen)"
-  fit="$CONFIG_DIR/slot$slot.fit"
-  vdd_open
-  trace "segui: slot=$slot stream=$smode tetto=$cap"
+# La strada precedente era far seguire la RISOLUZIONE dello schermo virtuale. Funziona
+# ma costa circa un secondo a colpo — il mode set di Windows piu' la ricostruzione
+# dell'encoder di Sunshine, che si legge nel suo log — e un secondo di attesa a ogni
+# ritocco non e' un ridimensionamento, e' una serie di scatti.
+#
+# Adesso lo schermo virtuale non si tocca piu': resta della misura con cui e' nato, e
+# a seguire la finestra del Mac e' la FINESTRA dell'app su Windows (una SetWindowPos,
+# un frame). Quello che avanza dello schermo non si vede perche' il client mostra solo
+# il rettangolo dell'app — e' il ritaglio, ed e' la ragione del fork in fork/.
+#
+# Il rettangolo lo scrive la libreria dentro il processo a ogni evento di
+# ridimensionamento, quindi segue il trascinamento senza ritardo; qui si manda a
+# Windows la misura nuova appena la finestra si ferma per un istante.
+follow_resize(){ # pid slot misura-iniziale
+  local pid="$1" slot="$2" cur last="" sent="$3"
+  trace "segui: slot=$slot misura iniziale=$sent"
+  rect_set "$slot" "${sent%x*}" "${sent#*x}"
   while kill -0 "$pid" 2>/dev/null; do
-    # Richiesta esplicita di rifare la sessione su misura (winfleet fit): e' l'unico
-    # caso in cui lo stream si riapre, e lo decide chi guarda.
-    if [ -f "$fit" ]; then
-      rm -f "$fit"
-      cur="$(win_size "$pid")"
-      if [ -n "$cur" ]; then
-        m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}" "${cap%x*}" "${cap#*x}")"
-        [ -n "$m" ] && { echo "$m"; return 0; }
-      fi
-    fi
-
     cur="$(win_size "$pid")"
-    if [ -n "$cur" ] && [ "$cur" != "$last" ]; then
-      last="$cur"                      # sta ancora muovendo: si aspetta che si fermi
-    elif [ -n "$cur" ] && [ "$cur" != "$applied" ]; then
-      # La risoluzione non puo' superare quella negoziata, o Sunshine dovrebbe
-      # rimpicciolire l'immagine per farcela stare.
-      m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}" "$sw" "$sh")"
-      if [ -n "$m" ] && [ "$m" != "$applied" ]; then
-        vdd_set "$slot" "$m"
-        applied="$m"
-        trace "segui: finestra $cur → schermo Windows $m"
-      else
-        applied="$cur"                 # niente di meglio: si smette di riprovarci
-      fi
+    if [ -n "$cur" ] && [ "$cur" = "$last" ] && [ "$cur" != "$sent" ]; then
+      rect_set "$slot" "${cur%x*}" "${cur#*x}"
+      sent="$cur"
+      # Cosi' "winfleet windows" dice quanto e' grande adesso, non quanto era
+      # quando si e' aperta.
+      sed -i '' "s/^mode=.*/mode=$cur/" "$(slot_file "$slot")" 2>/dev/null || true
+      trace "segui: finestra $cur → finestra Windows $cur"
     fi
+    last="$cur"
     sleep 0.1
   done
   echo ""
@@ -357,19 +351,29 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   chrome_hidden "$bin" && owned=1
   # Prima dello stream, cosi' il client legge il nome nuovo al primo poll e la
   # finestra nasce gia' intitolata all'app.
+  trace "avvio: slot=$slot app=$app stream=$smode finestra=$wsize bin=$bin"
   rename_instance "$slot" "$app"
+  trace "rinominata"
   local first=1
   while true; do
     vdd_set "$slot" "$smode"
+    trace "risoluzione chiesta"
     sleep 2
     # L'app si avvia una volta sola: al cambio di risoluzione la rimette a misura il
     # task che la tiene sul suo schermo, quindi si ritrova ridimensionata invece che
     # ripartita da capo.
-    [ "$first" = 1 ] && { place_app "$slot" "$exe"; first=0; }
+    [ "$first" = 1 ] && { place_app "$slot" "$exe"; first=0; trace "app avviata"; }
     br="$(stream_bitrate "$smode")"
     if [ -n "$owned" ]; then
       WF_SIZE_FILE="$CONFIG_DIR/slot$slot.size"; rm -f "$WF_SIZE_FILE"
-      pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" "WF_SIZE=$WF_SIZE_FILE" )
+      # Il rettangolo da mostrare: l'app sta nell'angolo in alto a sinistra dello
+      # schermo virtuale, quindi coincide con la misura della finestra. Lo scrive la
+      # libreria a ogni evento di ridimensionamento, cosi' segue il trascinamento
+      # senza ritardo; il Moonlight di fork/ lo rilegge quando cambia.
+      local cropf="$CONFIG_DIR/slot$slot.crop"
+      printf '0 0 %s %s\n' "${wsize%x*}" "${wsize#*x}" >"$cropf"
+      pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
+            "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" )
     fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \
@@ -413,7 +417,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     fi
     trace "aperta: stream=$smode finestra=$(win_size "$pid") (chiesta $wsize)"
 
-    want="$(follow_resize "$pid" "$slot" "$smode")"
+    want="$(follow_resize "$pid" "$slot" "$wsize")"
     # La misura si legge finche' la finestra c'e' ancora: serve a riaprirla domani
     # come l'ha lasciata l'utente.
     local seen; seen="$(win_size "$pid")"
@@ -549,13 +553,13 @@ usable_screen(){ # [pid con cui misurare, se ancora non si sa]
 place_app(){ # slot percorso-exe
   need_ssh
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; Set-Content 'C:\\winfleet\\app$1.txt' '$2'; Start-Sleep 1; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; Set-Content 'C:\\winfleet\\app$1.txt' '$2'; Start-Sleep 1; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1 || true
 }
 
 place_stop(){ # slot
   [ -n "${HOST_SSH:-}" ] || return 0
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; if (Test-Path 'C:\\winfleet\\pid$1.txt') { Stop-Process -Id ([int](Get-Content 'C:\\winfleet\\pid$1.txt').Trim()) -Force -EA SilentlyContinue }\"" >/dev/null 2>&1
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; if (Test-Path 'C:\\winfleet\\pid$1.txt') { Stop-Process -Id ([int](Get-Content 'C:\\winfleet\\pid$1.txt').Trim()) -Force -EA SilentlyContinue }\"" >/dev/null 2>&1 || true
 }
 
 app_exe(){ # nome app -> percorso sull'host
@@ -567,32 +571,9 @@ app_exe(){ # nome app -> percorso sull'host
 # ravvicinate, e far nascere un processo ssh per ognuna costava piu' della richiesta
 # stessa. Qui si scrive una riga su una pipe e la legge un PowerShell gia' in ascolto
 # dall'altra parte.
-vdd_open(){ # slot -> apre il canale se non c'e'
-  local fifo="$CONFIG_DIR/vdd-pipe"
-  [ -p "$fifo" ] || { rm -f "$fifo"; mkfifo "$fifo"; }
-  # In lettura-scrittura, non in sola scrittura: aprire una pipe con nome in
-  # scrittura BLOCCA finche' non compare un lettore, e il lettore lo si avvia due
-  # righe piu' sotto — si aspetterebbero a vicenda per sempre. Tenerlo aperto serve
-  # anche a non far vedere EOF al lettore fra una richiesta e l'altra.
-  exec 8<>"$fifo"
-  if ! kill -0 "${VDD_CHAN:-0}" 2>/dev/null; then
-    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
-      "powershell -NoProfile -Command \"while (\$l = [Console]::In.ReadLine()) { Set-Content C:\\winfleet\\vdd-request.txt \$l }\"" \
-      <"$fifo" >/dev/null 2>&1 &
-    VDD_CHAN=$!
-  fi
-}
-
-vdd_set(){ # slot LARGHEZZAxALTEZZA
-  need_ssh
-  if [ -n "${VDD_CHAN:-}" ] && kill -0 "$VDD_CHAN" 2>/dev/null; then
-    printf '%s %s\n' "$1" "$2" >&8
-    return
-  fi
-  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1
-}
-
+# Quanto grande sta la finestra dell'app su Windows. E' una SetWindowPos: un frame,
+# non il secondo che costa cambiare risoluzione allo schermo.
+#
 # Su macOS Moonlight intitola la finestra col nome dell'host, e basta quello
 # (session.cpp). Il nome lo rilegge dal serverinfo a ogni poll, quindi chiamare
 # l'istanza come l'app fa comparire "Telegram" sulla barra del titolo invece del
@@ -600,9 +581,33 @@ vdd_set(){ # slot LARGHEZZAxALTEZZA
 rename_instance(){ # slot nome
   need_ssh
   local b64; b64="$(printf '%s' "$2" | base64 | tr -d '\n')"
-  ssh -o BatchMode=yes -o ConnectTimeout=40 "$HOST_SSH" \
+  # Mai fatale: se il nome non cambia la finestra si chiamera' come l'istanza invece
+  # che come l'app — brutto, non bloccante. Con set -e un ssh non-zero ucciderebbe il
+  # sorvegliante in silenzio, e la finestra non si aprirebbe piu'.
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=40 "$HOST_SSH" \
     "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-rename.ps1 -Slot $1 -NameB64 $b64" \
-    >/dev/null 2>&1
+    >/dev/null 2>&1 || true
+}
+
+# Nessuno di questi comandi puo' essere fatale: con set -e un ssh che torna non-zero
+# ucciderebbe il sorvegliante, e la finestra sparirebbe senza una riga di log da
+# nessuna parte. E' successo due volte, ed e' costato ore di caccia.
+#
+# Un comando ssh per richiesta, sulla connessione gia' aperta (ControlMaster): costa
+# un paio di decimi, e le richieste partono solo quando la finestra si ferma. Un
+# canale persistente con una pipe sarebbe stato piu' rapido, ma consegnava a
+# singhiozzo senza dire perche' — e la parte che deve essere immediata (il ritaglio)
+# non passa di qui: la scrive la libreria dentro il processo.
+rect_set(){ # slot larghezza altezza
+  need_ssh
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"'$2 $3' | Set-Content C:\\winfleet\\rect$1.txt\"" >/dev/null 2>&1 &
+}
+
+vdd_set(){ # slot LARGHEZZAxALTEZZA
+  need_ssh
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------

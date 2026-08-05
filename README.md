@@ -39,8 +39,8 @@ winfleet stop 2               # close window 2 (or `stop` for all)
 ```
 
 Not a desktop with the app in it, and not a scaled picture of one. The window **is** the
-app: drag its corner and the Windows side changes resolution to match, so the app reflows
-the way it would on a real monitor instead of stretching.
+app: drag its corner and the app on Windows is resized to match, live, in any shape you
+like. No pause, no reconnect, no black bars.
 
 That works because each app gets **a screen of its own**. WinFleet plugs virtual monitors
 into the Parsec Virtual Display Adapter — already present on most gaming PCs, so there is
@@ -48,6 +48,27 @@ usually nothing to install — and runs one Sunshine instance per monitor. Isola
 costs nothing: no taskbar, no other windows, no wallpaper, because nothing else ever draws
 on that screen. **The PC's real desktop is left completely alone**, and several apps stream
 at the same time, one per monitor.
+
+### Why resizing is instant
+
+The obvious way to make the Windows side follow is to change the virtual monitor's
+**resolution**. It works, and it costs about a second every time — the Windows mode set
+plus the host rebuilding its encoder, both visible in Sunshine's own log. A window that
+freezes for a second on every drag is not a resize, it is a series of jumps.
+
+So WinFleet does not touch the resolution at all. The virtual monitor stays the size it
+was born at; what follows the Mac window is the **app's own window** on Windows, which is
+one `SetWindowPos` — a frame. Everything else on that screen would show around it, so the
+client draws only the rectangle the app occupies.
+
+That last part is the one thing Moonlight cannot do, and the only reason WinFleet carries
+a fork: `fork/crop.patch` teaches it to sample a sub-rectangle of the stream, which
+libplacebo already supports natively (`pl_frame.crop`). Two call sites and a small helper
+that re-reads the rectangle when it changes; everything else is stock Moonlight, fetched
+at build time. `fork/build.sh` clones, patches, builds and installs it.
+
+Without the fork WinFleet still works — it falls back to following the resolution, with
+that one-second cost per resize.
 
 ### It looks like the app, not like a stream
 
@@ -152,10 +173,12 @@ winfleet doctor            diagnostics
 | `wf-instance.ps1` | creates a Sunshine instance bound to one monitor, on its own ports |
 | `wf-inst-ctl.ps1` | starts / stops an instance |
 | `wf-rename.ps1` | renames an instance — that is what names the window on the Mac |
-| `wf-place.ps1` | opens the app and holds it over its monitor |
+| `wf-place.ps1` | opens the app and holds it at the size the Mac window asks for |
 | `wf-icon.ps1` | hands back an app's icon as a PNG |
 | `scan-apps.ps1` | lists the installed apps, shortcuts and packaged alike |
 | `bin/winfleet` | picks a free window, follows resizes, keeps the Mac window honest |
+| `mac/wf-chrome.m` | injected into the client: drops the macOS title bar, publishes the window rectangle |
+| `fork/crop.patch` | the one change Moonlight needs: draw a sub-rectangle of the stream |
 
 ### Things that had to be worked around
 
@@ -175,6 +198,9 @@ All of them are commented where they bite, so nobody re-discovers them the hard 
   immediately, works — Windows re-lays-out the desktop itself.
 - **`Set-Content -Encoding UTF8` writes a BOM**, which Sunshine treats as a broken
   `apps.json` and silently replaces with its defaults.
+- **A failing `ssh` can kill a window silently.** The supervisor runs under `set -e`, so
+  one non-zero exit from a fire-and-forget host command ended it with no log line
+  anywhere and no window on screen. Every host call is now explicitly non-fatal.
 - **Moonlight sizes the window itself**, and not only once: if the stream doesn't fit the
   display SDL thinks is active, it rebuilds the window at 80% — seconds after opening it at
   the right size. WinFleet holds the size for a while before it starts watching, otherwise
@@ -211,6 +237,10 @@ resolution, aspect-locked. No virtual monitors involved.
 ```
 winfleet/
 ├── bin/winfleet              # Mac: open / search / windows / dock / clean / doctor
+├── fork/
+│   ├── crop.patch            # l'unica modifica a Moonlight: disegna un ritaglio
+│   └── build.sh              # clona, applica, compila, installa
+├── mac/wf-chrome.m           # iniettata nel client: via la barra, pubblica il rettangolo
 ├── host/
 │   ├── setup.ps1             # Sunshine: install, encoder, firewall
 │   ├── setup-vdd.ps1         # registers the virtual-monitor manager

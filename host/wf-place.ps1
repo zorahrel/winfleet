@@ -12,9 +12,16 @@
   ACCESS_DENIED. Launching from a scheduled task in your own session sidesteps that
   entirely, and leaves Sunshine doing only what it is good at: streaming a screen.
 
-  The window is then stripped of its frame and stretched over the virtual monitor
-  bound to this slot, so the stream carries the app and nothing else. Isolation comes
-  from the screen: nothing else ever draws on it.
+  The window is then stripped of its frame and put in the top-left corner of the
+  virtual monitor bound to this slot, at whatever size C:\winfleet\rect<slot>.txt
+  asks for ("<width> <height>"), defaulting to the whole monitor. Isolation comes from
+  the screen: nothing else ever draws on it.
+
+  That file is how a Mac window resize reaches Windows. Resizing a window is immediate
+  — one SetWindowPos, one frame — while changing the screen RESOLUTION costs about a
+  second (mode set plus the host rebuilding its encoder), which is what used to make
+  resizing feel like a series of jumps. The client crops to this same rectangle, so
+  what arrives on the Mac is the app and nothing around it.
 
   The window is found by watching for one that appears after the launch rather than
   through the process we started: Store-packaged apps, Chromium and Electron hand
@@ -82,12 +89,21 @@ Add-Type -TypeDefinition $sig
 
 # La geometria si rilegge a ogni giro: quando il client ridimensiona la finestra il
 # monitor virtuale cambia forma, e la finestra deve seguirlo.
+# Il file lo riscrive un altro processo: leggerlo mentre e' a meta' da un oggetto
+# senza misure, e prendere quello per buono significa ridurre la finestra a zero e
+# perderla. Meglio non rispondere che rispondere 0x0.
 function Get-Monitor {
-    $parsed = ConvertFrom-Json ((Get-Content 'C:\winfleet\vdd.json' -Raw).TrimStart([char]0xFEFF))
+    try {
+        $raw = (Get-Content 'C:\winfleet\vdd.json' -Raw -EA Stop).TrimStart([char]0xFEFF)
+        $parsed = ConvertFrom-Json $raw
+    } catch { return $null }
     $vdd = @(); foreach ($e in $parsed) { $vdd += $e }
-    $vdd | Where-Object { $_.slot -eq $Slot }
+    $m = $vdd | Where-Object { $_.slot -eq $Slot }
+    if (-not $m -or [int]$m.width -le 0 -or [int]$m.height -le 0) { return $null }
+    $m
 }
-$mon = Get-Monitor
+$mon = $null
+for ($t = 0; $t -lt 20 -and -not $mon; $t++) { $mon = Get-Monitor; if (-not $mon) { Start-Sleep -Milliseconds 300 } }
 if (-not $mon) { throw "Slot $Slot senza monitor virtuale." }
 Note "slot $Slot -> $($mon.device) $($mon.width)x$($mon.height) @ $($mon.x),$($mon.y)"
 
@@ -128,19 +144,47 @@ $st = [int64][P]::GetWindowLongPtr($h, $GWL_STYLE)
 [P]::SetWindowLongPtr($h, $GWL_STYLE, [IntPtr]($st -band (-bnot $rm))) | Out-Null
 
 $SWP_SHOWWINDOW = 0x0040
+$RECT = "C:\winfleet\rect$Slot.txt"
 $gone = 0
+$lastW = -1; $lastH = -1; $lastH2 = [IntPtr]::Zero
 while ($true) {
     if (-not [P]::IsWindow($h) -or -not [P]::IsWindowVisible($h)) {
         $h2 = [P]::FindNew($before.ToArray())          # splash -> finestra vera
         if ($h2 -ne [IntPtr]::Zero) { $h = $h2; $gone = 0 }
-        elseif (++$gone -ge 3) { break }
+        # Conta il TEMPO, non i giri: il ciclo gira dieci volte al secondo per
+        # seguire i ridimensionamenti, e tre giri sarebbero tre decimi — meno di
+        # quanto ci mette un'app a sostituire la sua finestra di avvio con quella
+        # vera. Tre secondi senza nessuna finestra vogliono dire chiusa davvero.
+        elseif (++$gone -ge 30) { break }
     } else { $gone = 0 }
 
     $m = Get-Monitor
     if ($m) { $mon = $m }
-    [P]::ShowWindow($h, 9) | Out-Null                  # SW_RESTORE
-    [P]::SetWindowPos($h, [IntPtr]::Zero, $mon.x, $mon.y, $mon.width, $mon.height, $SWP_SHOWWINDOW) | Out-Null
-    Start-Sleep -Milliseconds 800
+
+    # Misura richiesta dal Mac, se c'e'. Mai piu' grande dello schermo: oltre il bordo
+    # la finestra verrebbe tagliata e il ritaglio lato client mostrerebbe il vuoto.
+    $tw = $mon.width; $th = $mon.height
+    if (Test-Path $RECT) {
+        try {
+            $r = (Get-Content $RECT -Raw -EA Stop).Trim() -split '\s+'
+            if ($r.Count -ge 2) {
+                $rw = [int]$r[0]; $rh = [int]$r[1]
+                if ($rw -gt 0 -and $rh -gt 0) {
+                    $tw = [Math]::Min($rw, $mon.width)
+                    $th = [Math]::Min($rh, $mon.height)
+                }
+            }
+        } catch { }
+    }
+
+    # Si tocca la finestra solo quando serve davvero: rifare SetWindowPos dieci volte
+    # al secondo su misure identiche fa sfarfallare le app che ridisegnano al resize.
+    if ($tw -ne $lastW -or $th -ne $lastH -or $h -ne $lastH2) {
+        [P]::ShowWindow($h, 9) | Out-Null              # SW_RESTORE
+        [P]::SetWindowPos($h, [IntPtr]::Zero, $mon.x, $mon.y, $tw, $th, $SWP_SHOWWINDOW) | Out-Null
+        $lastW = $tw; $lastH = $th; $lastH2 = $h
+    }
+    Start-Sleep -Milliseconds 100
 }
 Note 'finestra chiusa'
 Remove-Item "C:\winfleet\pid$Slot.txt" -Force -EA SilentlyContinue

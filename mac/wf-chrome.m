@@ -37,17 +37,26 @@ static const char *kWant  = "wf_want";
 static NSSize gAsked = {0, 0};      // misura chiesta da WinFleet
 static BOOL   gKeepChrome = NO;
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
+static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 
 // Chi sta fuori deve sapere quanto e' grande la finestra per far seguire la
 // risoluzione di Windows, e chiederlo con AppleScript costa decine di millisecondi
 // a colpo — troppo, per una cosa da guardare dieci volte al secondo. Qui il dato
 // c'e' gia': si scrive e basta.
 static void publish(NSSize s) {
-    if (!gSizeFile) return;
-    FILE *f = fopen(gSizeFile, "w");
-    if (!f) return;
-    fprintf(f, "%dx%d\n", (int)lround(s.width), (int)lround(s.height));
-    fclose(f);
+    int w = (int)lround(s.width), h = (int)lround(s.height);
+    if (gSizeFile) {
+        FILE *f = fopen(gSizeFile, "w");
+        if (f) { fprintf(f, "%dx%d\n", w, h); fclose(f); }
+    }
+    // Il rettangolo che il client deve mostrare. L'app sta nell'angolo in alto a
+    // sinistra dello schermo virtuale, quindi coincide con la finestra. Scriverlo qui
+    // e non da fuori e' il motivo per cui segue il trascinamento senza ritardo: qui
+    // l'evento arriva mentre trascini, fuori bisognerebbe andarlo a chiedere.
+    if (gCropFile) {
+        FILE *f = fopen(gCropFile, "w");
+        if (f) { fprintf(f, "0 0 %d %d\n", w, h); fclose(f); }
+    }
 }
 
 static NSSize wantOf(NSWindow *w) {
@@ -58,10 +67,16 @@ static void setWant(NSWindow *w, NSSize s) {
     objc_setAssociatedObject(w, kWant, [NSValue valueWithSize:s], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Solo le finestre vere dello stream: Qt ne tiene altre, nascoste, che non vanno
-// toccate (e che non hanno una barra da togliere).
+// Solo la finestra dello stream. Moonlight e' un programma Qt che apre una finestra
+// sua (la QML) prima di quella del video: toccarla — ridimensionarla, cambiarle lo
+// stile — blocca l avvio, e da fuori le due si assomigliano perche' sono entrambe
+// intitolate e visibili. Si distinguono dalla classe: quelle di Qt sono QNSWindow,
+// quella del video la crea SDL.
 static BOOL isStreamWindow(NSWindow *w) {
-    return w && (w.styleMask & NSWindowStyleMaskTitled) && w.isVisible;
+    if (!w || !(w.styleMask & NSWindowStyleMaskTitled) || !w.isVisible) return NO;
+    NSString *cls = NSStringFromClass([w class]);
+    if ([cls hasPrefix:@"QNS"] || [cls containsString:@"Qt"]) return NO;
+    return YES;
 }
 
 static void adopt(NSWindow *w) {
@@ -81,12 +96,9 @@ static void adopt(NSWindow *w) {
     NSSize want = (gAsked.width > 0) ? gAsked : w.frame.size;
     setWant(w, want);
     if (gAsked.width > 0) {
-        // Il rapporto resta quello dello stream. Non e' una preferenza estetica: la
-        // sessione e' negoziata a una forma sola, e se lo schermo di Windows ne
-        // prende un'altra Sunshine ci mette le bande nere per farcela stare. Cocoa
-        // vincola il trascinamento mentre avviene, quindi non c'e' niente da
-        // correggere dopo e la finestra non "scatta".
-        [w setContentAspectRatio:gAsked];
+        // Nessun vincolo di proporzioni: con il ritaglio la finestra puo' prendere
+        // qualsiasi forma, perche' quello che si vede e' esattamente la finestra
+        // dell'app su Windows e non un'immagine da far entrare in una cornice.
         NSRect f = w.frame;
         if (fabs(f.size.width - want.width) > 1 || fabs(f.size.height - want.height) > 1) {
             f.origin.y += f.size.height - want.height;   // l'angolo in alto resta fermo
@@ -130,6 +142,7 @@ static void wf_chrome_init(void) {
         if (sscanf(env, "%dx%d", &a, &b) == 2 && a > 0 && b > 0) gAsked = NSMakeSize(a, b);
     }
     gSizeFile = getenv("WF_SIZE");
+    gCropFile = getenv("WF_CROP");
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
 

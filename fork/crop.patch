@@ -1,0 +1,244 @@
+diff --git a/app/streaming/streamutils.cpp b/app/streaming/streamutils.cpp
+index 9bd32f5..0fdf665 100644
+--- a/app/streaming/streamutils.cpp
++++ b/app/streaming/streamutils.cpp
+@@ -1,5 +1,9 @@
+ #include "streamutils.h"
+ 
++#include <sys/stat.h>
++#include <cstdio>
++#include <cstdlib>
++
+ #include <Qt>
+ #include <QDir>
+ 
+@@ -125,6 +129,51 @@ SDL_Window* StreamUtils::createTestWindow()
+     return testWindow;
+ }
+ 
++
++// --- WinFleet: ritaglio della regione utile -------------------------------------
++//
++// WinFleet mostra UNA finestra di Windows come finestra del Mac. Farla seguire
++// cambiando la risoluzione dello schermo virtuale costa circa un secondo a colpo
++// (mode set di Windows piu ricostruzione dell encoder lato host), ed e quello che
++// rende il ridimensionamento a scatti invece che dal vivo.
++//
++// Ritagliando, quel costo sparisce: lo schermo virtuale resta fisso, su Windows si
++// ridimensiona la finestra dell app (immediato) e qui si mostra solo il rettangolo
++// che quella finestra occupa. Nessun riscalo, nessuna banda nera, forma libera.
++//
++// Il rettangolo sta in un file indicato da WF_CROP, riletto solo quando cambia:
++// "x y larghezza altezza" in pixel dello stream.
++bool StreamUtils::getWinFleetCrop(SDL_Rect* crop)
++{
++    static const char* path = getenv("WF_CROP");
++    static SDL_Rect cached = {0, 0, 0, 0};
++    static struct timespec stamp = {0, 0};
++
++    if (path == nullptr) {
++        return false;
++    }
++
++    struct stat st;
++    if (stat(path, &st) == 0 &&
++        (st.st_mtimespec.tv_sec != stamp.tv_sec || st.st_mtimespec.tv_nsec != stamp.tv_nsec)) {
++        FILE* f = fopen(path, "r");
++        if (f != nullptr) {
++            SDL_Rect r;
++            if (fscanf(f, "%d %d %d %d", &r.x, &r.y, &r.w, &r.h) == 4) {
++                cached = r;
++                stamp = st.st_mtimespec;
++            }
++            fclose(f);
++        }
++    }
++
++    if (cached.w <= 0 || cached.h <= 0) {
++        return false;
++    }
++    *crop = cached;
++    return true;
++}
++
+ void StreamUtils::scaleSourceToDestinationSurface(SDL_Rect* src, SDL_Rect* dst)
+ {
+     int dstH = SDL_ceilf((float)dst->w * src->h / src->w);
+diff --git a/app/streaming/streamutils.h b/app/streaming/streamutils.h
+index 3e62175..db29460 100644
+--- a/app/streaming/streamutils.h
++++ b/app/streaming/streamutils.h
+@@ -14,6 +14,10 @@ public:
+     static
+     void scaleSourceToDestinationSurface(SDL_Rect* src, SDL_Rect* dst);
+ 
++    // WinFleet: regione dello stream da mostrare, se ne e stata chiesta una.
++    static
++    bool getWinFleetCrop(SDL_Rect* crop);
++
+     static
+     void screenSpaceToNormalizedDeviceCoords(SDL_FRect* rect, int viewportWidth, int viewportHeight);
+ 
+diff --git a/app/streaming/video/ffmpeg-renderers/plvk.cpp b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+index 3a7b2a1..1f82993 100644
+--- a/app/streaming/video/ffmpeg-renderers/plvk.cpp
++++ b/app/streaming/video/ffmpeg-renderers/plvk.cpp
+@@ -1049,6 +1049,21 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
+     }
+     SDL_AtomicUnlock(&m_OverlayLock);
+ 
++    // WinFleet: se e stata chiesta una regione, si mostra solo quella. libplacebo
++    // campiona esattamente mappedFrame.crop, quindi basta restringerlo qui.
++    SDL_Rect wfCrop;
++    if (StreamUtils::getWinFleetCrop(&wfCrop)) {
++        float fw = mappedFrame.crop.x1 - mappedFrame.crop.x0;
++        float fh = mappedFrame.crop.y1 - mappedFrame.crop.y0;
++        if (wfCrop.x >= 0 && wfCrop.y >= 0 &&
++            wfCrop.x + wfCrop.w <= fw && wfCrop.y + wfCrop.h <= fh) {
++            mappedFrame.crop.x0 = wfCrop.x;
++            mappedFrame.crop.y0 = wfCrop.y;
++            mappedFrame.crop.x1 = wfCrop.x + wfCrop.w;
++            mappedFrame.crop.y1 = wfCrop.y + wfCrop.h;
++        }
++    }
++
+     SDL_Rect src;
+     src.x = mappedFrame.crop.x0;
+     src.y = mappedFrame.crop.y0;
+diff --git a/app/streaming/video/ffmpeg-renderers/vt_metal.mm b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+index 2852d43..bd29655 100644
+--- a/app/streaming/video/ffmpeg-renderers/vt_metal.mm
++++ b/app/streaming/video/ffmpeg-renderers/vt_metal.mm
+@@ -11,6 +11,9 @@
+ #include "streaming/streamutils.h"
+ #include "path.h"
+ 
++#include <sys/stat.h>
++#include <cstdio>
++
+ #import <Cocoa/Cocoa.h>
+ #import <VideoToolbox/VideoToolbox.h>
+ #import <AVFoundation/AVFoundation.h>
+@@ -22,6 +25,53 @@
+     #include <libavutil/pixdesc.h>
+ }
+ 
++
++// --- WinFleet: ritaglio della regione utile -------------------------------------
++//
++// WinFleet mostra UNA finestra di Windows come finestra del Mac. Farla seguire
++// cambiando la risoluzione dello schermo virtuale costa un secondo a colpo (mode set
++// di Windows piu' ricostruzione dell encoder di Sunshine), che e' esattamente cio'
++// che rende un ridimensionamento "a scatti" invece che dal vivo.
++//
++// Con il ritaglio quel costo sparisce: lo schermo virtuale resta fisso, su Windows si
++// ridimensiona la FINESTRA dell app (immediato, un frame), e qui si disegna solo il
++// rettangolo che quella finestra occupa. Nessun riscalo, nessuna banda nera, forma
++// libera.
++//
++// Il rettangolo arriva da un file indicato in WF_CROP, riletto quando cambia:
++// "x y larghezza altezza" in pixel dello stream. Assente o non valido, si disegna
++// tutto come fa Moonlight normalmente.
++struct WfCrop {
++    int x = 0, y = 0, w = 0, h = 0;
++    bool valid() const { return w > 0 && h > 0; }
++};
++
++static WfCrop wfReadCrop()
++{
++    static const char* path = getenv("WF_CROP");
++    static WfCrop cached;
++    static struct timespec cachedStamp = {};
++
++    if (!path) return WfCrop();
++
++    struct stat st;
++    if (stat(path, &st) != 0) return cached;
++    if (st.st_mtimespec.tv_sec == cachedStamp.tv_sec &&
++        st.st_mtimespec.tv_nsec == cachedStamp.tv_nsec) {
++        return cached;   // niente di nuovo: si evita di rileggere sessanta volte al secondo
++    }
++
++    FILE* f = fopen(path, "r");
++    if (!f) return cached;
++    WfCrop c;
++    if (fscanf(f, "%d %d %d %d", &c.x, &c.y, &c.w, &c.h) == 4) {
++        cached = c;
++        cachedStamp = st.st_mtimespec;
++    }
++    fclose(f);
++    return cached;
++}
++
+ struct CscParams
+ {
+     simd_half3x3 matrix;
+@@ -144,34 +194,59 @@ bool updateVideoRegionSizeForFrame(AVFrame* frame)
+         int drawableWidth, drawableHeight;
+         SDL_Metal_GetDrawableSize(m_Window, &drawableWidth, &drawableHeight);
+ 
+-        // Check if anything has changed since the last vertex buffer upload
++        // Check if anything has changed since the last vertex buffer upload.
++        // Anche il ritaglio: se cambia quello e i vertici restano quelli di prima,
++        // la finestra continuerebbe a mostrare la regione vecchia.
++        WfCrop nowCrop = wfReadCrop();
++        static WfCrop lastCrop;
+         if (m_VideoVertexBuffer &&
+                 frame->width == m_LastFrameWidth && frame->height == m_LastFrameHeight &&
+-                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight) {
++                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight &&
++                nowCrop.x == lastCrop.x && nowCrop.y == lastCrop.y &&
++                nowCrop.w == lastCrop.w && nowCrop.h == lastCrop.h) {
+             // Nothing to do
+             return true;
+         }
++        lastCrop = nowCrop;
+ 
+         // Determine the correct scaled size for the video region
+         SDL_Rect src, dst;
+-        src.x = src.y = 0;
+-        src.w = frame->width;
+-        src.h = frame->height;
++        WfCrop crop = nowCrop;
++        if (crop.valid() &&
++            crop.x >= 0 && crop.y >= 0 &&
++            crop.x + crop.w <= frame->width && crop.y + crop.h <= frame->height) {
++            src.x = crop.x; src.y = crop.y;
++            src.w = crop.w; src.h = crop.h;
++        }
++        else {
++            crop = WfCrop();
++            src.x = src.y = 0;
++            src.w = frame->width;
++            src.h = frame->height;
++        }
+         dst.x = dst.y = 0;
+         dst.w = drawableWidth;
+         dst.h = drawableHeight;
+         StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+ 
++        // Porzione di texture da campionare. v cresce verso il basso: v=0 e il bordo
++        // superiore dell immagine, com e nel codice originale dove il vertice in
++        // basso porta v=1.
++        float uL = crop.valid() ? (float)src.x / frame->width  : 0.0f;
++        float uR = crop.valid() ? (float)(src.x + src.w) / frame->width  : 1.0f;
++        float vT = crop.valid() ? (float)src.y / frame->height : 0.0f;
++        float vB = crop.valid() ? (float)(src.y + src.h) / frame->height : 1.0f;
++
+         // Convert screen space to normalized device coordinates
+         SDL_FRect renderRect;
+         StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, drawableWidth, drawableHeight);
+ 
+         Vertex verts[] =
+         {
+-            { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+-            { { renderRect.x, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 0.0f, 0} },
+-            { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { 1.0f, 1.0f} },
+-            { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 1.0f, 0} },
++            { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { uL, vB } },
++            { { renderRect.x, renderRect.y+renderRect.h, 0.0f, 1.0f }, { uL, vT } },
++            { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { uR, vB } },
++            { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { uR, vT } },
+         };
+ 
+         [m_VideoVertexBuffer release];
