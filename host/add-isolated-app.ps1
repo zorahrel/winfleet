@@ -8,14 +8,12 @@
   on a dedicated Windows desktop — no taskbar, no other windows.
 
 .EXAMPLE
-  .\add-isolated-app.ps1 -Name Blender -Path "C:\Program Files\Blender\blender.exe" -WebPass 'pw'
+  .\add-isolated-app.ps1 -Name Blender -Path "C:\Program Files\Blender\blender.exe"
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Name,
-    [Parameter(Mandatory=$true)][string]$Path,   # full path to the .exe
-    [string]$WebUser = 'admin',
-    [Parameter(Mandatory=$true)][string]$WebPass
+    [Parameter(Mandatory=$true)][string]$Path    # full path to the .exe
 )
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Path)) { throw "Eseguibile non trovato: $Path" }
@@ -57,4 +55,4 @@ Restart-Service SunshineService
 Start-Sleep 3
 
 Write-Host "Registrata app isolata: $Name" -ForegroundColor Green
-Write-Host "Sul Mac:  winfleet add $slug `"$Name`"  &&  winfleet open $Name"
+Write-Host "Sul Mac:  winfleet open `"$Name`""

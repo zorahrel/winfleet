@@ -6,6 +6,9 @@
 # riusando la sessione già attiva sul PC (nessun login RDP).
 #
 #   winfleet open <app>        apre l'app/desktop in una finestra sul Mac
+#   winfleet search <testo>    cerca un'app installata sul PC e la apre
+#   winfleet scan              rilegge l'elenco delle app installate sul PC
+#   winfleet fit               riporta la finestra alle proporzioni dello stream
 #   winfleet stop              chiude la sessione (graceful)
 #   winfleet list              app disponibili sull'host
 #   winfleet apps              app configurate localmente (catalogo)
@@ -26,9 +29,11 @@ MOONLIGHT="${MOONLIGHT_BIN:-/Applications/Moonlight.app/Contents/MacOS/Moonlight
 HOST_TS=""          # indirizzo Tailscale (sempre raggiungibile)
 HOST_LAN=""         # indirizzo LAN (preferito se risponde)
 FPS=60
-BITRATE=40000       # Kbps; su LAN con NVENC si può alzare molto
-RESOLUTION=""       # vuoto = nativa dell'host/app; es. 2560x1440
+BITRATE=auto        # Kbps, o "auto" = scelto in base alla risoluzione
+RESOLUTION=auto     # "auto" = nativa dell'host (nessun riscalo); es. 2560x1440
+HOST_RES=""         # risoluzione desktop dell'host, rilevata al primo stream
 SUN_PORT=47990
+TITLEBAR=28         # altezza barra titolo macOS, esclusa dall'area video
 
 [ -f "$CONFIG" ] && . "$CONFIG"
 
@@ -61,6 +66,188 @@ resolve_endpoint(){
 }
 
 # ---------------------------------------------------------------------------
+# Risoluzione e finestra
+# ---------------------------------------------------------------------------
+# Moonlight scrive nel suo log la risoluzione del desktop remoto: è il modo
+# più diretto di conoscerla, senza chiedere nulla all'host.
+detect_host_res(){
+  local l; l=$(ls -t /tmp/Moonlight-*.log 2>/dev/null | head -1)
+  [ -n "$l" ] || return 1
+  grep -oE "desktop resolution: [0-9]+x[0-9]+" "$l" | tail -1 | awk '{print $3}'
+}
+
+save_cfg(){ # chiave valore
+  local k="$1" v="$2"
+  mkdir -p "$CONFIG_DIR"; touch "$CONFIG"
+  if grep -q "^$k=" "$CONFIG"; then
+    sed -i '' "s|^$k=.*|$k=\"$v\"|" "$CONFIG"
+  else
+    printf '%s="%s"\n' "$k" "$v" >>"$CONFIG"
+  fi
+}
+
+# Senza --resolution Moonlight chiede 1280x720 e l'host riscala: immagine molle
+# e banda sprecata. Nativa = nessun riscalo.
+stream_res(){
+  case "$RESOLUTION" in
+    auto|"") [ -n "$HOST_RES" ] && echo "$HOST_RES" ;;
+    *)       echo "$RESOLUTION" ;;
+  esac
+}
+
+# Bitrate proporzionato ai pixel: 40 Mbps su un ultrawide è poco, su 720p è spreco.
+stream_bitrate(){ # risoluzione
+  [ "$BITRATE" = auto ] || { echo "$BITRATE"; return; }
+  local res="$1" px
+  [ -n "$res" ] || { echo 20000; return; }
+  px=$(( ${res%x*} * ${res#*x} ))
+  if   [ "$px" -le 1000000 ]; then echo 20000
+  elif [ "$px" -le 2100000 ]; then echo 30000
+  elif [ "$px" -le 3700000 ]; then echo 50000
+  else                             echo 80000
+  fi
+}
+
+# Moonlight apre due processi (la finestra elenco e quella dello stream) e in
+# windowed mode dimensiona la finestra come la risoluzione remota: con un host
+# ultrawide finisce fuori dallo schermo del Mac. Questo demone la tiene dentro
+# lo schermo e agganciata alle proporzioni dello stream, così si ridimensiona e
+# si sposta liberamente ma l'immagine riempie sempre la finestra, senza bande.
+stream_pid(){ pgrep -f "Moonlight.*stream" | tail -1; }
+
+win_fix(){ # pid larghezza altezza
+  # Il processo va indirizzato con "tell (first process whose unix id is N)":
+  # assegnarlo a una variabile e usare "windows of p" fa risolvere il filtro per
+  # indice, e con due processi Moonlight si finisce sulla finestra sbagliata.
+  osascript >/dev/null 2>&1 <<EOF
+set tb to $TITLEBAR
+set ar to ($2 / $3)
+tell application "Finder" to set sb to bounds of window of desktop
+set scrW to item 3 of sb
+set scrH to item 4 of sb
+try
+  tell application "System Events" to tell (first process whose unix id is $1)
+    if (count of windows) is 0 then return
+    set sz to size of item 1 of windows
+    set pos to position of item 1 of windows
+    set ww to item 1 of sz
+    if ww > (scrW - 40) then set ww to scrW - 40
+    set hh to round (ww / ar) rounding as taught in school
+    if hh > (scrH - 120) then
+      set hh to scrH - 120
+      set ww to round (hh * ar) rounding as taught in school
+    end if
+    if (item 1 of sz) is not ww or (item 2 of sz) is not (hh + tb) then
+      set size of item 1 of windows to {ww, hh + tb}
+    end if
+    set px to item 1 of pos
+    set py to item 2 of pos
+    if px < 0 then set px to 20
+    if py < 30 then set py to 40
+    if (px + ww) > scrW then set px to (scrW - ww - 20)
+    if (py + hh + tb) > scrH then set py to (scrH - hh - tb - 20)
+    if px is not (item 1 of pos) or py is not (item 2 of pos) then
+      set position of item 1 of windows to {px, py}
+    end if
+  end tell
+on error
+  return
+end try
+EOF
+}
+
+# L'istanza GUI di Moonlight (l'elenco "Computers") resta aperta dietro allo
+# stream: nasconderla lascia sullo schermo solo la finestra dell'app.
+hide_gui(){ # pid dello stream
+  local g
+  for g in $(pgrep -x Moonlight 2>/dev/null; pgrep -f "Moonlight$" 2>/dev/null); do
+    [ "$g" = "$1" ] && continue
+    osascript -e "tell application \"System Events\" to set visible of (first process whose unix id is $g) to false" >/dev/null 2>&1 || true
+  done
+}
+
+aspect_keeper(){ # pid larghezza altezza
+  local pid="$1" rw="$2" rh="$3"
+  ( while kill -0 "$pid" 2>/dev/null; do win_fix "$pid" "$rw" "$rh"; sleep 0.5; done ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+cmd_fit(){
+  local res pid; res="$(stream_res)"; pid="$(stream_pid)"
+  [ -n "$res" ] || res="$(detect_host_res)" || die "Risoluzione sconosciuta: avvia uno stream una volta."
+  [ -n "$pid" ] || die "Nessuno stream aperto."
+  win_fix "$pid" "${res%x*}" "${res#*x}"
+  ok "finestra riportata alle proporzioni ${res%x*}:${res#*x}"
+}
+
+# ---------------------------------------------------------------------------
+# Catalogo delle app installate sull'host
+# ---------------------------------------------------------------------------
+HOST_APPS="$CONFIG_DIR/host-apps.tsv"
+
+need_ssh(){
+  [ -n "${HOST_SSH:-}" ] || die "Serve l'accesso SSH all'host per cercare e registrare app.
+Aggiungi a $CONFIG:   HOST_SSH=\"utente@indirizzo\""
+}
+
+host_ps(){ ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\$1" 2>/dev/null | tr -d '\r'; }
+
+cmd_scan(){
+  need_ssh
+  info "scansione delle app installate sull'host…"
+  host_ps scan-apps.ps1 | grep -v '^$' | sort -f >"$HOST_APPS"
+  ok "$(wc -l <"$HOST_APPS" | tr -d ' ') app trovate  ${c_dim}($HOST_APPS)${c_off}"
+}
+
+# Registra l'app come "isolata" sull'host, se non lo è già.
+ensure_registered(){ # nome percorso
+  local name="$1" path="$2"
+  if "$MOONLIGHT" list "$(resolve_endpoint | cut -d' ' -f1)" 2>/dev/null | grep -qxF "$name"; then
+    return 0
+  fi
+  info "registro «${name}» sull'host…"
+  printf "& 'C:\\\\winfleet\\\\add-isolated-app.ps1' -Name '%s' -Path '%s'\n" \
+    "${name//\'/\'\'}" "${path//\'/\'\'}" | base64 | \
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\_reg.ps1', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" || die "Upload fallito."
+  host_ps _reg.ps1 >/dev/null || die "Registrazione fallita."
+  # Sunshine si riavvia dopo la registrazione: finché non ripubblica l'elenco,
+  # Moonlight risponderebbe "Failed to find application".
+  local i addr; addr="$(resolve_endpoint | cut -d' ' -f1)"
+  for i in $(seq 1 20); do
+    "$MOONLIGHT" list "$addr" 2>/dev/null | grep -qxF "$name" && { ok "«${name}» registrata"; return 0; }
+    sleep 1
+  done
+  die "«${name}» registrata ma l'host non la pubblica ancora. Riprova tra qualche secondo." 
+}
+
+cmd_search(){
+  need_ssh
+  [ -s "$HOST_APPS" ] || cmd_scan
+  local q="${*:-}"
+  local matches; matches=$(grep -i -- "$q" "$HOST_APPS" 2>/dev/null || true)
+  [ -n "$matches" ] || die "Nessuna app trovata per «${q}».  Prova:  winfleet scan"
+
+  local n; n=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
+  local pick
+  if [ "$n" -eq 1 ]; then
+    pick="$matches"
+  else
+    printf "${c_bold}App che corrispondono a «%s»${c_off}\n" "$q"
+    printf '%s\n' "$matches" | nl -w3 -s'. ' | while IFS=$'\t' read -r left _; do printf "  %s\n" "$left"; done
+    printf "Quale? [1-%d] " "$n"; read -r sel </dev/tty
+    pick=$(printf '%s\n' "$matches" | sed -n "${sel}p")
+    [ -n "$pick" ] || die "Selezione non valida."
+  fi
+
+  local name path
+  name="${pick%%$'\t'*}"; path="${pick#*$'\t'}"
+  ensure_registered "$name" "$path"
+  cmd_open "$name"
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 cmd_endpoint(){
@@ -76,15 +263,38 @@ cmd_open(){
   read -r addr kind <<<"$(resolve_endpoint)"
   [ -n "$addr" ] || die "Host irraggiungibile. Controlla:  winfleet doctor"
 
+  # Moonlight risolve il nome dell'app dalla lista che ha in cache: se l'app è
+  # stata registrata da poco, senza un refresh risponde "Failed to find application".
+  "$MOONLIGHT" list "$addr" >/dev/null 2>&1 || true
+
+  local res br
+  res="$(stream_res)"
+  br="$(stream_bitrate "$res")"
+
   local args=( stream "$addr" "$app"
     --display-mode windowed
-    --fps "$FPS" --bitrate "$BITRATE"
+    --fps "$FPS" --bitrate "$br"
     --absolute-mouse --no-vsync --quit-after )
-  [ -n "$RESOLUTION" ] && args+=( --resolution "$RESOLUTION" )
+  [ -n "$res" ] && args+=( --resolution "$res" )
 
-  printf "${c_bold}%s${c_off} → finestra sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" "$app" "$addr" "$kind" "$FPS"
+  printf "${c_bold}%s${c_off} → finestra sul Mac  ${c_dim}(%s, %s, %s, %d fps, %s Mbps)${c_off}\n" \
+    "$app" "$addr" "$kind" "${res:-nativa}" "$FPS" "$(( br / 1000 ))"
   nohup "$MOONLIGHT" "${args[@]}" >"$CONFIG_DIR/stream-$$.log" 2>&1 &
+  local mpid=$!
   disown || true
+
+  # Alla prima connessione impariamo la risoluzione dell'host dal log di
+  # Moonlight, così dal secondo stream in poi si va in nativa.
+  local i
+  for i in $(seq 1 40); do
+    sleep 0.5
+    [ -n "$res" ] && break
+    res="$(detect_host_res || true)"
+    [ -n "$res" ] && { save_cfg HOST_RES "$res"; info "risoluzione host rilevata: $res (attiva dal prossimo avvio)"; }
+  done
+
+  hide_gui "$mpid"
+  [ -n "$res" ] && aspect_keeper "$mpid" "${res%x*}" "${res#*x}"
 }
 
 cmd_stop(){
@@ -198,13 +408,16 @@ cmd_setup(){
   read -rp "  IP Tailscale del PC (100.x, opzionale): " ts
   read -rp "  IP LAN del PC (192.168.x, opzionale):   " lan
   read -rp "  FPS [60]: " f; f="${f:-60}"
-  read -rp "  Bitrate Kbps [40000]: " b; b="${b:-40000}"
+  read -rp "  Bitrate Kbps [auto]: " b; b="${b:-auto}"
+  read -rp "  SSH dell'host (utente@indirizzo, per cercare app): " sh
   cat > "$CONFIG" <<CFG
 HOST_TS="$ts"
 HOST_LAN="$lan"
+HOST_SSH="$sh"
 FPS=$f
 BITRATE=$b
-RESOLUTION=""
+RESOLUTION=auto
+HOST_RES=""
 SUN_PORT=47990
 CFG
   echo "Scritto $CONFIG"
@@ -214,6 +427,9 @@ CFG
 # ---------------------------------------------------------------------------
 case "${1:-}" in
   open)     shift; cmd_open "$@";;
+  search)   shift; cmd_search "$@";;
+  scan)     cmd_scan;;
+  fit)      cmd_fit;;
   stop)     cmd_stop;;
   list)     cmd_list;;
   apps)     cmd_apps;;

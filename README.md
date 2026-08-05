@@ -81,33 +81,56 @@ winfleet pair      # Moonlight shows a PIN → enter it in the Sunshine web UI
 ## Use
 
 ```sh
+winfleet search blender       # find an app installed on the PC and open it
 winfleet open Desktop         # the whole live desktop, in a window
 winfleet open Blender         # a single app, in its own window
 winfleet stop                 # close the session cleanly
-winfleet list                 # apps available on the host
+winfleet fit                  # snap the window back to the stream's proportions
+winfleet scan                 # re-read the list of apps installed on the PC
+winfleet list                 # apps published by the host
 winfleet dock                 # generate Dock icons — click = window
 winfleet doctor               # diagnostics: reachability, endpoint, pairing
 winfleet endpoint             # which address it would use right now
 ```
 
-Add an app so it gets a catalog entry and a Dock icon:
+### Finding and opening apps
+
+`winfleet search` reads the PC's Start Menu, so you get the apps a person would
+actually launch rather than every binary on disk. Pick one and WinFleet registers it
+on the host by itself, then opens it:
 
 ```sh
-winfleet add blender "Blender"
-winfleet dock blender
+$ winfleet search telegram
+  ○ registro «Telegram» sull'host…
+  ✓ «Telegram» registrata
+Telegram → finestra sul Mac  (192.168.1.3, lan, 3440x1440, 60 fps, 80 Mbps)
 ```
 
-To expose a specific `.exe` as its own Sunshine app (so `winfleet open` launches it
-directly), run on the PC:
+This needs SSH access to the host — set `HOST_SSH="user@address"` in the config.
+Without it, register apps on the PC instead:
 
 ```powershell
-.\add-app.ps1 -Name "Blender" -Path "C:\Program Files\Blender\blender.exe" -WebPass '<pw>'
+.\add-isolated-app.ps1 -Name "Blender" -Path "C:\Program Files\Blender\blender.exe"
 ```
+
+### The window
+
+The stream window is an ordinary Mac window: move it, resize it, put it on another
+Space. WinFleet keeps it **locked to the stream's proportions** as you resize, so the
+image always fills it — no black bars — and it keeps it on screen (Moonlight would
+otherwise size the window to the remote resolution, which lands an ultrawide host
+partly outside a laptop display). Drag the width; the height follows. `winfleet fit`
+re-snaps it at any time.
 
 ## Performance notes
 
-- **Bitrate.** Default 40 Mbps. On a wired LAN with NVENC you can push 80–150 Mbps for
-  near-lossless — set `BITRATE` in `~/.config/winfleet/config.env`.
+- **Resolution.** `RESOLUTION=auto` streams the host's native resolution, so there is no
+  rescaling at either end. This matters more than it sounds: without an explicit
+  resolution Moonlight asks for 1280x720 and the host downscales, which looks soft on a
+  1440p host no matter how much bitrate you throw at it. WinFleet learns the host's
+  resolution from the first connection and uses it from then on.
+- **Bitrate.** `BITRATE=auto` scales with the pixel count (20 Mbps at 720p up to 80 Mbps
+  above 1440p). On a wired LAN with NVENC you can push higher — set a number instead.
 - **fps.** 60 by default; the host advertises up to 120. Set `FPS` in the config.
 - **Codec.** Sunshine negotiates HEVC when the client supports it (Apple Silicon does),
   which looks noticeably cleaner than H.264 at the same bitrate.
@@ -129,7 +152,7 @@ is the entire frame.
 
 ```powershell
 .\setup-isolated.ps1                                              # once
-.\add-isolated-app.ps1 -Name Blender -Path "C:\...\blender.exe" -WebPass '<pw>'
+.\add-isolated-app.ps1 -Name Blender -Path "C:\...\blender.exe"
 ```
 
 Then on the Mac: `winfleet add blender "Blender"` and `winfleet open Blender`.
@@ -183,6 +206,7 @@ winfleet/
 │   ├── add-app.ps1            # Windows: register an .exe as a Sunshine app
 │   ├── setup-isolated.ps1     # Windows: enable isolated (single-app) mode
 │   ├── add-isolated-app.ps1   # Windows: register an .exe as an isolated app
+│   ├── scan-apps.ps1          # Windows: list installed apps (for `winfleet search`)
 │   ├── wf-launch.ps1          # creates the dedicated desktop and switches to it
 │   ├── wf-inner.ps1           # runs on that desktop: starts + fits the app
 │   └── wf-reset.ps1           # teardown: close the app, back to the real desktop
