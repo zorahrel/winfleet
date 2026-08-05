@@ -15,9 +15,29 @@
 static NSString *kCli;      // percorso del comando winfleet
 static NSString *kConfig;   // ~/.config/winfleet
 
+// Ogni azione lascia una riga in ~/.config/winfleet/panel.log. Serve a poter dire
+// cosa ha fatto il pannello quando apre la cosa sbagliata: senza, resta la parola
+// dell'utente contro il codice, e non si sistema niente.
+static void logLine(NSString *what) {
+    NSString *path = [kConfig stringByAppendingPathComponent:@"panel.log"];
+    NSString *line = [NSString stringWithFormat:@"%@  %@\n",
+                      [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                     dateStyle:NSDateFormatterNoStyle
+                                                     timeStyle:NSDateFormatterMediumStyle], what];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) {
+        [line writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+}
+
 // Comandi lanciati staccati: aprire una finestra ci mette secondi, e il menu deve
 // chiudersi subito invece di restare li' bloccato.
 static void runDetached(NSString *cmd) {
+    logLine(cmd);
     NSTask *t = [NSTask new];
     t.launchPath = @"/bin/sh";
     t.arguments = @[@"-c", cmd];

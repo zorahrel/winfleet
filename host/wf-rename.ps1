@@ -52,7 +52,9 @@ foreach ($l in $lines) {
     else { $out += $l }
 }
 if (-not $seen) { $out += "sunshine_name = $clean" }
-Set-Content $conf ($out -join "`r`n") -Encoding ASCII
+# UTF-8 senza BOM: in ASCII un nome con un accento diventa "Gestione attivit?" sulla
+# barra del titolo, e col BOM Sunshine scarta il file.
+[IO.File]::WriteAllText($conf, ($out -join "`r`n") + "`r`n", (New-Object Text.UTF8Encoding $false))
 
 & 'C:\winfleet\wf-inst-ctl.ps1' -Slot $Slot -Action restart | Out-Null
 

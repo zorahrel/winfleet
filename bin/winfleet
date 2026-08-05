@@ -693,6 +693,18 @@ runner_bin(){ # nome app -> binario da usare per lo stream
   [ -x "$b" ] && echo "$b" || echo "$MOONLIGHT"
 }
 
+# Ogni app ha bisogno del suo bundle, non solo quelle messe nel Dock: senza, lo stream
+# lo fa il Moonlight generico, che non riceve la libreria e quindi non ha il ritaglio
+# — e al posto della sola finestra si vede tutto lo schermo virtuale, desktop
+# compreso. Si crea alla prima apertura e resta.
+ensure_runner(){ # nome exe
+  [ -x "$RUNNERS/$1.app/Contents/MacOS/Moonlight" ] && return 0
+  local icns="$CONFIG_DIR/icons/$1.icns"
+  mkdir -p "$CONFIG_DIR/icons"
+  [ -f "$icns" ] || build_icns "$1" "$2" "$icns" || icns=""
+  build_runner "$1" "$icns" || return 1
+}
+
 # ---------------------------------------------------------------------------
 # Via la barra del titolo di macOS
 # ---------------------------------------------------------------------------
@@ -841,10 +853,15 @@ cmd_open(){
 
     slot="$(pick_slot)" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
     refresh_vdd
-    # Senza barra del titolo la finestra E' il video: niente punti da scalare. Va
-    # deciso prima di qualunque calcolo di geometria, e vale per tutto il ciclo.
+    local exe="${PICKED_EXE:-}"
+    [ -n "$exe" ] || exe="$(app_exe "$app")" || true
+    [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
     build_chrome || true
+    ensure_runner "$app" "$exe" || info "senza bundle per «${app}»: niente ritaglio"
+    # Senza barra del titolo la finestra E' il video: niente punti da scalare, e va
+    # deciso prima di ogni calcolo di geometria.
     chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
+
     key="$(printf '%s' "$app" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
     want="$(sed -n "s/^size_$key=\"\{0,1\}\([0-9]*x[0-9]*\).*/\1/p" "$CONFIG" 2>/dev/null | tail -1)"
     local cap; cap="$(usable_screen "$(stream_pid)")"
@@ -866,7 +883,11 @@ cmd_open(){
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
     [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
+    build_chrome || true
+    ensure_runner "$app" "$exe" || info "senza bundle per «${app}»: niente ritaglio"
 
+    # Senza barra del titolo la finestra E' il video: niente punti da scalare.
+    chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
     printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
       "$app" "$(( slot + 1 ))" "$HOST_NAME" "$want" "$FPS"
     ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
@@ -992,7 +1013,9 @@ cmd_apps(){
   printf "${c_bold}App sul Mac${c_off}  ${c_dim}$LAUNCHERS${c_off}\n"
   for a in "$LAUNCHERS"/*.app; do
     [ -d "$a" ] || continue
-    a="$(basename "$a" .app)"; n=$(( n + 1 ))
+    a="$(basename "$a" .app)"
+    [ "$a" = WinFleet ] && continue          # il pannello, non un'app del PC
+    n=$(( n + 1 ))
     printf "  • %s\n" "$a"
   done
   [ "$n" = 0 ] && info "nessun lanciatore creato (winfleet dock <app>)"
@@ -1026,7 +1049,11 @@ build_icns(){ # nome exe destinazione.icns
 # quindi da lui dipendono nome e icona in Dock, ⌘-Tab e barra dei menu. Su APFS
 # "cp -c" e' un clone: istantaneo e senza occupare spazio.
 build_runner(){ # nome icns|""
-  local name="$1" icns="$2" app="$RUNNERS/$name.app" pb=/usr/libexec/PlistBuddy
+  # Due righe e non una: "local a=$1 b=$a" non funziona, perche' local espande tutti
+  # i suoi argomenti PRIMA di assegnarli e $a li' dentro e' ancora vuoto. Finora
+  # reggeva solo perche' chi chiamava aveva per caso una variabile con lo stesso nome.
+  local name="$1" icns="$2" pb=/usr/libexec/PlistBuddy
+  local app="$RUNNERS/$name.app"
   [ -d "$MOONLIGHT_APP" ] || die "Moonlight non trovato in $MOONLIGHT_APP"
   rm -rf "$app"; mkdir -p "$RUNNERS"
   cp -Rc "$MOONLIGHT_APP" "$app" 2>/dev/null || cp -R "$MOONLIGHT_APP" "$app"
@@ -1060,7 +1087,8 @@ build_runner(){ # nome icns|""
 # Lanciatore da Dock/Spotlight: apre la finestra e sparisce, il resto lo fa il
 # runner. Separato apposta, così quello che resta in ⌘-Tab è uno solo.
 build_launcher(){ # nome icns|""
-  local name="$1" icns="$2" app="$LAUNCHERS/$name.app" self
+  local name="$1" icns="$2" self
+  local app="$LAUNCHERS/$name.app"
   self="$WF_SELF"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -1133,7 +1161,12 @@ cmd_dock(){
   local names=("$@")
   if [ ${#names[@]} -eq 0 ]; then
     local a
-    for a in "$LAUNCHERS"/*.app; do [ -d "$a" ] && names+=("$(basename "$a" .app)"); done
+    for a in "$LAUNCHERS"/*.app; do
+      [ -d "$a" ] || continue
+      a="$(basename "$a" .app)"
+      [ "$a" = WinFleet ] && continue        # il pannello non e' un'app del PC
+      names+=("$a")
+    done
     [ ${#names[@]} -gt 0 ] || die "Uso: winfleet dock <app> [app...]     (i nomi sono quelli di: winfleet search)"
   fi
 
@@ -1251,6 +1284,16 @@ cmd_doctor(){
   fi
   local nr=0; [ -d "$RUNNERS" ] && nr=$(find "$RUNNERS" -maxdepth 1 -name '*.app' | wc -l | tr -d ' ')
   [ "$nr" -gt 0 ] && ok "$nr app con nome e icona propri" || info "nessun lanciatore (winfleet dock <app>)"
+  if pgrep -f "WinFleet.app/Contents/MacOS/WinFleet" >/dev/null 2>&1; then
+    ok "pannello in barra dei menu"
+  else
+    info "pannello non aperto (winfleet panel)"
+  fi
+  if [ -n "$HOST_LAN" ] && [ "$(curl -s --max-time 2 "http://$HOST_LAN:$AGENT_PORT/ping" 2>/dev/null)" = ok ]; then
+    ok "agente sull'host: risponde  ${c_dim}(ridimensionamento immediato)${c_off}"
+  else
+    bad "agente sull'host non risponde: il ridimensionamento restera' indietro"
+  fi
   if [ "$CHROME" = native ]; then
     info "barra del titolo di macOS: mostrata (CHROME=native)"
   elif build_chrome && [ -f "$CHROME_LIB" ]; then

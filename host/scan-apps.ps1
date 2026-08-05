@@ -28,6 +28,13 @@ $skip = 'uninstall|disinstalla|readme|help|guida|manual|documentation|release no
         'website|sito web|licen[sz]|update|updater|crash|report|debug|safe mode|' +
         'command prompt|powershell|prompt dei comandi'
 
+# Superfici della shell, non applicazioni: non hanno una finestra da mostrare e
+# aprirle fa comparire un overlay a schermo intero (Game Bar) o l'app Giochi. In un
+# elenco di "app da aprire in una finestra" non hanno posto.
+$skipId = 'XboxGamingOverlay|Windows\.CBSPreview|InputApp|Windows\.PrintDialog|' +
+          'WindowsFeedbackHub|Microsoft\.Windows\.Cortana|Client\.CBS|ShellExperienceHost|' +
+          'Microsoft\.549981C3F5F10'   # Cortana
+
 $shell = New-Object -ComObject WScript.Shell
 $seen  = @{}
 
@@ -55,6 +62,7 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
     $id   = $_.AppID
     if (-not $name -or -not $id) { return }
     if ($name -match $skip) { return }
+    if ($id -match $skipId) { return }
     if ($id -notmatch '!') { return }
     if ($seen.ContainsKey($name)) { return }
     $seen[$name] = $true
