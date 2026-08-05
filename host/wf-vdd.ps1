@@ -252,6 +252,31 @@ try {
         $req = ''
         try { $req = (Get-Content $REQUEST -Raw -EA Stop).Trim() } catch { continue }
         Remove-Item $REQUEST -Force -EA SilentlyContinue
+
+        # Le risoluzioni aggiunte al driver le legge solo quando un monitor arriva:
+        # staccarli e riattaccarli e' l'unico modo di farle comparire, e puo' farlo
+        # solo questo processo, che e' l'unico che parla col driver.
+        if ($req -eq 'replug') {
+            Note 'riaggancio dei monitor (nuove risoluzioni)'
+            foreach ($i in $added) { [Vdd]::Remove($h, $i) }
+            # Lo stacco non e' immediato: riattaccare prima che siano spariti lascia
+            # un monitor fantasma in piu', che poi resta li' fino al riavvio.
+            for ($t = 0; $t -lt 40 -and @([Vdd]::VirtualDisplays()).Count -gt 0; $t++) {
+                Start-Sleep -Milliseconds 300
+            }
+            Start-Sleep -Milliseconds 500
+            $added = @()
+            for ($i = 0; $i -lt $Count; $i++) { $added += [Vdd]::Add($h) ; Start-Sleep -Milliseconds 300 }
+            $devices = @()
+            for ($t = 0; $t -lt 40 -and $devices.Count -lt $Count; $t++) {
+                Start-Sleep -Milliseconds 300
+                $devices = @([Vdd]::VirtualDisplays())
+            }
+            Publish-State $devices
+            Note "modalita' disponibili: $([Vdd]::Modes($devices[0]))"
+            continue
+        }
+
         if ($req -notmatch '^(\d+)\s+(\d+)x(\d+)$') { continue }
 
         $slot = [int]$Matches[1]
