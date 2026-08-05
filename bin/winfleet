@@ -24,6 +24,20 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+# Dove sta il repo, seguendo i collegamenti: il comando in ~/.local/bin e' un link,
+# e senza risolverlo si cercherebbero mac/ e host/ accanto al link invece che al
+# sorgente. (Prima era una copia, e una copia rimasta indietro fa provare per ore una
+# versione che non e' quella che stai scrivendo.)
+WF_SELF="$0"
+while [ -L "$WF_SELF" ]; do
+  WF_LINK="$(readlink "$WF_SELF")"
+  case "$WF_LINK" in
+    /*) WF_SELF="$WF_LINK" ;;
+    *)  WF_SELF="$(dirname "$WF_SELF")/$WF_LINK" ;;
+  esac
+done
+WF_ROOT="$(cd "$(dirname "$WF_SELF")/.." && pwd)"
+
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
 CONFIG="$CONFIG_DIR/config.env"
 MOONLIGHT_APP="${MOONLIGHT_APP:-/Applications/Moonlight.app}"
@@ -465,12 +479,19 @@ except Exception:
 }
 
 # Il monitor virtuale accetta solo un elenco fisso di modalita': si prende quella
-# piu' vicina alla finestra. Preferenze, in ordine: che ci stia sullo schermo del
-# Mac, che contenga la finestra, che sia vicina.
+# piu' vicina alla finestra. La piu' vicina e basta: preferire una che la CONTENGA
+# aveva senso quando lo stream veniva rinegoziato ogni volta, ora significherebbe
+# dare a Windows 1680x1050 per una finestra di 1449x905 — l'app si disporrebbe piu'
+# larga di come la si vede, cioe' testo rimpicciolito.
 #
 # Il tetto non e' un lusso. macOS non lascia crescere una finestra oltre lo schermo
 # e la tronca in silenzio: una modalita' piu' grande dello schermo verrebbe letta
 # come "l'utente ha ridimensionato", facendo ripartire il giro all'infinito.
+# Nota: il programma Python qui sotto sta dentro apici semplici, quindi NON puo'
+# contenere apostrofi — nemmeno nei commenti, o la stringa della shell si chiude a
+# meta' e Python riceve spezzoni. La penalita' sulla forma serve perche' la sessione
+# e' negoziata a un rapporto solo: se lo schermo di Windows ne prende un altro,
+# Sunshine riempie il resto di nero.
 nearest_mode(){ # slot larghezza altezza [maxLarghezza maxAltezza]
   local modes; modes="$(vdd_field "$1" modes)"
   [ -n "$modes" ] || { echo ""; return; }
@@ -482,8 +503,8 @@ best, score = None, None
 for m in os.environ["WF_MODES"].split():
     mw, mh = (int(x) for x in m.split("x"))
     s = (mw - w) ** 2 + (mh - h) ** 2
-    if mw < w or mh < h:
-        s += 4_000_000
+    if abs(mw * h - mh * w) * 100 > h * w:
+        s += 8_000_000
     if maxw and (mw > maxw or mh > maxh):
         s += 16_000_000
     if score is None or s < score:
@@ -610,7 +631,7 @@ CHROME_LIB="$CONFIG_DIR/wf-chrome.dylib"
 # lascia una finestra di tempo in cui il file c'e' ma e' mezzo scritto — chi lancia
 # uno stream in quell'istante muore prima ancora di partire.
 build_chrome(){
-  local src tmp; src="$(cd "$(dirname "$0")/../mac" 2>/dev/null && pwd)/wf-chrome.m"
+  local src tmp; src="$WF_ROOT/mac/wf-chrome.m"
   [ -f "$src" ] || return 1
   command -v clang >/dev/null 2>&1 || return 1
   [ -f "$CHROME_LIB" ] && [ "$CHROME_LIB" -nt "$src" ] && return 0
@@ -653,7 +674,8 @@ host_ps(){ ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
 cmd_push(){
   need_ssh
   local src f n=0
-  src="$(cd "$(dirname "$0")/../host" 2>/dev/null && pwd)" || die "Non trovo la cartella host/ accanto al comando."
+  src="$WF_ROOT/host"
+  [ -d "$src" ] || die "Non trovo la cartella host/ in $WF_ROOT."
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path C:\\winfleet | Out-Null\"" >/dev/null 2>&1
   for f in "$src"/*.ps1; do
@@ -960,7 +982,7 @@ build_runner(){ # nome icns|""
 # runner. Separato apposta, così quello che resta in ⌘-Tab è uno solo.
 build_launcher(){ # nome icns|""
   local name="$1" icns="$2" app="$LAUNCHERS/$name.app" self
-  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  self="$WF_SELF"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cat > "$app/Contents/Info.plist" <<PLIST

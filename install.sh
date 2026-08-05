@@ -19,7 +19,10 @@ fi
 
 echo "==> CLI winfleet → $BIN_DIR/winfleet"
 mkdir -p "$BIN_DIR"
-install -m 755 bin/winfleet "$BIN_DIR/winfleet"
+# Un collegamento, non una copia: una copia resta indietro appena si tocca il
+# sorgente, e ci si ritrova a provare per ore una versione che non e' quella che si
+# sta scrivendo. Il comando risolve il link da solo per ritrovare host/ e mac/.
+ln -sfn "$(pwd)/bin/winfleet" "$BIN_DIR/winfleet"
 
 echo
 echo "Fatto."
