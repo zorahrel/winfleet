@@ -33,3 +33,19 @@ Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $prin
 
 Write-Host "Task 'winfleet-vdd' registrato: $Slots monitor virtuali" -ForegroundColor Green
 Write-Host "Avvia con:  schtasks /run /tn winfleet-vdd     (stato in C:\winfleet\vdd.json)"
+
+# --- agente per il ridimensionamento ------------------------------------------
+# Sta nella sessione interattiva perche' deve toccare finestre, e risponde in
+# millisecondi: e' la differenza fra un ridimensionamento che segue il trascinamento
+# e uno che arriva mezzo secondo dopo.
+$agentAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-agent.ps1'
+# Elevato: mettersi in ascolto su una porta per tutte le interfacce e' un privilegio,
+# e senza si otterrebbe un rifiuto di accesso invece di un errore comprensibile.
+$agentPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName 'winfleet-agent' -Action $agentAction -Principal $agentPrincipal `
+    -Settings $settings -Force | Out-Null
+Remove-NetFirewallRule -DisplayName 'WinFleet agent' -EA SilentlyContinue
+New-NetFirewallRule -DisplayName 'WinFleet agent' -Direction Inbound -Action Allow -Protocol TCP `
+    -LocalPort 48088 -RemoteAddress @('192.168.0.0/16','100.64.0.0/10') | Out-Null
+Write-Host "Agente registrato (winfleet-agent, porta 48088)." -ForegroundColor Green

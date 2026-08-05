@@ -134,6 +134,10 @@ if ($h -eq [IntPtr]::Zero) { Note 'nessuna finestra comparsa'; return }
 $appPid = 0
 [P]::GetWindowThreadProcessId($h, [ref]$appPid) | Out-Null
 Set-Content "C:\winfleet\pid$Slot.txt" $appPid
+# L'handle serve all'agente, che e' quello che risponde alle richieste di
+# ridimensionamento: qui la finestra la si trova e la si tiene, la geometria la muove
+# lui perche' deve poter rispondere in millisecondi.
+Set-Content "C:\winfleet\hwnd$Slot.txt" ([int64]$h)
 Note "finestra $h (pid $appPid)"
 
 # Via il frame: sul Mac la finestra e' gia' una finestra, quella di Windows dentro
@@ -150,7 +154,7 @@ $lastW = -1; $lastH = -1; $lastH2 = [IntPtr]::Zero
 while ($true) {
     if (-not [P]::IsWindow($h) -or -not [P]::IsWindowVisible($h)) {
         $h2 = [P]::FindNew($before.ToArray())          # splash -> finestra vera
-        if ($h2 -ne [IntPtr]::Zero) { $h = $h2; $gone = 0 }
+        if ($h2 -ne [IntPtr]::Zero) { $h = $h2; $gone = 0; Set-Content "C:\winfleet\hwnd$Slot.txt" ([int64]$h) }
         # Conta il TEMPO, non i giri: il ciclo gira dieci volte al secondo per
         # seguire i ridimensionamenti, e tre giri sarebbero tre decimi — meno di
         # quanto ci mette un'app a sostituire la sua finestra di avvio con quella
@@ -188,3 +192,4 @@ while ($true) {
 }
 Note 'finestra chiusa'
 Remove-Item "C:\winfleet\pid$Slot.txt" -Force -EA SilentlyContinue
+Remove-Item "C:\winfleet\hwnd$Slot.txt" -Force -EA SilentlyContinue

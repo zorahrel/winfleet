@@ -60,6 +60,7 @@ HOST_RES=""         # risoluzione desktop dell'host, rilevata al primo stream
 HOST_NAME=""        # nome mDNS dell'host (es. WindowsAtti.local): indirizza le istanze per porta
 SLOTS=0             # quante istanze WinFleet (monitor virtuali) ci sono sull'host
 SLOT_BASE=48089     # porta della prima istanza; le successive +100
+AGENT_PORT=48088    # agente sull'host: ridimensiona la finestra dell'app e conferma
 SUN_PORT=47990
 TITLEBAR=28         # altezza barra titolo macOS, esclusa dall'area video
 
@@ -314,29 +315,47 @@ trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"
 # Il rettangolo lo scrive la libreria dentro il processo a ogni evento di
 # ridimensionamento, quindi segue il trascinamento senza ritardo; qui si manda a
 # Windows la misura nuova appena la finestra si ferma per un istante.
-follow_resize(){ # pid slot misura-iniziale
-  local pid="$1" slot="$2" cur last="" sent="$3"
+follow_resize(){ # pid slot misura-iniziale file-ritaglio
+  local pid="$1" slot="$2" sent="$3" cropf="$4" cur cw ch got aw ah
+  aw="${3%x*}"; ah="${3#*x}"
   trace "segui: slot=$slot misura iniziale=$sent"
-  rect_set "$slot" "${sent%x*}" "${sent#*x}"
+  got="$(rect_set "$slot" "$aw" "$ah")"
+  case "$got" in "ok "*) aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')";; esac
+  printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
+
   while kill -0 "$pid" 2>/dev/null; do
     cur="$(win_size "$pid")"
-    if [ -n "$cur" ] && [ "$cur" = "$last" ] && [ "$cur" != "$sent" ]; then
-      rect_set "$slot" "${cur%x*}" "${cur#*x}"
+    if [ -n "$cur" ] && [ "$cur" != "$sent" ]; then
+      cw="${cur%x*}"; ch="${cur#*x}"
+
+      # Rimpicciolire e' sempre sicuro: si mostra meno di quello che c'e' gia'. Si fa
+      # subito, cosi' il ritaglio non resta indietro rispetto alla finestra.
+      if [ "$cw" -le "$aw" ] && [ "$ch" -le "$ah" ]; then
+        printf '0 0 %s %s\n' "$cw" "$ch" >"$cropf"
+      fi
+
+      # Allargare no: finche' la finestra su Windows non e' cresciuta davvero, dietro
+      # c'e' il desktop, e allargare il ritaglio prima lo mostrerebbe. Si aspetta la
+      # conferma, che dice anche quanto e' stata fatta grande per davvero — un'app con
+      # una misura minima propria non arriva dove le si chiede.
+      got="$(rect_set "$slot" "$cw" "$ch")"
+      case "$got" in
+        "ok "*)
+          aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')"
+          printf '0 0 %s %s\n' "$(( cw < aw ? cw : aw ))" "$(( ch < ah ? ch : ah ))" >"$cropf"
+          ;;
+      esac
       sent="$cur"
-      # Cosi' "winfleet windows" dice quanto e' grande adesso, non quanto era
-      # quando si e' aperta.
       sed -i '' "s/^mode=.*/mode=$cur/" "$(slot_file "$slot")" 2>/dev/null || true
-      trace "segui: finestra $cur → finestra Windows $cur"
     fi
-    last="$cur"
-    sleep 0.1
+    sleep 0.03
   done
   echo ""
 }
 
 supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-finestra
   local slot="$1" app="$2" smode="$3" key="$4" exe="$5" wsize="$6"
-  local addr pid br want i bin
+  local addr pid br want i bin cropf="$CONFIG_DIR/slot$1.crop"
   # smode = risoluzione con cui si negozia la sessione, e massimo che lo schermo
   #         virtuale potra' prendere. Non cambia mai finche' la finestra vive.
   # wsize = quanto grande sta la finestra sul Mac. Puo' essere piu' piccola: lo
@@ -370,7 +389,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
       # schermo virtuale, quindi coincide con la misura della finestra. Lo scrive la
       # libreria a ogni evento di ridimensionamento, cosi' segue il trascinamento
       # senza ritardo; il Moonlight di fork/ lo rilegge quando cambia.
-      local cropf="$CONFIG_DIR/slot$slot.crop"
+      cropf="$CONFIG_DIR/slot$slot.crop"
       printf '0 0 %s %s\n' "${wsize%x*}" "${wsize#*x}" >"$cropf"
       pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
             "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" )
@@ -417,7 +436,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     fi
     trace "aperta: stream=$smode finestra=$(win_size "$pid") (chiesta $wsize)"
 
-    want="$(follow_resize "$pid" "$slot" "$wsize")"
+    want="$(follow_resize "$pid" "$slot" "$wsize" "$cropf")"
     # La misura si legge finche' la finestra c'e' ancora: serve a riaprirla domani
     # come l'ha lasciata l'utente.
     local seen; seen="$(win_size "$pid")"
@@ -598,11 +617,27 @@ rename_instance(){ # slot nome
 # canale persistente con una pipe sarebbe stato piu' rapido, ma consegnava a
 # singhiozzo senza dire perche' — e la parte che deve essere immediata (il ritaglio)
 # non passa di qui: la scrive la libreria dentro il processo.
-rect_set(){ # slot larghezza altezza
-  need_ssh
-  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"'$2 $3' | Set-Content C:\\winfleet\\rect$1.txt\"" >/dev/null 2>&1 &
+# L'indirizzo dell'agente si risolve UNA volta. Passare dal nome mDNS a ogni
+# richiesta costa 230 ms contro i 19 dell'indirizzo numerico: era li' quasi tutta la
+# latenza che si sentiva addosso al ridimensionamento.
+agent_host(){
+  if [ -n "${AGENT_HOST:-}" ]; then echo "$AGENT_HOST"; return; fi
+  local h=""
+  if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$AGENT_PORT" 1; then
+    h="$HOST_LAN"
+  elif [ -n "$HOST_NAME" ]; then
+    h="$(dscacheutil -q host -a name "${HOST_NAME%.local}.local" 2>/dev/null | awk '/^ip_address/{print $2; exit}')"
+    [ -n "$h" ] || h="$HOST_NAME"
+  fi
+  [ -n "$h" ] || h="$HOST_TS"
+  AGENT_HOST="$h"
+  echo "$h"
 }
+
+rect_set(){ # slot larghezza altezza -> stampa la misura DAVVERO applicata
+  curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/rect?slot=$1&w=$2&h=$3" 2>/dev/null
+}
+
 
 vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
