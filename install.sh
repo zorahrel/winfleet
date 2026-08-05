@@ -29,7 +29,10 @@ case ":$PATH:" in
 esac
 echo
 echo "Prossimi passi:"
-echo "  1) Sul PC Windows (admin):  host\\setup.ps1 -WebPass '<password>'"
-echo "  2) Sul Mac:                 winfleet setup    (inserisci gli indirizzi)"
-echo "  3)                          winfleet pair     (accoppia una volta)"
-echo "  4)                          winfleet open Desktop"
+echo "  1) Sul Mac:                 winfleet setup   (indirizzi, nome mDNS, SSH)"
+echo "  2)                          winfleet push    (script → C:\\winfleet sul PC)"
+echo "  3) Sul PC Windows (admin):  setup.ps1 -WebPass '<password>'"
+echo "                              setup-vdd.ps1 -Slots 2"
+echo "                              wf-instance.ps1 -Slot 0   (e -Slot 1)"
+echo "  4) Accoppia ogni finestra dalla GUI di Moonlight, poi:  winfleet scan"
+echo "  5)                          winfleet search telegram"
