@@ -378,6 +378,23 @@ supervise_window(){ # slot app modalita chiave exe
       --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
       >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
     pid=$!
+    # Se la libreria iniettata non e' caricabile dyld ammazza il processo subito,
+    # prima di eseguire una riga: meglio accorgersene e riprovare senza, con la barra
+    # del titolo al suo posto, che lasciare l'utente davanti a una finestra che non
+    # si apre mai.
+    if [ -n "$owned" ]; then
+      sleep 2
+      if ! kill -0 "$pid" 2>/dev/null; then
+        trace "avvio fallito con la libreria: riprovo senza"
+        owned=""; pre=()
+        ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
+          --fps "$FPS" --bitrate "$br" \
+          --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
+          >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
+        pid=$!
+        TITLEBAR=28
+      fi
+    fi
     slot_save "$slot" "$app" "$mode" "$pid" "$(self_pid)"
     for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
     # Prima finestra della vita: e' l'unica occasione per sapere quanto grande la
@@ -601,6 +618,12 @@ slot_live(){ # slot -> 0 se la finestra e' viva
 
 slot_forget(){ rm -f "$(slot_file "$1")"; }
 
+raise_window(){ # pid
+  [ -n "${1:-}" ] || return 0
+  osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $1) to true" \
+    >/dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------------------
 # Bundle per app (Dock, ⌘-Tab, menu)
 # ---------------------------------------------------------------------------
@@ -627,13 +650,19 @@ runner_bin(){ # nome app -> binario da usare per lo stream
 CHROME="${CHROME:-hidden}"   # "native" per riavere la barra del Mac
 CHROME_LIB="$CONFIG_DIR/wf-chrome.dylib"
 
+# Si compila di lato e si sposta a posto solo alla fine: dyld ammazza il processo
+# senza appello se la libreria da iniettare non e' caricabile, e compilare sul posto
+# lascia una finestra di tempo in cui il file c'e' ma e' mezzo scritto — chi lancia
+# uno stream in quell'istante muore prima ancora di partire.
 build_chrome(){
-  local src; src="$(cd "$(dirname "$0")/../mac" 2>/dev/null && pwd)/wf-chrome.m"
+  local src tmp; src="$(cd "$(dirname "$0")/../mac" 2>/dev/null && pwd)/wf-chrome.m"
   [ -f "$src" ] || return 1
   command -v clang >/dev/null 2>&1 || return 1
   [ -f "$CHROME_LIB" ] && [ "$CHROME_LIB" -nt "$src" ] && return 0
-  clang -dynamiclib -framework Cocoa -o "$CHROME_LIB" "$src" >/dev/null 2>&1 || return 1
-  codesign --force -s - "$CHROME_LIB" >/dev/null 2>&1 || true
+  tmp="$CHROME_LIB.new.$$"
+  clang -dynamiclib -framework Cocoa -o "$tmp" "$src" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  codesign --force -s - "$tmp" >/dev/null 2>&1 || true
+  mv -f "$tmp" "$CHROME_LIB"
 }
 
 # L'iniezione vale solo per i bundle per app: sull'originale in /Applications non
@@ -734,6 +763,20 @@ cmd_open(){
   # insieme, e ridimensionarle cambia davvero la risoluzione lato Windows.
   if [ "${SLOTS:-0}" -gt 0 ] && [ -n "$HOST_NAME" ] && [ "$app" != "Desktop" ]; then
     local slot key want mode
+    # Un'app gia' aperta si porta davanti, non si apre due volte. Senza questo, ogni
+    # click sull'icona nel Dock lascia un secondo sorvegliante che si contende lo
+    # stesso schermo: le due sessioni si buttano giu' a vicenda e da fuori sembra che
+    # la finestra crashi in continuazione.
+    local j
+    for j in $(seq 0 $(( SLOTS - 1 ))); do
+      if slot_live "$j" && [ "$(slot_get "$j" app)" = "$app" ]; then
+        raise_window "$(slot_get "$j" pid)"
+        # «${app}» e non «$app»: bash si mangia i byte di » dentro il nome.
+        info "«${app}» è già aperta nella finestra $(( j + 1 ))"
+        return
+      fi
+    done
+
     slot="$(pick_slot)" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
     refresh_vdd
     # Senza barra del titolo la finestra E' il video: niente punti da scalare. Va
@@ -991,7 +1034,7 @@ cmd_dock(){
   local name exe icns
   for name in "${names[@]}"; do
     exe="$(app_exe "$name")" || true
-    [ -n "$exe" ] || { bad "«$name» non è tra le app dell'host (winfleet scan)"; continue; }
+    [ -n "$exe" ] || { bad "«${name}» non è tra le app dell'host (winfleet scan)"; continue; }
     icns="$CONFIG_DIR/icons/$name.icns"
     if build_icns "$name" "$exe" "$icns"; then :; else icns=""; info "$name: icona non recuperata, resta quella di Moonlight"; fi
     build_runner "$name" "$icns"
