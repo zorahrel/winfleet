@@ -5,15 +5,17 @@
 # desktop del PC Windows come FINESTRE native macOS, ridimensionabili, fluide,
 # riusando la sessione già attiva sul PC (nessun login RDP).
 #
-#   winfleet open <app>        apre l'app/desktop in una finestra sul Mac
+#   winfleet open <app>        apre l'app in una finestra sul Mac
 #   winfleet search <testo>    cerca un'app installata sul PC e la apre
-#   winfleet windows           stato delle finestre (istanze) e quali sono libere
+#   winfleet windows           quali finestre sono aperte e su cosa
 #   winfleet scan              rilegge l'elenco delle app installate sul PC
-#   winfleet fit               riporta la finestra alle proporzioni dello stream
-#   winfleet stop              chiude la sessione (graceful)
-#   winfleet list              app disponibili sull'host
-#   winfleet apps              app configurate localmente (catalogo)
-#   winfleet dock [app...]     genera i wrapper .app per il Dock
+#   winfleet push              carica gli script host sul PC (C:\winfleet)
+#   winfleet fit               riporta le finestre a filo dei pixel che ricevono
+#   winfleet stop [n]          chiude una finestra, o tutte
+#   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
+#   winfleet apps              lanciatori creati
+#   winfleet list              app pubblicate dall'host
+#   winfleet clean             toglie da Moonlight gli host che non rispondono più
 #   winfleet pair              accoppia Moonlight con l'host (una tantum)
 #   winfleet doctor            diagnostica
 #   winfleet endpoint          mostra quale indirizzo verrebbe usato (LAN/Tailscale)
@@ -24,7 +26,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
 CONFIG="$CONFIG_DIR/config.env"
-MOONLIGHT="${MOONLIGHT_BIN:-/Applications/Moonlight.app/Contents/MacOS/Moonlight}"
+MOONLIGHT_APP="${MOONLIGHT_APP:-/Applications/Moonlight.app}"
+MOONLIGHT="${MOONLIGHT_BIN:-$MOONLIGHT_APP/Contents/MacOS/Moonlight}"
 
 # Defaults, sovrascrivibili da config.env
 HOST_TS=""          # indirizzo Tailscale (sempre raggiungibile)
@@ -123,22 +126,22 @@ win_fix(){ # pid larghezza altezza
   # Il processo va indirizzato con "tell (first process whose unix id is N)":
   # assegnarlo a una variabile e usare "windows of p" fa risolvere il filtro per
   # indice, e con due processi Moonlight si finisce sulla finestra sbagliata.
+  local cap; cap="$(usable_screen)"
   osascript >/dev/null 2>&1 <<EOF
 set tb to $TITLEBAR
 set ar to ($2 / $3)
-tell application "Finder" to set sb to bounds of window of desktop
-set scrW to item 3 of sb
-set scrH to item 4 of sb
+set scrW to ${cap%x*}
+set scrH to $(( ${cap#*x} + TITLEBAR ))
 try
   tell application "System Events" to tell (first process whose unix id is $1)
     if (count of windows) is 0 then return
     set sz to size of item 1 of windows
     set pos to position of item 1 of windows
     set ww to item 1 of sz
-    if ww > (scrW - 40) then set ww to scrW - 40
+    if ww > scrW then set ww to scrW
     set hh to round (ww / ar) rounding as taught in school
-    if hh > (scrH - 120) then
-      set hh to scrH - 120
+    if hh > (scrH - tb) then
+      set hh to scrH - tb
       set ww to round (hh * ar) rounding as taught in school
     end if
     if (item 1 of sz) is not ww or (item 2 of sz) is not (hh + tb) then
@@ -146,10 +149,10 @@ try
     end if
     set px to item 1 of pos
     set py to item 2 of pos
-    if px < 0 then set px to 20
-    if py < 30 then set py to 40
-    if (px + ww) > scrW then set px to (scrW - ww - 20)
-    if (py + hh + tb) > scrH then set py to (scrH - hh - tb - 20)
+    if px < 0 then set px to 0
+    if py < 0 then set py to 0
+    if (px + ww) > scrW then set px to (scrW - ww)
+    if (py + hh + tb) > scrH then set py to (scrH - hh - tb)
     if px is not (item 1 of pos) or py is not (item 2 of pos) then
       set position of item 1 of windows to {px, py}
     end if
@@ -162,10 +165,14 @@ EOF
 
 # L'istanza GUI di Moonlight (l'elenco "Computers") resta aperta dietro allo
 # stream: nasconderla lascia sullo schermo solo la finestra dell'app.
-hide_gui(){ # pid dello stream
+# Si nascondono solo i Moonlight che NON stanno trasmettendo: l'eseguibile dentro
+# ogni bundle per app si chiama Moonlight come l'originale, quindi cercare per nome
+# farebbe sparire le finestre delle altre app.
+hide_gui(){ # pid dello stream da lasciare visibile
   local g
-  for g in $(pgrep -x Moonlight 2>/dev/null; pgrep -f "Moonlight$" 2>/dev/null); do
+  for g in $(pgrep -x Moonlight 2>/dev/null); do
     [ "$g" = "$1" ] && continue
+    ps -p "$g" -o args= 2>/dev/null | grep -q " stream " && continue
     osascript -e "tell application \"System Events\" to set visible of (first process whose unix id is $g) to false" >/dev/null 2>&1 || true
   done
 }
@@ -191,29 +198,30 @@ end try
 EOF
 }
 
-# macOS non lascia crescere una finestra oltre il bordo dello schermo: se resta dov'e'
-# la larghezza viene troncata in silenzio. Quindi prima si sposta, poi si dimensiona.
+# macOS non lascia crescere una finestra oltre il bordo dello schermo e la tronca in
+# silenzio, quindi prima si sposta e poi si dimensiona. Il metro e' la misura vera
+# presa con una finestra in mano: il rettangolo del desktop di Finder e' l'unione di
+# tutti gli schermi, e con due monitor promette spazio che una finestra non ha.
 win_set(){ # pid larghezza altezza
+  local cap scrW scrH
+  cap="$(usable_screen)"
+  scrW="${cap%x*}"; scrH=$(( ${cap#*x} + TITLEBAR ))
   osascript >/dev/null 2>&1 <<EOF
-tell application "Finder" to set sb to bounds of window of desktop
-set scrW to item 3 of sb
-set scrH to item 4 of sb
 try
   tell application "System Events" to tell (first process whose unix id is $1)
     if (count of windows) is 0 then return
     set pos to position of item 1 of windows
     set px to item 1 of pos
     set py to item 2 of pos
-    if px < 0 or (px + $2) > scrW then set px to 20
-    if py < 30 or (py + $3 + $TITLEBAR) > scrH then set py to 40
+    if px < 0 or (px + $2) > $scrW then set px to 0
+    if py < 0 or (py + $3 + $TITLEBAR) > $scrH then set py to 0
     set position of item 1 of windows to {px, py}
     set size of item 1 of windows to {$2, $3 + $TITLEBAR}
-    -- Con piu' schermi il rettangolo del desktop e' l'unione, quindi il calcolo
-    -- sopra puo' sbagliare e macOS tronca la larghezza: se e' successo, si riprova
-    -- dall'angolo.
+    -- Se e' stata troncata lo stesso, si riprova dall'angolo: la misura di
+    -- riferimento e' stata presa li', quindi li' lo spazio c'e' di sicuro.
     set got to size of item 1 of windows
-    if (item 1 of got) is not $2 then
-      set position of item 1 of windows to {20, 40}
+    if (item 1 of got) is not $2 or (item 2 of got) is not ($3 + $TITLEBAR) then
+      set position of item 1 of windows to {0, 0}
       set size of item 1 of windows to {$2, $3 + $TITLEBAR}
     end if
   end tell
@@ -221,47 +229,56 @@ end try
 EOF
 }
 
-# Quanto puo' essere grande una finestra su questo Mac, in punti. Il rettangolo del
-# desktop di Finder e' l'unione di tutti gli schermi e su piu' monitor mente, quindi
-# si misura sul serio: si chiede una finestra enorme e si guarda cosa concede macOS.
-screen_size(){ # pid di una finestra gia' aperta (opzionale)
-  local got=""
-  if [ -n "${1:-}" ]; then
-    got="$(osascript 2>/dev/null <<EOF
+# Quanto puo' essere grande una finestra su questo Mac, in punti: si chiede una
+# finestra enorme e si guarda cosa concede macOS. Vuoto se non c'e' una finestra
+# con cui misurare.
+screen_measure(){ # pid di una finestra gia' aperta
+  [ -n "${1:-}" ] || { echo ""; return; }
+  osascript 2>/dev/null <<EOF
 try
   tell application "System Events" to tell (first process whose unix id is $1)
     if (count of windows) is 0 then return ""
     set old to size of item 1 of windows
+    set oldPos to position of item 1 of windows
     set position of item 1 of windows to {0, 0}
     set size of item 1 of windows to {99999, 99999}
     set big to size of item 1 of windows
     set size of item 1 of windows to old
+    set position of item 1 of windows to oldPos
     return (((item 1 of big) as integer) as text) & "x" & (((item 2 of big) as integer) as text)
   end tell
 on error
   return ""
 end try
 EOF
-)"
-  fi
-  if [ -z "$got" ]; then
-    got="$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null |
-      awk -F', *' '{printf "%dx%d", $3, $4}')"
-  fi
-  echo "$got"
+}
+
+# Ripiego quando non c'e' nessuna finestra da misurare. Il rettangolo del desktop di
+# Finder e' l'unione di tutti gli schermi, quindi con piu' monitor e' piu' grande di
+# quanto una finestra possa diventare: va bene per partire, non per essere salvato.
+screen_guess(){
+  osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null |
+    awk -F', *' '{printf "%dx%d", $3, $4}'
 }
 
 # Aspetta che il ridimensionamento si fermi e restituisce la modalita' da adottare;
 # vuoto se lo stream e' finito. Ridimensionare la finestra sul Mac deve cambiare
 # davvero la risoluzione dello schermo su Windows, non scalare l'immagine.
+# WINFLEET_TRACE=1 registra cosa vede il sorvegliante: e' l'unico modo di capire
+# perche' una finestra "si ridimensiona da sola" senza starle davanti a guardarla.
+trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"$CONFIG_DIR/trace.log" || true; }
+
 watch_resize(){ # pid slot modalita-corrente
-  local pid="$1" slot="$2" mode="$3" cur last="" stable=0 m
+  local pid="$1" slot="$2" mode="$3" cur last="" stable=0 m cap
+  cap="$(usable_screen)"
+  trace "watch: slot=$slot mode=$mode tetto=$cap"
   while kill -0 "$pid" 2>/dev/null; do
     cur="$(win_size "$pid")"
     if [ -n "$cur" ] && [ "$cur" != "$mode" ] && [ "$cur" = "$last" ]; then
       stable=$(( stable + 1 ))
-      if [ "$stable" -ge 2 ]; then
-        m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}")"
+      if [ "$stable" -ge 3 ]; then
+        m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}" "${cap%x*}" "${cap#*x}")"
+        trace "watch: finestra $cur ferma → modalita' $m (era $mode)"
         if [ -n "$m" ] && [ "$m" != "$mode" ]; then echo "$m"; return 0; fi
         win_set "$pid" "${mode%x*}" "${mode#*x}"   # nessuna modalita' piu' vicina: si torna a filo
         stable=0
@@ -279,20 +296,41 @@ watch_resize(){ # pid slot modalita-corrente
 # risoluzione del monitor virtuale e riapre. La app resta viva fra un giro e l'altro
 # (auto-detach lato host), quindi si ritrova solo ridimensionata.
 supervise_window(){ # slot app modalita chiave exe
-  local slot="$1" app="$2" mode="$3" key="$4" exe="$5" addr pid br want i
+  local slot="$1" app="$2" mode="$3" key="$4" exe="$5" addr pid br want i bin
   addr="$(slot_addr "$slot")"
+  bin="$(runner_bin "$app")"
+  # Prima dello stream, cosi' il client legge il nome nuovo al primo poll e la
+  # finestra nasce gia' intitolata all'app.
+  rename_instance "$slot" "$app"
   while true; do
     vdd_set "$slot" "$mode"
     sleep 2
     place_app "$slot" "$exe"
     br="$(stream_bitrate "$mode")"
-    "$MOONLIGHT" stream "$addr" Desktop --display-mode windowed --fps "$FPS" --bitrate "$br" \
+    "$bin" stream "$addr" Desktop --display-mode windowed --fps "$FPS" --bitrate "$br" \
       --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
       >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
     pid=$!
+    slot_save "$slot" "$app" "$mode" "$pid" "$(self_pid)"
     for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
-    win_set "$pid" "${mode%x*}" "${mode#*x}"
+    # Prima finestra della vita: e' l'unica occasione per sapere quanto grande la
+    # puo' fare macOS davvero. Da qui in poi il dato e' in config.
+    usable_screen "$pid" >/dev/null
     hide_gui "$pid"
+    # Moonlight ridimensiona la finestra da solo mentre negozia lo stream: guardarla
+    # subito significa scambiare quel transitorio per un ridimensionamento voluto, e
+    # inseguirlo scendendo di modalita' a ogni giro. Prima la si porta a misura e la
+    # si aspetta ferma, poi si comincia a sorvegliarla.
+    # Moonlight decide da solo la dimensione della finestra, e non una volta: se lo
+    # stream non entra nei limiti dello schermo che SDL crede attivo, la rifa'
+    # all'80% — anche secondi dopo averla aperta giusta, quando la finestra passa
+    # allo schermo definitivo. Per un po' quindi la si rimette a misura ogni volta
+    # che se ne allontana; poi Moonlight smette e si puo' cominciare a sorvegliarla.
+    for i in $(seq 1 20); do
+      [ "$(win_size "$pid")" = "$mode" ] || win_set "$pid" "${mode%x*}" "${mode#*x}"
+      sleep 0.5
+    done
+    trace "aperta: mode=$mode finestra=$(win_size "$pid")"
 
     want="$(watch_resize "$pid" "$slot" "$mode")"
     kill "$pid" 2>/dev/null
@@ -303,12 +341,27 @@ supervise_window(){ # slot app modalita chiave exe
     refresh_vdd
   done
   place_stop "$slot"
+  slot_forget "$slot"
 }
 
+# Riporta ogni finestra a filo dei pixel che sta ricevendo: nessun riscalo, nessuna
+# banda. Con le istanze a monitor virtuale la misura giusta e' la modalita' dello
+# schermo di quella finestra, non la risoluzione del desktop dell'host.
 cmd_fit(){
-  local res pid; res="$(stream_res)"; pid="$(stream_pid)"
+  local i pid mode done=0
+  for i in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do
+    slot_live "$i" || continue
+    pid="$(slot_get "$i" pid)"; mode="$(slot_get "$i" mode)"
+    [ -n "$pid" ] && [ -n "$mode" ] || continue
+    win_set "$pid" "${mode%x*}" "${mode#*x}"
+    ok "$(slot_get "$i" app): $mode"
+    done=1
+  done
+  [ "$done" = 1 ] && return
+
+  local res; res="$(stream_res)"; pid="$(stream_pid)"
   [ -n "$res" ] || res="$(detect_host_res)" || die "Risoluzione sconosciuta: avvia uno stream una volta."
-  [ -n "$pid" ] || die "Nessuno stream aperto."
+  [ -n "$pid" ] || die "Nessuna finestra aperta."
   win_fix "$pid" "${res%x*}" "${res#*x}"
   ok "finestra riportata alle proporzioni ${res%x*}:${res#*x}"
 }
@@ -330,9 +383,13 @@ slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
     | tr '<' '\n' | awk -F'>' '/^state/{print $2}'
 }
 
+# L'host dichiara la finestra occupata solo quando lo stream e' partito, e fra
+# l'apertura e quel momento passano secondi: senza la prenotazione locale due app
+# aperte di fila finiscono sulla stessa finestra.
 pick_slot(){
   local i
   for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" && continue
     case "$(slot_state "$i")" in *FREE*) echo "$i"; return 0;; esac
   done
   return 1
@@ -359,23 +416,47 @@ except Exception:
 }
 
 # Il monitor virtuale accetta solo un elenco fisso di modalita': si prende quella
-# piu' vicina alla finestra, preferendo una che la contenga.
-nearest_mode(){ # slot larghezza altezza
+# piu' vicina alla finestra. Preferenze, in ordine: che ci stia sullo schermo del
+# Mac, che contenga la finestra, che sia vicina.
+#
+# Il tetto non e' un lusso. macOS non lascia crescere una finestra oltre lo schermo
+# e la tronca in silenzio: una modalita' piu' grande dello schermo verrebbe letta
+# come "l'utente ha ridimensionato", facendo ripartire il giro all'infinito.
+nearest_mode(){ # slot larghezza altezza [maxLarghezza maxAltezza]
   local modes; modes="$(vdd_field "$1" modes)"
   [ -n "$modes" ] || { echo ""; return; }
-  WF_MODES="$modes" WF_W="$2" WF_H="$3" python3 -c '
+  WF_MODES="$modes" WF_W="$2" WF_H="$3" WF_MAXW="${4:-0}" WF_MAXH="${5:-0}" python3 -c '
 import os
 w, h = int(os.environ["WF_W"]), int(os.environ["WF_H"])
+maxw, maxh = int(os.environ["WF_MAXW"]), int(os.environ["WF_MAXH"])
 best, score = None, None
 for m in os.environ["WF_MODES"].split():
     mw, mh = (int(x) for x in m.split("x"))
     s = (mw - w) ** 2 + (mh - h) ** 2
     if mw < w or mh < h:
-        s += 4000000
+        s += 4_000_000
+    if maxw and (mw > maxw or mh > maxh):
+        s += 16_000_000
     if score is None or s < score:
         best, score = m, s
 print(best or "")
 '
+}
+
+# Quanto puo' essere grande l'area video di una finestra su questo Mac, in punti.
+# La misura vera la si puo' fare solo con una finestra in mano, quindi la prima
+# volta che ce n'e' una la si registra e da li' in poi si riusa.
+usable_screen(){ # [pid con cui misurare, se ancora non si sa]
+  local s="${SCREEN:-}"
+  # Misurare disturba la finestra (la si gonfia e la si rimette a posto), quindi
+  # lo si fa una volta sola: il risultato vale per tutte le aperture successive.
+  if [ -z "$s" ] && [ -n "${1:-}" ]; then
+    s="$(screen_measure "$1")"
+    [ -n "$s" ] && { save_cfg SCREEN "$s"; SCREEN="$s"; }
+  fi
+  [ -n "$s" ] || s="$(screen_guess)"
+  [ -n "$s" ] || { echo ""; return; }
+  echo "${s%x*}x$(( ${s#*x} - TITLEBAR ))"
 }
 
 # Sunshine non lancia l'app: per aprire una finestra nella sessione interattiva
@@ -404,6 +485,59 @@ vdd_set(){ # slot LARGHEZZAxALTEZZA
     "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1
 }
 
+# Su macOS Moonlight intitola la finestra col nome dell'host, e basta quello
+# (session.cpp). Il nome lo rilegge dal serverinfo a ogni poll, quindi chiamare
+# l'istanza come l'app fa comparire "Telegram" sulla barra del titolo invece del
+# nome di un'istanza di streaming.
+rename_instance(){ # slot nome
+  need_ssh
+  local b64; b64="$(printf '%s' "$2" | base64 | tr -d '\n')"
+  ssh -o BatchMode=yes -o ConnectTimeout=40 "$HOST_SSH" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-rename.ps1 -Slot $1 -NameB64 $b64" \
+    >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Stato delle finestre aperte
+# ---------------------------------------------------------------------------
+# Una finestra aperta e' un ciclo di supervisione con dentro uno stream: il file
+# tiene insieme i due pid piu' cosa sta mostrando, cosi' "windows", "fit" e "stop"
+# parlano della finestra e non del processo.
+slot_file(){ echo "$CONFIG_DIR/slot$1.state"; }
+
+# Pid della shell corrente anche dentro una sottoshell, dove $$ resta quello del
+# padre. BASHPID lo direbbe, ma non esiste sul bash 3.2 di serie su macOS.
+self_pid(){ exec sh -c 'echo $PPID'; }
+
+slot_save(){ # slot app modalita pid-stream pid-supervisore
+  printf 'app=%s\nmode=%s\npid=%s\nsup=%s\n' "$2" "$3" "$4" "$5" >"$(slot_file "$1")"
+}
+
+slot_get(){ # slot campo
+  sed -n "s/^$2=//p" "$(slot_file "$1")" 2>/dev/null | tail -1
+}
+
+slot_live(){ # slot -> 0 se la finestra e' viva
+  local sup; sup="$(slot_get "$1" sup)"
+  [ -n "$sup" ] && kill -0 "$sup" 2>/dev/null
+}
+
+slot_forget(){ rm -f "$(slot_file "$1")"; }
+
+# ---------------------------------------------------------------------------
+# Bundle per app (Dock, ⌘-Tab, menu)
+# ---------------------------------------------------------------------------
+# Lo stream lo disegna Moonlight, quindi Dock, ⌘-Tab e barra dei menu portano il
+# suo nome e la sua icona. Una copia di Moonlight.app intestata all'app risolve:
+# stesso binario, identita' diversa. Su APFS la copia e' un clone, cioe' istantanea
+# e senza occupare spazio.
+RUNNERS="$CONFIG_DIR/runners"
+
+runner_bin(){ # nome app -> binario da usare per lo stream
+  local b="$RUNNERS/$1.app/Contents/MacOS/Moonlight"
+  [ -x "$b" ] && echo "$b" || echo "$MOONLIGHT"
+}
+
 # ---------------------------------------------------------------------------
 # Catalogo delle app installate sull'host
 # ---------------------------------------------------------------------------
@@ -417,33 +551,37 @@ Aggiungi a $CONFIG:   HOST_SSH=\"utente@indirizzo\""
 host_ps(){ ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
             "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\$1" 2>/dev/null | tr -d '\r'; }
 
+# Gli script dell'host vivono nel repo e devono arrivare sul PC. Si passa da base64
+# perche' fra ssh, cmd e PowerShell qualsiasi cosa non sia [A-Za-z0-9+/=] rischia di
+# essere reinterpretata per strada.
+cmd_push(){
+  need_ssh
+  local src f n=0
+  src="$(cd "$(dirname "$0")/../host" 2>/dev/null && pwd)" || die "Non trovo la cartella host/ accanto al comando."
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path C:\\winfleet | Out-Null\"" >/dev/null 2>&1
+  for f in "$src"/*.ps1; do
+    base64 < "$f" | tr -d '\n' | ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\$(basename "$f")', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" \
+      >/dev/null 2>&1 || { bad "$(basename "$f")"; continue; }
+    n=$(( n + 1 ))
+  done
+  ok "$n script in C:\\winfleet sull'host"
+
+  # Uno script caricato a meta' si scopre solo quando serve, di solito nel mezzo di
+  # qualcos'altro: meglio saperlo adesso.
+  local bad_files
+  bad_files="$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
+    'powershell -NoProfile -Command "foreach($f in Get-ChildItem C:\winfleet\*.ps1){ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$null,[ref]$e); if($e.Count){ Write-Host $f.Name } }"' \
+    2>/dev/null | tr -d '\r' | grep -v '^$' || true)"
+  [ -z "$bad_files" ] && ok "sintassi verificata sull'host" || { printf '%s\n' "$bad_files" | while read -r b; do bad "$b non compila sull'host"; done; return 1; }
+}
+
 cmd_scan(){
   need_ssh
   info "scansione delle app installate sull'host…"
   host_ps scan-apps.ps1 | grep -v '^$' | sort -f >"$HOST_APPS"
   ok "$(wc -l <"$HOST_APPS" | tr -d ' ') app trovate  ${c_dim}($HOST_APPS)${c_off}"
-}
-
-# Registra l'app come "isolata" sull'host, se non lo è già.
-ensure_registered(){ # nome percorso
-  local name="$1" path="$2"
-  if "$MOONLIGHT" list "$(resolve_endpoint | cut -d' ' -f1)" 2>/dev/null | grep -qxF "$name"; then
-    return 0
-  fi
-  info "registro «${name}» sull'host…"
-  printf "& 'C:\\\\winfleet\\\\add-isolated-app.ps1' -Name '%s' -Path '%s'\n" \
-    "${name//\'/\'\'}" "${path//\'/\'\'}" | base64 | \
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
-      "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\_reg.ps1', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" || die "Upload fallito."
-  host_ps _reg.ps1 >/dev/null || die "Registrazione fallita."
-  # Sunshine si riavvia dopo la registrazione: finché non ripubblica l'elenco,
-  # Moonlight risponderebbe "Failed to find application".
-  local i addr; addr="$(resolve_endpoint | cut -d' ' -f1)"
-  for i in $(seq 1 20); do
-    "$MOONLIGHT" list "$addr" 2>/dev/null | grep -qxF "$name" && { ok "«${name}» registrata"; return 0; }
-    sleep 1
-  done
-  die "«${name}» registrata ma l'host non la pubblica ancora. Riprova tra qualche secondo." 
 }
 
 cmd_search(){
@@ -467,8 +605,9 @@ cmd_search(){
 
   local name path
   name="${pick%%$'\t'*}"; path="${pick#*$'\t'}"
-  ensure_registered "$name" "$path"
-  cmd_open "$name"
+  # L'eseguibile scelto qui vince sulla ricerca per nome nel catalogo: due voci
+  # possono chiamarsi uguale, e quella indicata e' questa.
+  PICKED_EXE="$path" cmd_open "$name"
 }
 
 # ---------------------------------------------------------------------------
@@ -493,21 +632,25 @@ cmd_open(){
     refresh_vdd
     key="$(printf '%s' "$app" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
     want="$(sed -n "s/^size_$key=\"\{0,1\}\([0-9]*x[0-9]*\).*/\1/p" "$CONFIG" 2>/dev/null | tail -1)"
+    local cap; cap="$(usable_screen "$(stream_pid)")"
     if [ -z "$want" ]; then
       # Prima apertura: una finestra che sta comoda su questo schermo, non la
       # risoluzione con cui il monitor virtuale si e' acceso.
-      local scr; scr="$(screen_size "$(stream_pid)")"
-      want="$(( ${scr%x*} * 7 / 10 ))x$(( ${scr#*x} * 7 / 10 ))"
+      want="$(( ${cap%x*} * 7 / 10 ))x$(( ${cap#*x} * 7 / 10 ))"
     fi
-    mode="$(nearest_mode "$slot" "${want%x*}" "${want#*x}")"
+    mode="$(nearest_mode "$slot" "${want%x*}" "${want#*x}" "${cap%x*}" "${cap#*x}")"
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
 
-    local exe; exe="$(app_exe "$app")" || true
+    local exe="${PICKED_EXE:-}"
+    [ -n "$exe" ] || exe="$(app_exe "$app")" || true
     [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
 
     printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
       "$app" "$(( slot + 1 ))" "$HOST_NAME" "$mode" "$FPS"
     ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" ) >/dev/null 2>&1 &
+    # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
+    # ad arrivare allo stream, e nel frattempo un secondo "open" la sceglierebbe.
+    slot_save "$slot" "$app" "$mode" "" "$!"
     disown 2>/dev/null || true
     return
   fi
@@ -552,18 +695,46 @@ cmd_open(){
 cmd_windows(){
   [ "${SLOTS:-0}" -gt 0 ] || { info "nessuna istanza a finestre configurata (SLOTS=0)"; return; }
   printf "${c_bold}Finestre${c_off}\n"
-  local i st
+  local i st app size
   for i in $(seq 0 $(( SLOTS - 1 ))); do
-    st="$(slot_state "$i")"
+    st="$(slot_state "$i" || true)"
+    app=""; size=""
+    if slot_live "$i"; then app="$(slot_get "$i" app)"; size="$(slot_get "$i" mode)"; fi
+    [ -n "$size" ] || size="$(vdd_field "$i" width)x$(vdd_field "$i" height)"
     case "$st" in
       *FREE*) info "finestra $(( i + 1 ))  libera        ${c_dim}porta $(slot_port "$i")${c_off}";;
-      *BUSY*) ok   "finestra $(( i + 1 ))  in uso        $(vdd_field "$i" width)x$(vdd_field "$i" height)";;
+      *BUSY*) ok   "finestra $(( i + 1 ))  ${app:-in uso}  ${c_dim}$size${c_off}";;
       *)      bad  "finestra $(( i + 1 ))  non risponde  ${c_dim}porta $(slot_port "$i")${c_off}";;
     esac
   done
 }
 
+# Chiude una finestra, o tutte. Il supervisore va fermato per primo: e' lui che
+# riapre lo stream quando lo vede sparire, quindi ucciderlo dopo lo farebbe
+# resuscitare una volta.
+close_slot(){ # slot
+  local sup pid app; app="$(slot_get "$1" app)"
+  sup="$(slot_get "$1" sup)"; pid="$(slot_get "$1" pid)"
+  [ -n "$sup" ] && kill "$sup" 2>/dev/null || true
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  place_stop "$1"
+  slot_forget "$1"
+  ok "finestra $(( $1 + 1 )) chiusa${app:+  ${c_dim}($app)${c_off}}"
+}
+
 cmd_stop(){
+  local i closed=0
+  if [ -n "${1:-}" ]; then
+    i=$(( $1 - 1 ))
+    [ "$i" -ge 0 ] && [ "$i" -lt "${SLOTS:-0}" ] || die "Finestra $1 inesistente (ce ne sono ${SLOTS:-0})."
+    close_slot "$i"; return
+  fi
+  for i in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do
+    slot_live "$i" || continue
+    close_slot "$i"; closed=1
+  done
+  [ "$closed" = 1 ] && return
+
   need_config
   read -r addr kind <<<"$(resolve_endpoint)"
   # chiusura graceful della sessione lato host (meglio di uccidere il client:
@@ -591,72 +762,233 @@ cmd_pair(){
   "$MOONLIGHT" pair "$addr"
 }
 
+LAUNCHERS="$HOME/Applications/WinFleet"
+
 cmd_apps(){
-  local cat="$CONFIG_DIR/apps.txt"
-  [ -f "$cat" ] || { info "nessuna app nel catalogo ($cat)"; return; }
-  printf "${c_bold}App configurate${c_off}\n"
-  while IFS='|' read -r alias name _; do
-    [ -n "$alias" ] && printf "  • %s  ${c_dim}%s${c_off}\n" "$name" "$alias"
-  done < "$cat"
+  [ -d "$LAUNCHERS" ] || { info "nessun lanciatore creato (winfleet dock <app>)"; return; }
+  local n=0 a
+  printf "${c_bold}App sul Mac${c_off}  ${c_dim}$LAUNCHERS${c_off}\n"
+  for a in "$LAUNCHERS"/*.app; do
+    [ -d "$a" ] || continue
+    a="$(basename "$a" .app)"; n=$(( n + 1 ))
+    printf "  • %s\n" "$a"
+  done
+  [ "$n" = 0 ] && info "nessun lanciatore creato (winfleet dock <app>)"
+  return 0
 }
 
-cmd_dock(){
-  local cat="$CONFIG_DIR/apps.txt"
-  [ -f "$cat" ] || die "Nessun catalogo app. Aggiungine con:  winfleet add <app> \"<Nome>\""
-  local dir="$HOME/Applications/WinFleet"
-  mkdir -p "$dir"
-  local self; self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# Icona dell'app di Windows, convertita in .icns. Il PNG arriva in base64 sopra la
+# stessa connessione SSH che usiamo per tutto il resto: nessun file condiviso.
+build_icns(){ # nome exe destinazione.icns
+  local name="$1" exe="$2" out="$3"
+  local tmp b64; tmp="$(mktemp -d)"
+  b64="$(printf '%s' "$exe" | base64 | tr -d '\n')"
+  ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-icon.ps1 -PathB64 $b64" \
+    2>/dev/null | tr -d '\r\n' | base64 -d >"$tmp/src.png" 2>/dev/null || true
+  [ -s "$tmp/src.png" ] || { rm -rf "$tmp"; return 1; }
 
-  local only=("$@")
-  while IFS='|' read -r alias name icon; do
-    [ -n "$alias" ] || continue
-    if [ ${#only[@]} -gt 0 ]; then
-      printf '%s\n' "${only[@]}" | grep -qx "$alias" || continue
-    fi
-    local appdir="$dir/$name.app"
-    rm -rf "$appdir"
-    mkdir -p "$appdir/Contents/MacOS" "$appdir/Contents/Resources"
-    cat > "$appdir/Contents/Info.plist" <<PLIST
+  mkdir -p "$tmp/i.iconset"
+  local s
+  for s in 16 32 128 256; do
+    sips -z "$s" "$s" "$tmp/src.png" --out "$tmp/i.iconset/icon_${s}x${s}.png" >/dev/null 2>&1
+    [ "$s" = 256 ] && continue
+    sips -z "$(( s * 2 ))" "$(( s * 2 ))" "$tmp/src.png" \
+      --out "$tmp/i.iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1
+  done
+  iconutil -c icns "$tmp/i.iconset" -o "$out" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+}
+
+# Copia di Moonlight intestata all'app: e' il processo che disegna la finestra,
+# quindi da lui dipendono nome e icona in Dock, ⌘-Tab e barra dei menu. Su APFS
+# "cp -c" e' un clone: istantaneo e senza occupare spazio.
+build_runner(){ # nome icns|""
+  local name="$1" icns="$2" app="$RUNNERS/$name.app" pb=/usr/libexec/PlistBuddy
+  [ -d "$MOONLIGHT_APP" ] || die "Moonlight non trovato in $MOONLIGHT_APP"
+  rm -rf "$app"; mkdir -p "$RUNNERS"
+  cp -Rc "$MOONLIGHT_APP" "$app" 2>/dev/null || cp -R "$MOONLIGHT_APP" "$app"
+
+  local id plist k; id="$(printf '%s' "$name" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+  plist="$app/Contents/Info.plist"
+  # Moonlight non ha CFBundleName: Set su una chiave assente fallisce e basta,
+  # quindi ogni chiave va aggiunta se manca.
+  for k in CFBundleName CFBundleDisplayName; do
+    "$pb" -c "Set :$k $name" "$plist" >/dev/null 2>&1 || \
+      "$pb" -c "Add :$k string $name" "$plist" >/dev/null 2>&1 || \
+      die "Non riesco a scrivere $k in $plist"
+  done
+  "$pb" -c "Set :CFBundleIdentifier dev.winfleet.runner.$id" "$plist" >/dev/null 2>&1 || \
+    "$pb" -c "Add :CFBundleIdentifier string dev.winfleet.runner.$id" "$plist" >/dev/null 2>&1 || true
+
+  if [ -n "$icns" ] && [ -f "$icns" ]; then
+    local f; f="$("$pb" -c 'Print :CFBundleIconFile' "$plist" 2>/dev/null || true)"
+    f="${f%.icns}.icns"; [ "$f" != ".icns" ] || f=icon.icns
+    cp "$icns" "$app/Contents/Resources/$f"
+    "$pb" -c "Set :CFBundleIconFile $f" "$plist" >/dev/null 2>&1 || \
+      "$pb" -c "Add :CFBundleIconFile string $f" "$plist" >/dev/null 2>&1 || true
+  fi
+
+  # Su Apple Silicon la firma del binario sigilla anche Info.plist: dopo averlo
+  # toccato il bundle non parte finché non lo si rifirma.
+  codesign --force --deep --sign - "$app" >/dev/null 2>&1 || \
+    die "Non riesco a rifirmare $app (serve per farlo partire su Apple Silicon)."
+}
+
+# Lanciatore da Dock/Spotlight: apre la finestra e sparisce, il resto lo fa il
+# runner. Separato apposta, così quello che resta in ⌘-Tab è uno solo.
+build_launcher(){ # nome icns|""
+  local name="$1" icns="$2" app="$LAUNCHERS/$name.app" self
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  rm -rf "$app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>$name</string>
-  <key>CFBundleIdentifier</key><string>dev.winfleet.$alias</string>
+  <key>CFBundleDisplayName</key><string>$name</string>
+  <key>CFBundleIdentifier</key><string>dev.winfleet.$(printf '%s' "$name" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')</string>
   <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
-    cat > "$appdir/Contents/MacOS/launch" <<LAUNCH
+  cat > "$app/Contents/MacOS/launch" <<LAUNCH
 #!/bin/sh
-exec "$self" open "$alias"
+exec "$self" open "$name"
 LAUNCH
-    chmod +x "$appdir/Contents/MacOS/launch"
-    [ -n "$icon" ] && [ -f "$CONFIG_DIR/icons/$icon" ] && \
-      cp "$CONFIG_DIR/icons/$icon" "$appdir/Contents/Resources/icon.icns" 2>/dev/null || true
-    codesign --force -s - "$appdir" >/dev/null 2>&1 || true
-    echo "  $appdir"
-  done < "$cat"
-  echo
-  echo "Trascina i .app nel Dock. Click = finestra dell'app sul Mac."
+  chmod +x "$app/Contents/MacOS/launch"
+  [ -n "$icns" ] && [ -f "$icns" ] && cp "$icns" "$app/Contents/Resources/icon.icns"
+  codesign --force --sign - "$app" >/dev/null 2>&1 || true
+  touch "$app"   # LaunchServices rilegge il bundle
 }
 
-cmd_add(){
-  local alias="${1:?uso: winfleet add <alias> \"<Nome>\" [icona.icns]}"
-  local name="${2:-$alias}"; local icon="${3:-}"
-  mkdir -p "$CONFIG_DIR"
-  local cat="$CONFIG_DIR/apps.txt"
-  touch "$cat"
-  grep -v "^$alias|" "$cat" > "$cat.tmp" 2>/dev/null || true; mv "$cat.tmp" "$cat"
-  echo "$alias|$name|$icon" >> "$cat"
-  echo "Aggiunta: $name ($alias)"
+cmd_dock(){
+  need_ssh
+  [ -s "$HOST_APPS" ] || cmd_scan
+  local names=("$@")
+  if [ ${#names[@]} -eq 0 ]; then
+    local a
+    for a in "$LAUNCHERS"/*.app; do [ -d "$a" ] && names+=("$(basename "$a" .app)"); done
+    [ ${#names[@]} -gt 0 ] || die "Uso: winfleet dock <app> [app...]     (i nomi sono quelli di: winfleet search)"
+  fi
+
+  mkdir -p "$CONFIG_DIR/icons"
+  local name exe icns
+  for name in "${names[@]}"; do
+    exe="$(app_exe "$name")" || true
+    [ -n "$exe" ] || { bad "«$name» non è tra le app dell'host (winfleet scan)"; continue; }
+    icns="$CONFIG_DIR/icons/$name.icns"
+    if build_icns "$name" "$exe" "$icns"; then :; else icns=""; info "$name: icona non recuperata, resta quella di Moonlight"; fi
+    build_runner "$name" "$icns"
+    build_launcher "$name" "$icns"
+    ok "$name  ${c_dim}$LAUNCHERS/$name.app${c_off}"
+  done
+  echo
+  echo "Trascinali nel Dock: un click = la finestra dell'app, col suo nome e la sua icona."
+}
+
+
+# Moonlight tiene un elenco degli host conosciuti, e ogni istanza rifatta ne lascia
+# dentro uno morto: restano in giro con l'icona di errore e confondono e basta.
+# Si buttano quelli che non risponde piu' nessuno, mai quelli vivi.
+MOON_PREFS="$HOME/Library/Preferences/com.moonlight-stream.Moonlight.plist"
+
+cmd_clean(){
+  pgrep -f "Moonlight" >/dev/null 2>&1 && \
+    die "Moonlight è aperto: chiudi le finestre (winfleet stop) prima di ripulire l'elenco."
+  [ -f "$MOON_PREFS" ] || die "Non trovo le preferenze di Moonlight ($MOON_PREFS)."
+
+  cp "$MOON_PREFS" "$MOON_PREFS.winfleet-bak"
+  local report
+  report="$(MOON_PREFS="$MOON_PREFS" python3 - <<'PY'
+import os, plistlib, re, urllib.request
+
+path = os.environ["MOON_PREFS"]
+with open(path, "rb") as f:
+    d = plistlib.load(f)
+
+n = int(d.get("hosts.size", 0) or 0)
+
+def reported_uuid(host, port):
+    """Chi risponde davvero a quell'indirizzo, o None se non risponde nessuno."""
+    url = "http://%s:%d/serverinfo?uniqueid=winfleet" % (host, port)
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    m = re.search(r"<uniqueid>([^<]+)</uniqueid>", body)
+    return m.group(1).lower() if m else None
+
+# Si butta solo cio' che si sa essere morto: l'indirizzo risponde, ma con un'altra
+# identita' — allora quella voce e' il residuo di un'istanza rifatta. Un indirizzo
+# che non risponde puo' essere semplicemente un PC spento, e resta dov'e'.
+keep, drop = [], []
+for i in range(1, n + 1):
+    name = d.get("hosts.%d.hostname" % i, "?")
+    saved = str(d.get("hosts.%d.uuid" % i, "")).lower()
+    stale = False
+    for a, p in (("hosts.%d.manualaddress" % i, "hosts.%d.manualport" % i),
+                 ("hosts.%d.localaddress" % i, "hosts.%d.localport" % i)):
+        host, port = d.get(a), d.get(p)
+        if not host or not port:
+            continue
+        live = reported_uuid(host, int(port))
+        if live is None:
+            continue
+        stale = live != saved
+        break
+    (drop if stale else keep).append((i, name))
+
+# Le voci sono numerate: rimuoverne una in mezzo senza rinumerare le successive le
+# renderebbe invisibili a Qt, che si ferma al primo buco.
+old = {k: v for k, v in d.items() if k.startswith("hosts.")}
+for k in old:
+    del d[k]
+for new, (i, _) in enumerate(keep, start=1):
+    pre = "hosts.%d." % i
+    for k, v in old.items():
+        if k.startswith(pre):
+            d["hosts.%d.%s" % (new, k[len(pre):])] = v
+d["hosts.size"] = len(keep)
+
+with open(path, "wb") as f:
+    plistlib.dump(d, f)
+
+for _, name in keep:
+    print("tenuto\t%s" % name)
+for _, name in drop:
+    print("rimosso\t%s" % name)
+PY
+)" || { mv "$MOON_PREFS.winfleet-bak" "$MOON_PREFS"; die "Pulizia fallita: preferenze ripristinate."; }
+
+  # cfprefsd tiene le preferenze in memoria e riscriverebbe sopra le nostre.
+  killall -u "$USER" cfprefsd 2>/dev/null || true
+
+  printf '%s\n' "$report" | while IFS=$'\t' read -r what name; do
+    [ "$what" = tenuto ] && ok "$name" || info "rimosso  $name"
+  done
+  echo
+  info "copia di sicurezza: $MOON_PREFS.winfleet-bak"
 }
 
 cmd_doctor(){
   printf "${c_bold}WinFleet doctor${c_off}\n"
   [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
   [ -x "$MOONLIGHT" ] && ok "Moonlight: $MOONLIGHT" || bad "Moonlight non trovato (brew install --cask moonlight)"
+  [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
+  if [ "${SLOTS:-0}" -gt 0 ]; then
+    ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+    [ -n "$HOST_NAME" ] || bad "HOST_NAME assente: senza nome mDNS le istanze non sono indirizzabili per porta"
+  else
+    info "nessuna istanza a finestre (SLOTS=0)"
+  fi
+  local nr=0; [ -d "$RUNNERS" ] && nr=$(find "$RUNNERS" -maxdepth 1 -name '*.app' | wc -l | tr -d ' ')
+  [ "$nr" -gt 0 ] && ok "$nr app con nome e icona propri" || info "nessun lanciatore (winfleet dock <app>)"
   if [ -n "$HOST_TS$HOST_LAN" ]; then
     printf "${c_bold}Percorso${c_off}\n"
     if [ -n "$HOST_LAN" ]; then reachable "$HOST_LAN" "$SUN_PORT" 2 && ok "LAN $HOST_LAN:$SUN_PORT" || info "LAN $HOST_LAN non raggiungibile"; fi
@@ -673,21 +1005,32 @@ cmd_setup(){
   echo "Configurazione WinFleet (host Windows con Sunshine)."
   read -rp "  IP Tailscale del PC (100.x, opzionale): " ts
   read -rp "  IP LAN del PC (192.168.x, opzionale):   " lan
+  # Il nome mDNS non e' un dettaglio: Moonlight confronta gli host per indirizzo
+  # ignorando la porta, quindi con l'IP nudo tutte le istanze sembrano la stessa.
+  read -rp "  Nome mDNS del PC (es. PCdiCasa.local):  " nm
+  read -rp "  Quante finestre insieme [2]: " sl; sl="${sl:-2}"
   read -rp "  FPS [60]: " f; f="${f:-60}"
   read -rp "  Bitrate Kbps [auto]: " b; b="${b:-auto}"
-  read -rp "  SSH dell'host (utente@indirizzo, per cercare app): " sh
+  read -rp "  SSH dell'host (utente@indirizzo): " sh
   cat > "$CONFIG" <<CFG
 HOST_TS="$ts"
 HOST_LAN="$lan"
+HOST_NAME="$nm"
 HOST_SSH="$sh"
+SLOTS="$sl"
+SLOT_BASE=48089
 FPS=$f
 BITRATE=$b
 RESOLUTION=auto
-HOST_RES=""
 SUN_PORT=47990
 CFG
   echo "Scritto $CONFIG"
-  echo "Ora accoppia:  winfleet pair"
+  echo
+  echo "Sul PC, una volta sola (PowerShell da amministratore):"
+  echo "  .\\setup-vdd.ps1 -Slots $sl"
+  echo "  foreach (\$i in 0..$(( sl - 1 ))) { .\\wf-instance.ps1 -Slot \$i }"
+  echo
+  echo "Poi accoppia ogni finestra dalla GUI di Moonlight, e:  winfleet scan"
 }
 
 # ---------------------------------------------------------------------------
@@ -696,12 +1039,13 @@ case "${1:-}" in
   windows)  cmd_windows;;
   search)   shift; cmd_search "$@";;
   scan)     cmd_scan;;
+  push)     cmd_push;;
   fit)      cmd_fit;;
-  stop)     cmd_stop;;
+  stop)     shift; cmd_stop "$@";;
   list)     cmd_list;;
   apps)     cmd_apps;;
-  add)      shift; cmd_add "$@";;
   dock)     shift; cmd_dock "$@";;
+  clean)    cmd_clean;;
   pair)     cmd_pair;;
   endpoint) cmd_endpoint;;
   setup)    cmd_setup;;
