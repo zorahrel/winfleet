@@ -119,16 +119,33 @@ directly), run on the PC:
 | Mode | What you see | Setup |
 |---|---|---|
 | **Desktop** | the entire live session in one window | works out of the box |
-| **Per-app** | one app registered as a Sunshine app, in its own window | `add-app.ps1` |
-| **Isolated** *(advanced)* | one app on a dedicated **virtual display**, so the stream shows only that window | needs a Virtual Display Driver — see below |
+| **Isolated** | one app that **fills the window** — no desktop around it | `setup-isolated.ps1` + `add-isolated-app.ps1` |
 
-**Isolated windows.** True "one app = one clean window" (no desktop behind it) uses a
-per-app virtual monitor: the app is maximized on a virtual display and Sunshine streams
-that display. The [Parsec Virtual Display Adapter] or [MikeTheTech's Virtual Display
-Driver] provide the monitors. This is on the roadmap for first-class support.
+### Isolated windows
 
-[Parsec Virtual Display Adapter]: https://github.com/nomi-san/parsec-vdd
-[MikeTheTech's Virtual Display Driver]: https://github.com/VirtualDrivers/Virtual-Display-Driver
+`winfleet open <App>` opens a single Windows app as a window that fills the frame — no
+desktop, no taskbar around it. Setup on the host, once:
+
+```powershell
+.\setup-isolated.ps1                                              # once
+.\add-isolated-app.ps1 -Name Blender -Path "C:\...\blender.exe" -WebPass '<pw>'
+```
+
+Then on the Mac: `winfleet add blender "Blender"` and `winfleet open Blender`.
+
+**How it clears two Windows traps** (both handled for you):
+
+- **Session-0 isolation.** Sunshine runs as a service in session 0, so apps it launches
+  never appear on your interactive desktop. WinFleet launches them through a scheduled
+  task (`winfleet-app`) that runs *inside your logged-in session*, so the app shows up on
+  the streamed display. You must be logged in on the PC (locked screen is fine).
+- **Resolution switch.** Sunshine resizes the display to the client's resolution on
+  connect. The launcher keeps re-maximizing the app for ~20 s so it fills the frame after
+  the switch, not before.
+
+**Limit:** Sunshine streams one session at a time, so this is *one app in a window at a
+time*, not many side by side. True simultaneous per-window streaming would need a custom
+remote compositor (per-window GPU capture + transport) — a much larger project.
 
 ## Troubleshooting
 
