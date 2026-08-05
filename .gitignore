@@ -1,0 +1,4 @@
+# host-specific: addresses, fps, bitrate
+config.env
+*.log
+.DS_Store

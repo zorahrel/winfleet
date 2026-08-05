@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# WinFleet — finestre di Windows sul Mac, a piena GPU.
+#
+# Orchestra Sunshine (host, NVENC) + Moonlight (client) per aprire le app o il
+# desktop del PC Windows come FINESTRE native macOS, ridimensionabili, fluide,
+# riusando la sessione già attiva sul PC (nessun login RDP).
+#
+#   winfleet open <app>        apre l'app/desktop in una finestra sul Mac
+#   winfleet stop              chiude la sessione (graceful)
+#   winfleet list              app disponibili sull'host
+#   winfleet apps              app configurate localmente (catalogo)
+#   winfleet dock [app...]     genera i wrapper .app per il Dock
+#   winfleet pair              accoppia Moonlight con l'host (una tantum)
+#   winfleet doctor            diagnostica
+#   winfleet endpoint          mostra quale indirizzo verrebbe usato (LAN/Tailscale)
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
+CONFIG="$CONFIG_DIR/config.env"
+MOONLIGHT="${MOONLIGHT_BIN:-/Applications/Moonlight.app/Contents/MacOS/Moonlight}"
+
+# Defaults, sovrascrivibili da config.env
+HOST_TS=""          # indirizzo Tailscale (sempre raggiungibile)
+HOST_LAN=""         # indirizzo LAN (preferito se risponde)
+FPS=60
+BITRATE=40000       # Kbps; su LAN con NVENC si può alzare molto
+RESOLUTION=""       # vuoto = nativa dell'host/app; es. 2560x1440
+SUN_PORT=47990
+
+[ -f "$CONFIG" ] && . "$CONFIG"
+
+c_grn=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off=$'\033[0m'
+ok(){ printf "  ${c_grn}✓${c_off} %s\n" "$1"; }
+bad(){ printf "  ${c_red}✗${c_off} %s\n" "$1"; }
+info(){ printf "  ${c_dim}○${c_off} %s\n" "$1"; }
+die(){ printf "${c_red}%s${c_off}\n" "$1" >&2; exit 1; }
+
+need_config(){
+  [ -n "$HOST_TS$HOST_LAN" ] || die "Nessun host configurato.\nEsegui:  winfleet setup   (o modifica $CONFIG)"
+}
+
+# TCP reachability con deadline reale (macOS: connect non rispetta SO_SNDTIMEO)
+reachable(){ # host port timeout
+  local h="$1" p="$2" t="${3:-2}"
+  nc -z -G "$t" "$h" "$p" >/dev/null 2>&1
+}
+
+# Sceglie l'endpoint: LAN se risponde sulla porta Sunshine, altrimenti Tailscale.
+# La LAN nuda evita l'incapsulamento WireGuard → più banda utile per lo stream.
+resolve_endpoint(){
+  if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$SUN_PORT" 1; then
+    echo "$HOST_LAN lan"
+  elif [ -n "$HOST_TS" ] && reachable "$HOST_TS" "$SUN_PORT" 2; then
+    echo "$HOST_TS tailscale"
+  else
+    echo " unreachable"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_endpoint(){
+  need_config
+  read -r addr kind <<<"$(resolve_endpoint)"
+  [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso? Sunshine attivo?"
+  printf "%s  ${c_dim}(%s)${c_off}\n" "$addr" "$kind"
+}
+
+cmd_open(){
+  need_config
+  local app="${1:-Desktop}"
+  read -r addr kind <<<"$(resolve_endpoint)"
+  [ -n "$addr" ] || die "Host irraggiungibile. Controlla:  winfleet doctor"
+
+  local args=( stream "$addr" "$app"
+    --display-mode windowed
+    --fps "$FPS" --bitrate "$BITRATE"
+    --absolute-mouse --no-vsync --quit-after )
+  [ -n "$RESOLUTION" ] && args+=( --resolution "$RESOLUTION" )
+
+  printf "${c_bold}%s${c_off} → finestra sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" "$app" "$addr" "$kind" "$FPS"
+  nohup "$MOONLIGHT" "${args[@]}" >"$CONFIG_DIR/stream-$$.log" 2>&1 &
+  disown || true
+}
+
+cmd_stop(){
+  need_config
+  read -r addr kind <<<"$(resolve_endpoint)"
+  # chiusura graceful della sessione lato host (meglio di uccidere il client:
+  # lascia Sunshine libero per la prossima connessione)
+  [ -n "$addr" ] && "$MOONLIGHT" quit "$addr" >/dev/null 2>&1 || true
+  pkill -f "Moonlight.*stream" 2>/dev/null || true
+  echo "Sessione chiusa."
+}
+
+cmd_list(){
+  need_config
+  read -r addr kind <<<"$(resolve_endpoint)"
+  [ -n "$addr" ] || die "Host irraggiungibile."
+  "$MOONLIGHT" list "$addr" 2>/dev/null | grep -viE "Redirecting" || \
+    info "nessuna app (l'host è accoppiato? winfleet pair)"
+}
+
+cmd_pair(){
+  need_config
+  read -r addr kind <<<"$(resolve_endpoint)"
+  [ -n "$addr" ] || die "Host irraggiungibile."
+  echo "Avvio pairing con $addr…"
+  echo "Moonlight mostrerà un PIN: inseriscilo nella web UI di Sunshine"
+  echo "  https://$addr:$SUN_PORT   →   PIN"
+  "$MOONLIGHT" pair "$addr"
+}
+
+cmd_apps(){
+  local cat="$CONFIG_DIR/apps.txt"
+  [ -f "$cat" ] || { info "nessuna app nel catalogo ($cat)"; return; }
+  printf "${c_bold}App configurate${c_off}\n"
+  while IFS='|' read -r alias name _; do
+    [ -n "$alias" ] && printf "  • %s  ${c_dim}%s${c_off}\n" "$name" "$alias"
+  done < "$cat"
+}
+
+cmd_dock(){
+  local cat="$CONFIG_DIR/apps.txt"
+  [ -f "$cat" ] || die "Nessun catalogo app. Aggiungine con:  winfleet add <app> \"<Nome>\""
+  local dir="$HOME/Applications/WinFleet"
+  mkdir -p "$dir"
+  local self; self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+  local only=("$@")
+  while IFS='|' read -r alias name icon; do
+    [ -n "$alias" ] || continue
+    if [ ${#only[@]} -gt 0 ]; then
+      printf '%s\n' "${only[@]}" | grep -qx "$alias" || continue
+    fi
+    local appdir="$dir/$name.app"
+    rm -rf "$appdir"
+    mkdir -p "$appdir/Contents/MacOS" "$appdir/Contents/Resources"
+    cat > "$appdir/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>$name</string>
+  <key>CFBundleIdentifier</key><string>dev.winfleet.$alias</string>
+  <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>
+PLIST
+    cat > "$appdir/Contents/MacOS/launch" <<LAUNCH
+#!/bin/sh
+exec "$self" open "$alias"
+LAUNCH
+    chmod +x "$appdir/Contents/MacOS/launch"
+    [ -n "$icon" ] && [ -f "$CONFIG_DIR/icons/$icon" ] && \
+      cp "$CONFIG_DIR/icons/$icon" "$appdir/Contents/Resources/icon.icns" 2>/dev/null || true
+    codesign --force -s - "$appdir" >/dev/null 2>&1 || true
+    echo "  $appdir"
+  done < "$cat"
+  echo
+  echo "Trascina i .app nel Dock. Click = finestra dell'app sul Mac."
+}
+
+cmd_add(){
+  local alias="${1:?uso: winfleet add <alias> \"<Nome>\" [icona.icns]}"
+  local name="${2:-$alias}"; local icon="${3:-}"
+  mkdir -p "$CONFIG_DIR"
+  local cat="$CONFIG_DIR/apps.txt"
+  touch "$cat"
+  grep -v "^$alias|" "$cat" > "$cat.tmp" 2>/dev/null || true; mv "$cat.tmp" "$cat"
+  echo "$alias|$name|$icon" >> "$cat"
+  echo "Aggiunta: $name ($alias)"
+}
+
+cmd_doctor(){
+  printf "${c_bold}WinFleet doctor${c_off}\n"
+  [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
+  [ -x "$MOONLIGHT" ] && ok "Moonlight: $MOONLIGHT" || bad "Moonlight non trovato (brew install --cask moonlight)"
+  if [ -n "$HOST_TS$HOST_LAN" ]; then
+    printf "${c_bold}Percorso${c_off}\n"
+    if [ -n "$HOST_LAN" ]; then reachable "$HOST_LAN" "$SUN_PORT" 2 && ok "LAN $HOST_LAN:$SUN_PORT" || info "LAN $HOST_LAN non raggiungibile"; fi
+    if [ -n "$HOST_TS" ]; then reachable "$HOST_TS" "$SUN_PORT" 3 && ok "Tailscale $HOST_TS:$SUN_PORT" || info "Tailscale $HOST_TS non raggiungibile"; fi
+    read -r addr kind <<<"$(resolve_endpoint)"
+    [ -n "$addr" ] && printf "  → userei: ${c_bold}%s${c_off} (%s)\n" "$addr" "$kind" || bad "host irraggiungibile"
+  else
+    bad "nessun host configurato"
+  fi
+}
+
+cmd_setup(){
+  mkdir -p "$CONFIG_DIR"
+  echo "Configurazione WinFleet (host Windows con Sunshine)."
+  read -rp "  IP Tailscale del PC (100.x, opzionale): " ts
+  read -rp "  IP LAN del PC (192.168.x, opzionale):   " lan
+  read -rp "  FPS [60]: " f; f="${f:-60}"
+  read -rp "  Bitrate Kbps [40000]: " b; b="${b:-40000}"
+  cat > "$CONFIG" <<CFG
+HOST_TS="$ts"
+HOST_LAN="$lan"
+FPS=$f
+BITRATE=$b
+RESOLUTION=""
+SUN_PORT=47990
+CFG
+  echo "Scritto $CONFIG"
+  echo "Ora accoppia:  winfleet pair"
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  open)     shift; cmd_open "$@";;
+  stop)     cmd_stop;;
+  list)     cmd_list;;
+  apps)     cmd_apps;;
+  add)      shift; cmd_add "$@";;
+  dock)     shift; cmd_dock "$@";;
+  pair)     cmd_pair;;
+  endpoint) cmd_endpoint;;
+  setup)    cmd_setup;;
+  doctor|"") cmd_doctor;;
+  -h|--help|help)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//';;
+  *) die "Comando sconosciuto: $1  (winfleet --help)";;
+esac
