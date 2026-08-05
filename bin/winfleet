@@ -197,8 +197,18 @@ aspect_keeper(){ # pid larghezza altezza
   disown 2>/dev/null || true
 }
 
-# Dimensione utile della finestra dello stream, in punti (esclusa la barra titolo).
+# Dimensione della finestra dello stream, in punti. Quando c'e' la libreria dentro
+# il processo la misura la scrive lei in un file a ogni cambiamento: leggerla costa
+# nulla, mentre chiederla ad AppleScript costa decine di millisecondi — troppo per
+# guardarla dieci volte al secondo mentre si trascina.
 win_size(){ # pid
+  if [ -n "${WF_SIZE_FILE:-}" ] && [ -s "$WF_SIZE_FILE" ]; then
+    cat "$WF_SIZE_FILE"; return
+  fi
+  win_size_ax "$1"
+}
+
+win_size_ax(){ # pid
   osascript 2>/dev/null <<EOF
 try
   tell application "System Events" to tell (first process whose unix id is $1)
@@ -296,6 +306,7 @@ follow_resize(){ # pid slot risoluzione-di-negoziazione
   local sw="${smode%x*}" sh="${smode#*x}"
   cap="$(usable_screen)"
   fit="$CONFIG_DIR/slot$slot.fit"
+  vdd_open
   trace "segui: slot=$slot stream=$smode tetto=$cap"
   while kill -0 "$pid" 2>/dev/null; do
     # Richiesta esplicita di rifare la sessione su misura (winfleet fit): e' l'unico
@@ -324,7 +335,7 @@ follow_resize(){ # pid slot risoluzione-di-negoziazione
         applied="$cur"                 # niente di meglio: si smette di riprovarci
       fi
     fi
-    sleep 0.3
+    sleep 0.1
   done
   echo ""
 }
@@ -356,7 +367,10 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     # ripartita da capo.
     [ "$first" = 1 ] && { place_app "$slot" "$exe"; first=0; }
     br="$(stream_bitrate "$smode")"
-    [ -n "$owned" ] && pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" )
+    if [ -n "$owned" ]; then
+      WF_SIZE_FILE="$CONFIG_DIR/slot$slot.size"; rm -f "$WF_SIZE_FILE"
+      pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" "WF_SIZE=$WF_SIZE_FILE" )
+    fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \
       --absolute-mouse --no-vsync --quit-after --resolution "$smode" \
@@ -549,8 +563,32 @@ app_exe(){ # nome app -> percorso sull'host
   awk -F'\t' -v n="$1" 'tolower($1)==tolower(n){print $2; exit}' "$HOST_APPS"
 }
 
+# Un canale aperto una volta e tenuto lì: mentre trascini le richieste sono tante e
+# ravvicinate, e far nascere un processo ssh per ognuna costava piu' della richiesta
+# stessa. Qui si scrive una riga su una pipe e la legge un PowerShell gia' in ascolto
+# dall'altra parte.
+vdd_open(){ # slot -> apre il canale se non c'e'
+  local fifo="$CONFIG_DIR/vdd-pipe"
+  [ -p "$fifo" ] || { rm -f "$fifo"; mkfifo "$fifo"; }
+  # In lettura-scrittura, non in sola scrittura: aprire una pipe con nome in
+  # scrittura BLOCCA finche' non compare un lettore, e il lettore lo si avvia due
+  # righe piu' sotto — si aspetterebbero a vicenda per sempre. Tenerlo aperto serve
+  # anche a non far vedere EOF al lettore fra una richiesta e l'altra.
+  exec 8<>"$fifo"
+  if ! kill -0 "${VDD_CHAN:-0}" 2>/dev/null; then
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"while (\$l = [Console]::In.ReadLine()) { Set-Content C:\\winfleet\\vdd-request.txt \$l }\"" \
+      <"$fifo" >/dev/null 2>&1 &
+    VDD_CHAN=$!
+  fi
+}
+
 vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
+  if [ -n "${VDD_CHAN:-}" ] && kill -0 "$VDD_CHAN" 2>/dev/null; then
+    printf '%s %s\n' "$1" "$2" >&8
+    return
+  fi
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1
 }

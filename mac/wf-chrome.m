@@ -36,6 +36,19 @@ static const char *kWant  = "wf_want";
 
 static NSSize gAsked = {0, 0};      // misura chiesta da WinFleet
 static BOOL   gKeepChrome = NO;
+static const char *gSizeFile = NULL; // dove annotare la misura corrente
+
+// Chi sta fuori deve sapere quanto e' grande la finestra per far seguire la
+// risoluzione di Windows, e chiederlo con AppleScript costa decine di millisecondi
+// a colpo — troppo, per una cosa da guardare dieci volte al secondo. Qui il dato
+// c'e' gia': si scrive e basta.
+static void publish(NSSize s) {
+    if (!gSizeFile) return;
+    FILE *f = fopen(gSizeFile, "w");
+    if (!f) return;
+    fprintf(f, "%dx%d\n", (int)lround(s.width), (int)lround(s.height));
+    fclose(f);
+}
 
 static NSSize wantOf(NSWindow *w) {
     NSValue *v = objc_getAssociatedObject(w, kWant);
@@ -80,6 +93,7 @@ static void adopt(NSWindow *w) {
             f.size = want;
             [w setFrame:f display:YES];
         }
+        publish(want);
     }
 }
 
@@ -91,6 +105,7 @@ static void onResize(NSNotification *n) {
 
     if (w.inLiveResize) {
         setWant(w, w.frame.size);       // sta trascinando l'utente: comanda lui
+        publish(w.frame.size);
         return;
     }
     NSSize now = w.frame.size;
@@ -114,6 +129,7 @@ static void wf_chrome_init(void) {
         int a = 0, b = 0;
         if (sscanf(env, "%dx%d", &a, &b) == 2 && a > 0 && b > 0) gAsked = NSMakeSize(a, b);
     }
+    gSizeFile = getenv("WF_SIZE");
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
 
@@ -127,7 +143,7 @@ static void wf_chrome_init(void) {
                                                            queue:nil
                                                       usingBlock:^(NSNotification *n) {
             NSWindow *w = n.object;
-            if (isStreamWindow(w)) setWant(w, w.frame.size);
+            if (isStreamWindow(w)) { setWant(w, w.frame.size); publish(w.frame.size); }
         }];
         // SDL ricrea la finestra piu' di una volta (cambio di schermo, di renderer):
         // conviene ripassare invece di fidarsi di un solo giro all'avvio.

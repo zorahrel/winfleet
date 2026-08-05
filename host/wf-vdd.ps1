@@ -247,7 +247,9 @@ try {
     while ($true) {
         [Vdd]::Ping($h)
         Start-Sleep -Milliseconds 50
-        if ((++$tick % 6) -ne 0 -or -not (Test-Path $REQUEST)) { continue }
+        # Ogni giro, non ogni sei: mentre si trascina una finestra il ritardo di
+        # trecento millisecondi si sente tutto.
+        if (-not (Test-Path $REQUEST)) { continue }
 
         $req = ''
         try { $req = (Get-Content $REQUEST -Raw -EA Stop).Trim() } catch { continue }
