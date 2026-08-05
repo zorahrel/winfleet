@@ -3,9 +3,9 @@
   Registers a Windows app for WinFleet "isolated window" mode.
 
 .DESCRIPTION
-  Run on the host (after setup-isolated.ps1). Creates a tiny launcher .cmd and a
-  Sunshine app entry so `winfleet open <name>` on the Mac opens this app as a
-  window that fills the frame.
+  Run on the host (after setup-isolated.ps1). Creates a small launcher .cmd and a
+  Sunshine app entry so `winfleet open <name>` on the Mac streams this app alone
+  on a dedicated Windows desktop — no taskbar, no other windows.
 
 .EXAMPLE
   .\add-isolated-app.ps1 -Name Blender -Path "C:\Program Files\Blender\blender.exe" -WebPass 'pw'
@@ -23,20 +23,35 @@ if (-not (Test-Path -LiteralPath $Path)) { throw "Eseguibile non trovato: $Path"
 $slug = ($Name -replace '[^A-Za-z0-9]', '').ToLower()
 $cmdFile = "C:\winfleet\run-$slug.cmd"
 
-# .cmd (single path, no args → no Sunshine command-parsing issues): writes the
-# target exe, then triggers the in-session task.
+# Launcher: a single path with no arguments, so Sunshine's command parser has
+# nothing to trip on. Ends any session still running, then starts this app.
 @"
 @echo off
+schtasks /end /tn winfleet-app >nul 2>&1
+timeout /t 1 /nobreak >nul
 echo $Path> C:\winfleet\current-app.txt
 schtasks /run /tn winfleet-app >nul 2>&1
 "@ | Set-Content -Path $cmdFile -Encoding ASCII
 Write-Host "Launcher: $cmdFile"
 
-# Sunshine app entry (auto-detach: stream the display while the client is connected)
+# Teardown: Sunshine runs this when the client disconnects, so the PC always
+# returns to the real desktop even if the app is left open.
+@"
+@echo off
+schtasks /end /tn winfleet-app >nul 2>&1
+schtasks /run /tn winfleet-reset >nul 2>&1
+"@ | Set-Content -Path 'C:\winfleet\stop.cmd' -Encoding ASCII
+
+# Sunshine app entry (auto-detach: keep streaming the display while connected)
 $conf = 'C:\Program Files\Sunshine\config\apps.json'
 $j = Get-Content $conf -Raw | ConvertFrom-Json
 $j.apps = @($j.apps | Where-Object { $_.name -ne $Name })
-$j.apps += [pscustomobject]([ordered]@{ name = $Name; cmd = $cmdFile; 'auto-detach' = $true })
+$j.apps += [pscustomobject]([ordered]@{
+    name          = $Name
+    cmd           = $cmdFile
+    'auto-detach' = $true
+    'prep-cmd'    = @([pscustomobject]([ordered]@{ do = ''; undo = 'C:\winfleet\stop.cmd' }))
+})
 $j | ConvertTo-Json -Depth 8 | Set-Content $conf -Encoding UTF8
 Restart-Service SunshineService
 Start-Sleep 3

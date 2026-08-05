@@ -119,12 +119,13 @@ directly), run on the PC:
 | Mode | What you see | Setup |
 |---|---|---|
 | **Desktop** | the entire live session in one window | works out of the box |
-| **Isolated** | one app that **fills the window** — no desktop around it | `setup-isolated.ps1` + `add-isolated-app.ps1` |
+| **Isolated** | **one app, alone** — no desktop, no taskbar, nothing else | `setup-isolated.ps1` + `add-isolated-app.ps1` |
 
-### Isolated windows
+### Isolated windows — one app, 1:1
 
-`winfleet open <App>` opens a single Windows app as a window that fills the frame — no
-desktop, no taskbar around it. Setup on the host, once:
+`winfleet open <App>` gives you a Mac window containing that Windows app and *only* that
+app. Not a cropped desktop, not a maximized window with the taskbar peeking out: the app
+is the entire frame.
 
 ```powershell
 .\setup-isolated.ps1                                              # once
@@ -133,19 +134,34 @@ desktop, no taskbar around it. Setup on the host, once:
 
 Then on the Mac: `winfleet add blender "Blender"` and `winfleet open Blender`.
 
-**How it clears two Windows traps** (both handled for you):
+**How it works — a dedicated desktop.** Windows can host several *desktop objects* in one
+session, each with its own set of windows. WinFleet creates one called `WinFleet`, starts
+your app there, and switches the screen to it. Nothing else lives on that desktop — no
+Explorer, so no taskbar and no icons — so whatever Sunshine captures *is* the app. This is
+isolation by construction, not by hiding: no amount of other windows opening on your real
+desktop can leak into the stream. When the app closes (or the client disconnects) the
+screen returns to your real desktop and the app is closed.
 
-- **Session-0 isolation.** Sunshine runs as a service in session 0, so apps it launches
-  never appear on your interactive desktop. WinFleet launches them through a scheduled
-  task (`winfleet-app`) that runs *inside your logged-in session*, so the app shows up on
-  the streamed display. You must be logged in on the PC (locked screen is fine).
-- **Resolution switch.** Sunshine resizes the display to the client's resolution on
-  connect. The launcher keeps re-maximizing the app for ~20 s so it fills the frame after
-  the switch, not before.
+Two Windows traps it clears for you:
 
-**Limit:** Sunshine streams one session at a time, so this is *one app in a window at a
-time*, not many side by side. True simultaneous per-window streaming would need a custom
-remote compositor (per-window GPU capture + transport) — a much larger project.
+- **Session-0 isolation.** Sunshine runs as a service in session 0, so neither launching
+  an app nor switching desktops works from there. WinFleet does both through scheduled
+  tasks that run *inside your logged-in session*. You must be logged in on the PC (a
+  locked screen is fine).
+- **Resolution switch.** Sunshine resizes the display to the client's resolution when it
+  connects. The launcher keeps refitting the app to the current display, so it fills the
+  frame after the switch rather than before it.
+
+**Trade-offs, honestly:**
+
+- While an isolated app is streaming, the PC's own monitor shows that app, not your
+  desktop. This is a *remote* mode, not a share-my-screen mode.
+- Sunshine streams one session at a time, so it is one app at a time — not several side by
+  side. Simultaneous per-window streaming would need a custom remote compositor
+  (per-window GPU capture + transport), a much larger project.
+- The app is found by watching for the window that appears on the fresh desktop, which is
+  robust for apps whose visible window belongs to a different process than the one you
+  launch (Store-packaged apps, Chromium, Electron).
 
 ## Troubleshooting
 
@@ -163,8 +179,13 @@ remote compositor (per-window GPU capture + transport) — a much larger project
 winfleet/
 ├── bin/winfleet        # Mac orchestrator (CLI): open / list / dock / pair / doctor
 ├── host/
-│   ├── setup.ps1       # Windows: install & configure Sunshine, encoder, firewall
-│   └── add-app.ps1     # Windows: register an .exe as a Sunshine app (via API)
+│   ├── setup.ps1              # Windows: install & configure Sunshine, encoder, firewall
+│   ├── add-app.ps1            # Windows: register an .exe as a Sunshine app
+│   ├── setup-isolated.ps1     # Windows: enable isolated (single-app) mode
+│   ├── add-isolated-app.ps1   # Windows: register an .exe as an isolated app
+│   ├── wf-launch.ps1          # creates the dedicated desktop and switches to it
+│   ├── wf-inner.ps1           # runs on that desktop: starts + fits the app
+│   └── wf-reset.ps1           # teardown: close the app, back to the real desktop
 └── install.sh          # Mac: install Moonlight + the winfleet command
 ```
 
