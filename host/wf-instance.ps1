@@ -65,8 +65,12 @@ file_state = $dir\state.json
 pkey = $dir\pkey.pem
 cert = $dir\cert.pem
 file_apps = $dir\apps.json
+
 "@
-    if ($outputName) { $conf += "output_name = $outputName`n" }
+    # La riga vuota sopra non e' cosmetica: un here-string finisce senza a capo, e
+    # senza di essa output_name resterebbe incollato alla riga precedente — con il
+    # risultato che Sunshine legge un file_apps inesistente e rimette i suoi default.
+    if ($outputName) { $conf += "output_name = $outputName`r`n" }
     Set-Content "$dir\sunshine.conf" $conf -Encoding ASCII
 }
 
