@@ -68,9 +68,12 @@ static void adopt(NSWindow *w) {
     NSSize want = (gAsked.width > 0) ? gAsked : w.frame.size;
     setWant(w, want);
     if (gAsked.width > 0) {
-        // Nessun vincolo di proporzioni sul trascinamento: la finestra si tira come
-        // si vuole, e a seguirla e' la risoluzione dello schermo su Windows. Bloccare
-        // il rapporto faceva sembrare che si potesse solo scalare il contenuto.
+        // Il rapporto resta quello dello stream. Non e' una preferenza estetica: la
+        // sessione e' negoziata a una forma sola, e se lo schermo di Windows ne
+        // prende un'altra Sunshine ci mette le bande nere per farcela stare. Cocoa
+        // vincola il trascinamento mentre avviene, quindi non c'e' niente da
+        // correggere dopo e la finestra non "scatta".
+        [w setContentAspectRatio:gAsked];
         NSRect f = w.frame;
         if (fabs(f.size.width - want.width) > 1 || fabs(f.size.height - want.height) > 1) {
             f.origin.y += f.size.height - want.height;   // l'angolo in alto resta fermo

@@ -268,96 +268,66 @@ screen_guess(){
 # perche' una finestra "si ridimensiona da sola" senza starle davanti a guardarla.
 trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"$CONFIG_DIR/trace.log" || true; }
 
-# Il monitor virtuale espone una ventina di risoluzioni, non una qualsiasi, e
-# cambiargliela costa una riconnessione. Trattare ogni pixel di differenza come un
-# cambio di modalita' significa far cadere lo stream a ogni trascinamento: la
-# finestra diventa inafferrabile.
+# Cambiare risoluzione allo schermo virtuale NON fa cadere lo stream: Sunshine si
+# accorge del cambio, ricrea cattura ed encoder e la sessione prosegue (verificato:
+# "Desktop resolution [1280x800]" nel suo log, con il client mai disconnesso). E'
+# questo che permette il ridimensionamento dal vivo — prima si riavviava lo stream a
+# ogni ritocco, e una finestra che sparisce per sei secondi sembra un crash.
 #
-# Quindi si lascia ridimensionare liberamente, tenendo solo le proporzioni ferme —
-# l'immagine si scala e riempie sempre la finestra — e si cambia davvero risoluzione
-# solo quando la forma cambia (altre proporzioni) o quando la finestra si allontana
-# abbastanza da far vedere il riscalo.
-SIZE_TOL=4          # % di scarto oltre il quale la risoluzione su Windows deve seguire
-
-# Restituisce "<modalita> <misura-finestra>" quando conviene cambiare risoluzione a
-# Windows, vuoto quando la finestra si chiude.
-#
-# Qualunque ridimensionamento che non sia un ritocco fa cambiare risoluzione, in su
-# come in giu': altrimenti si sta solo scalando un'immagine, che era il punto di
-# partenza. Quello che NON cambia e' la misura della finestra: resta quella scelta
-# dall'utente, solo riportata alle proporzioni della modalita' piu' vicina.
-watch_resize(){ # pid slot modalita-corrente [geometria-tenuta-dalla-libreria]
-  local pid="$1" slot="$2" mode="$3" owned="${4:-}" cur last="" stable=0 m cap
-  local mw="${mode%x*}" mh="${mode#*x}" cw ch skew nw nh tried=""
+# Quindi la sessione si negozia UNA VOLTA alla misura piu' grande che sta sullo
+# schermo, e da li' in poi si tocca solo la risoluzione di Windows: l'app si ridispone
+# davvero mentre trascini, senza un solo taglio.
+follow_resize(){ # pid slot risoluzione-di-negoziazione
+  local pid="$1" slot="$2" smode="$3" cur last="" applied="$3" m cap fit
+  local sw="${smode%x*}" sh="${smode#*x}"
   cap="$(usable_screen)"
-  trace "watch: slot=$slot mode=$mode tetto=$cap"
+  fit="$CONFIG_DIR/slot$slot.fit"
+  trace "segui: slot=$slot stream=$smode tetto=$cap"
   while kill -0 "$pid" 2>/dev/null; do
-    cur="$(win_size "$pid")"
-    if [ -n "$cur" ] && [ "$cur" != "$mode" ]; then
-      cw="${cur%x*}"; ch="${cur#*x}"
-      # Scarto delle proporzioni in percento, senza virgola: cw/ch contro mw/mh.
-      skew=$(( (cw * mh - ch * mw) * 100 / (ch * mw) )); [ "$skew" -lt 0 ] && skew=$(( -skew ))
-      if [ $(( cw * 100 )) -gt $(( (100 + SIZE_TOL) * mw )) ] || \
-         [ $(( cw * 100 )) -lt $(( (100 - SIZE_TOL) * mw )) ] || \
-         [ $(( ch * 100 )) -gt $(( (100 + SIZE_TOL) * mh )) ] || \
-         [ $(( ch * 100 )) -lt $(( (100 - SIZE_TOL) * mh )) ]; then
-        if [ "$cur" = "$last" ] && [ "$cur" != "$tried" ]; then
-          stable=$(( stable + 1 ))
-          if [ "$stable" -ge 3 ]; then
-            m="$(nearest_mode "$slot" "$cw" "$ch" "${cap%x*}" "${cap#*x}")"
-            trace "watch: finestra $cur ferma (scarto ${skew}%) → modalita' $m (era $mode)"
-            if [ -n "$m" ] && [ "$m" != "$mode" ]; then
-              # La finestra prende esattamente la misura della modalita'. Uno schermo
-              # ha un elenco finito di risoluzioni, quindi le misure possibili sono
-              # quelle: assecondare il pixel esatto del trascinamento vorrebbe dire
-              # scalare l'immagine, cioe' proprio quello che questo progetto evita.
-              # Si trascina libero, e al rilascio la finestra si posa sulla misura
-              # buona piu' vicina — 1:1, sempre.
-              echo "$m $m"; return 0
-            fi
-            # Nessuna modalita' migliore per questa misura: si prende atto e non la
-            # si rivaluta finche' la finestra non cambia ancora, altrimenti si
-            # ridecide la stessa cosa ogni due secondi per sempre.
-            tried="$cur"
-            [ -n "$owned" ] || win_fix "$pid" "$mw" "$mh"
-            stable=0
-          fi
-        else
-          stable=0
-        fi
-      else
-        stable=0
-        # Dentro tolleranza la dimensione e' dell'utente: si corregge solo la forma,
-        # cosi' l'immagine riempie la finestra senza bande. Con la libreria dentro
-        # ci pensa Cocoa, che vincola il trascinamento invece di correggerlo dopo.
-        # (|| true: con set -e un test falso qui fermerebbe il sorvegliante)
-        { [ "$skew" -gt 0 ] && [ -z "$owned" ] && win_fix "$pid" "$mw" "$mh"; } || true
+    # Richiesta esplicita di rifare la sessione su misura (winfleet fit): e' l'unico
+    # caso in cui lo stream si riapre, e lo decide chi guarda.
+    if [ -f "$fit" ]; then
+      rm -f "$fit"
+      cur="$(win_size "$pid")"
+      if [ -n "$cur" ]; then
+        m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}" "${cap%x*}" "${cap#*x}")"
+        [ -n "$m" ] && { echo "$m"; return 0; }
       fi
-    else
-      stable=0
     fi
-    last="$cur"
-    sleep 0.4
+
+    cur="$(win_size "$pid")"
+    if [ -n "$cur" ] && [ "$cur" != "$last" ]; then
+      last="$cur"                      # sta ancora muovendo: si aspetta che si fermi
+    elif [ -n "$cur" ] && [ "$cur" != "$applied" ]; then
+      # La risoluzione non puo' superare quella negoziata, o Sunshine dovrebbe
+      # rimpicciolire l'immagine per farcela stare.
+      m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}" "$sw" "$sh")"
+      if [ -n "$m" ] && [ "$m" != "$applied" ]; then
+        vdd_set "$slot" "$m"
+        applied="$m"
+        trace "segui: finestra $cur → schermo Windows $m"
+      else
+        applied="$cur"                 # niente di meglio: si smette di riprovarci
+      fi
+    fi
+    sleep 0.3
   done
   echo ""
 }
 
-# Un ciclo per finestra: apre lo stream, e quando la finestra cambia forma cambia la
-# risoluzione del monitor virtuale e riapre. La app resta viva fra un giro e l'altro
-# (auto-detach lato host), quindi si ritrova solo ridimensionata.
-supervise_window(){ # slot app modalita chiave exe
-  local slot="$1" app="$2" mode="$3" key="$4" exe="$5" addr pid br want i bin
-  # mode  = risoluzione dello schermo virtuale su Windows
-  # wsize = quanto grande sta la finestra sul Mac. All'apertura coincidono; dopo un
-  #         ridimensionamento no, perche' la misura la sceglie l'utente e la
-  #         risoluzione la si prende dall'elenco di quelle disponibili.
-  local wsize="$3"
+supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-finestra
+  local slot="$1" app="$2" smode="$3" key="$4" exe="$5" wsize="$6"
+  local addr pid br want i bin
+  # smode = risoluzione con cui si negozia la sessione, e massimo che lo schermo
+  #         virtuale potra' prendere. Non cambia mai finche' la finestra vive.
+  # wsize = quanto grande sta la finestra sul Mac. Puo' essere piu' piccola: lo
+  #         schermo di Windows la segue a caldo, senza riaprire nulla.
   local -a pre=()
   addr="$(slot_addr "$slot")"
   bin="$(runner_bin "$app")"
   # Con la libreria dentro, la geometria la tiene lei: sa distinguere un
   # trascinamento dell'utente da una correzione di Moonlight, cosa che da fuori non
-  # si puo' fare. Qui resta solo il compito di decidere quando cambiare risoluzione.
+  # si puo' fare.
   local owned=""
   chrome_hidden "$bin" && owned=1
   # Prima dello stream, cosi' il client legge il nome nuovo al primo poll e la
@@ -365,55 +335,44 @@ supervise_window(){ # slot app modalita chiave exe
   rename_instance "$slot" "$app"
   local first=1
   while true; do
-    vdd_set "$slot" "$mode"
+    vdd_set "$slot" "$smode"
     sleep 2
-    # L'app si avvia una volta sola. Al cambio di risoluzione non va riavviata: il
-    # task che la tiene sul suo schermo rilegge la geometria da solo e la rimette a
-    # misura, quindi l'app si ritrova ridimensionata invece che ripartita da capo.
+    # L'app si avvia una volta sola: al cambio di risoluzione la rimette a misura il
+    # task che la tiene sul suo schermo, quindi si ritrova ridimensionata invece che
+    # ripartita da capo.
     [ "$first" = 1 ] && { place_app "$slot" "$exe"; first=0; }
-    br="$(stream_bitrate "$mode")"
+    br="$(stream_bitrate "$smode")"
     [ -n "$owned" ] && pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" )
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \
-      --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
+      --absolute-mouse --no-vsync --quit-after --resolution "$smode" \
       >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
     pid=$!
     # Se la libreria iniettata non e' caricabile dyld ammazza il processo subito,
     # prima di eseguire una riga: meglio accorgersene e riprovare senza, con la barra
-    # del titolo al suo posto, che lasciare l'utente davanti a una finestra che non
-    # si apre mai.
+    # del titolo al suo posto, che lasciare una finestra che non si apre mai.
     if [ -n "$owned" ]; then
       sleep 2
       if ! kill -0 "$pid" 2>/dev/null; then
         trace "avvio fallito con la libreria: riprovo senza"
-        owned=""; pre=()
-        ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
+        owned=""; pre=(); TITLEBAR=28
+        "$bin" stream "$addr" Desktop --display-mode windowed \
           --fps "$FPS" --bitrate "$br" \
-          --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
+          --absolute-mouse --no-vsync --quit-after --resolution "$smode" \
           >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
         pid=$!
-        TITLEBAR=28
       fi
     fi
-    slot_save "$slot" "$app" "$mode" "$pid" "$(self_pid)"
+    slot_save "$slot" "$app" "$wsize" "$pid" "$(self_pid)"
     for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
     # Prima finestra della vita: e' l'unica occasione per sapere quanto grande la
     # puo' fare macOS davvero. Da qui in poi il dato e' in config.
     usable_screen "$pid" >/dev/null
     hide_gui "$pid"
-    # Moonlight ridimensiona la finestra da solo mentre negozia lo stream: guardarla
-    # subito significa scambiare quel transitorio per un ridimensionamento voluto, e
-    # inseguirlo scendendo di modalita' a ogni giro. Prima la si porta a misura e la
-    # si aspetta ferma, poi si comincia a sorvegliarla.
-    # Moonlight decide da solo la dimensione della finestra, e non una volta: se lo
-    # stream non entra nei limiti dello schermo che SDL crede attivo, la rifa'
-    # all'80% — anche secondi dopo averla aperta giusta, quando la finestra passa
-    # allo schermo definitivo. Per un po' quindi la si rimette a misura ogni volta
-    # che se ne allontana; poi Moonlight smette e si puo' cominciare a sorvegliarla.
     if [ -z "$owned" ]; then
-      # Senza libreria non c'e' modo di sapere chi ha ridimensionato, quindi si
-      # tiene la misura per qualche secondo: tanto basta ad annullare la correzione
-      # all'80% di Moonlight, che arriva poco dopo l'apertura.
+      # Senza libreria non c'e' modo di sapere chi ha ridimensionato, quindi si tiene
+      # la misura per qualche secondo: tanto basta ad annullare la correzione all'80%
+      # che Moonlight fa poco dopo l'apertura.
       local now cwn
       for i in $(seq 1 20); do
         now="$(win_size "$pid")"; cwn="${now%x*}"
@@ -424,40 +383,36 @@ supervise_window(){ # slot app modalita chiave exe
         sleep 0.5
       done
     fi
-    trace "aperta: mode=$mode finestra=$(win_size "$pid") (chiesta $wsize)"
+    trace "aperta: stream=$smode finestra=$(win_size "$pid") (chiesta $wsize)"
 
-    want="$(watch_resize "$pid" "$slot" "$wsize" "$owned")"
+    want="$(follow_resize "$pid" "$slot" "$smode")"
+    # La misura si legge finche' la finestra c'e' ancora: serve a riaprirla domani
+    # come l'ha lasciata l'utente.
+    local seen; seen="$(win_size "$pid")"
+    [ -n "$seen" ] && { wsize="$seen"; save_cfg "size_$key" "$wsize"; }
     kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     [ -n "$want" ] || break
-    mode="${want%% *}"; wsize="${want##* }"
-    save_cfg "size_$key" "$wsize"
+    smode="$want"; wsize="$want"
     refresh_vdd
   done
   place_stop "$slot"
   slot_forget "$slot"
 }
 
-# Riporta ogni finestra a filo dei pixel che sta ricevendo: nessun riscalo, nessuna
-# banda. Con le istanze a monitor virtuale la misura giusta e' la modalita' dello
-# schermo di quella finestra, non la risoluzione del desktop dell'host.
+# Rinegozia la sessione sulla misura esatta della finestra: mentre trascini lo
+# schermo di Windows la segue a caldo, ma l'immagine resta scalata da quella
+# negoziata all'apertura. Questo la rimette a filo di pixel — al prezzo di una
+# riapertura di pochi secondi, che quindi decidi tu e non succede da sola.
 cmd_fit(){
-  local i pid mode done=0
+  local i n=0
   for i in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do
     slot_live "$i" || continue
-    pid="$(slot_get "$i" pid)"; mode="$(slot_get "$i" mode)"
-    [ -n "$pid" ] && [ -n "$mode" ] || continue
-    win_set "$pid" "${mode%x*}" "${mode#*x}"
-    ok "$(slot_get "$i" app): $mode"
-    done=1
+    : >"$CONFIG_DIR/slot$i.fit"
+    ok "$(slot_get "$i" app): rimetto a fuoco  ${c_dim}$(slot_get "$i" mode)${c_off}"
+    n=$(( n + 1 ))
   done
-  [ "$done" = 1 ] && return
-
-  local res; res="$(stream_res)"; pid="$(stream_pid)"
-  [ -n "$res" ] || res="$(detect_host_res)" || die "Risoluzione sconosciuta: avvia uno stream una volta."
-  [ -n "$pid" ] || die "Nessuna finestra aperta."
-  win_fix "$pid" "${res%x*}" "${res#*x}"
-  ok "finestra riportata alle proporzioni ${res%x*}:${res#*x}"
+  [ "$n" -gt 0 ] || info "nessuna finestra aperta"
 }
 
 # ---------------------------------------------------------------------------
@@ -575,7 +530,7 @@ app_exe(){ # nome app -> percorso sull'host
 
 vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1
 }
 
@@ -677,6 +632,12 @@ chrome_hidden(){ # binario dello stream
 # Catalogo delle app installate sull'host
 # ---------------------------------------------------------------------------
 HOST_APPS="$CONFIG_DIR/host-apps.tsv"
+
+# Una connessione sola, riusata da tutti i comandi: cambiare risoluzione mentre si
+# trascina significa parlare con l'host di continuo, e rifare l'handshake ogni volta
+# aggiungeva mezzo secondo a ogni passo.
+SSH_OPTS=( -o BatchMode=yes -o ControlMaster=auto -o ControlPersist=120
+           -o "ControlPath=$HOME/.config/winfleet/ssh-%r@%h:%p" )
 
 need_ssh(){
   [ -n "${HOST_SSH:-}" ] || die "Serve l'accesso SSH all'host per cercare e registrare app.
@@ -791,16 +752,23 @@ cmd_open(){
       # risoluzione con cui il monitor virtuale si e' acceso.
       want="$(( ${cap%x*} * 7 / 10 ))x$(( ${cap#*x} * 7 / 10 ))"
     fi
-    mode="$(nearest_mode "$slot" "${want%x*}" "${want#*x}" "${cap%x*}" "${cap#*x}")"
+    # La sessione si negozia alla misura piu' grande che sta su questo schermo, e non
+    # si rinegozia piu': da li' in poi a seguire la finestra e' la risoluzione di
+    # Windows, che cambia a caldo. La finestra parte dalla misura ricordata, con le
+    # stesse proporzioni dello stream — altrimenti Sunshine ci mette le bande nere.
+    mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
+    local ww="${want%x*}"
+    [ "$ww" -gt "${mode%x*}" ] && ww="${mode%x*}"
+    want="${ww}x$(( ww * ${mode#*x} / ${mode%x*} ))"
 
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
     [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
 
     printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
-      "$app" "$(( slot + 1 ))" "$HOST_NAME" "$mode" "$FPS"
-    ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" ) >/dev/null 2>&1 &
+      "$app" "$(( slot + 1 ))" "$HOST_NAME" "$want" "$FPS"
+    ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
     # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
     # ad arrivare allo stream, e nel frattempo un secondo "open" la sceglierebbe.
     slot_save "$slot" "$app" "$mode" "" "$!"
