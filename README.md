@@ -178,13 +178,34 @@ Two Windows traps it clears for you:
 **Trade-offs, honestly:**
 
 - While an isolated app is streaming, the PC's own monitor shows that app, not your
-  desktop. This is a *remote* mode, not a share-my-screen mode.
-- Sunshine streams one session at a time, so it is one app at a time — not several side by
-  side. Simultaneous per-window streaming would need a custom remote compositor
-  (per-window GPU capture + transport), a much larger project.
+  desktop. This is a *remote* mode, not a share-my-screen mode. `wf-vdd.ps1` is the way
+  out of this — see below.
+- Sunshine streams one session at a time, so it is one app at a time — not several side
+  by side.
 - The app is found by watching for the window that appears on the fresh desktop, which is
   robust for apps whose visible window belongs to a different process than the one you
   launch (Store-packaged apps, Chromium, Electron).
+
+### Virtual monitors (groundwork for several windows at once)
+
+`host/wf-vdd.ps1` plugs virtual monitors into the **Parsec Virtual Display Adapter**,
+which ships with Parsec and is already present on most gaming PCs — nothing new is
+installed, the script only speaks the adapter's documented control protocol.
+
+```powershell
+.\wf-vdd.ps1 -Count 2      # two virtual monitors; they last while this runs
+```
+
+A monitor of its own is a better kind of isolation than a dedicated desktop: the app
+gets a screen nobody else draws on, and the PC's real desktop is left alone. It is also
+what several simultaneous windows require, since one Sunshine instance streams one
+screen — several windows means one Sunshine instance per virtual monitor, each on its
+own ports and paired separately.
+
+The driver unplugs its monitors unless it is pinged more often than every 100 ms, so the
+script stays resident and pings. That is a useful property rather than a nuisance: kill
+it, lose the process, reboot — the virtual monitors disappear on their own and the PC is
+left exactly as it was.
 
 ## Troubleshooting
 
