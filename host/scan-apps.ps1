@@ -8,6 +8,11 @@
   to offer apps to open, so the list matches what a person would see in the
   Start menu rather than every binary on disk.
 
+  Packaged apps are added on top of that. Notepad, Calculator, Photos and the rest
+  of what ships with Windows 11 have no shortcut on disk at all — they exist only as
+  an application id — so a Start Menu walk alone silently misses half the Start menu.
+  Those come out as "shell:AppsFolder\<id>", which wf-place.ps1 knows how to open.
+
   Uninstallers, updaters, help and documentation links are dropped: they are
   never what you want on a remote screen.
 #>
@@ -40,4 +45,18 @@ foreach ($root in $roots) {
         $seen[$name] = $true
         Write-Output ("{0}`t{1}" -f $name, $target)
     }
+}
+
+# Le app impacchettate: Get-StartApps le elenca tutte, e quelle dello Store hanno un
+# AppUserModelID (col "!" dentro) invece di un percorso. Le voci gia' trovate come
+# collegamento restano quelle: un .exe si avvia in modo piu' diretto.
+Get-StartApps -EA SilentlyContinue | ForEach-Object {
+    $name = $_.Name
+    $id   = $_.AppID
+    if (-not $name -or -not $id) { return }
+    if ($name -match $skip) { return }
+    if ($id -notmatch '!') { return }
+    if ($seen.ContainsKey($name)) { return }
+    $seen[$name] = $true
+    Write-Output ("{0}`tshell:AppsFolder\{1}" -f $name, $id)
 }

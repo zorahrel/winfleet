@@ -91,14 +91,21 @@ $mon = Get-Monitor
 if (-not $mon) { throw "Slot $Slot senza monitor virtuale." }
 Note "slot $Slot -> $($mon.device) $($mon.width)x$($mon.height) @ $($mon.x),$($mon.y)"
 
-# Single-instance apps would otherwise just raise their existing window on another
-# screen instead of opening one here.
-$name = [IO.Path]::GetFileNameWithoutExtension($Exe)
-Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
-Start-Sleep 1
+# Le app dello Store non hanno un eseguibile da avviare, solo un identificativo: si
+# passa dalla cartella virtuale delle applicazioni, come fa il menu Start.
+$packaged = $Exe -like 'shell:AppsFolder\*'
+
+if (-not $packaged) {
+    # Single-instance apps would otherwise just raise their existing window on another
+    # screen instead of opening one here.
+    $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
+    Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+    Start-Sleep 1
+}
 
 $before = [P]::Candidates()
-Start-Process -FilePath $Exe | Out-Null
+if ($packaged) { Start-Process 'explorer.exe' -ArgumentList $Exe | Out-Null }
+else           { Start-Process -FilePath $Exe | Out-Null }
 Note "avviata $Exe"
 
 $h = [IntPtr]::Zero
