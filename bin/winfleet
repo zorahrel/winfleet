@@ -7,6 +7,7 @@
 #
 #   winfleet open <app>        apre l'app/desktop in una finestra sul Mac
 #   winfleet search <testo>    cerca un'app installata sul PC e la apre
+#   winfleet windows           stato delle finestre (istanze) e quali sono libere
 #   winfleet scan              rilegge l'elenco delle app installate sul PC
 #   winfleet fit               riporta la finestra alle proporzioni dello stream
 #   winfleet stop              chiude la sessione (graceful)
@@ -32,6 +33,9 @@ FPS=60
 BITRATE=auto        # Kbps, o "auto" = scelto in base alla risoluzione
 RESOLUTION=auto     # "auto" = nativa dell'host (nessun riscalo); es. 2560x1440
 HOST_RES=""         # risoluzione desktop dell'host, rilevata al primo stream
+HOST_NAME=""        # nome mDNS dell'host (es. WindowsAtti.local): indirizza le istanze per porta
+SLOTS=0             # quante istanze WinFleet (monitor virtuali) ci sono sull'host
+SLOT_BASE=48089     # porta della prima istanza; le successive +100
 SUN_PORT=47990
 TITLEBAR=28         # altezza barra titolo macOS, esclusa dall'area video
 
@@ -172,12 +176,232 @@ aspect_keeper(){ # pid larghezza altezza
   disown 2>/dev/null || true
 }
 
+# Dimensione utile della finestra dello stream, in punti (esclusa la barra titolo).
+win_size(){ # pid
+  osascript 2>/dev/null <<EOF
+try
+  tell application "System Events" to tell (first process whose unix id is $1)
+    if (count of windows) is 0 then return ""
+    set sz to size of item 1 of windows
+    return (((item 1 of sz) as integer) as text) & "x" & ((((item 2 of sz) - $TITLEBAR) as integer) as text)
+  end tell
+on error
+  return ""
+end try
+EOF
+}
+
+# macOS non lascia crescere una finestra oltre il bordo dello schermo: se resta dov'e'
+# la larghezza viene troncata in silenzio. Quindi prima si sposta, poi si dimensiona.
+win_set(){ # pid larghezza altezza
+  osascript >/dev/null 2>&1 <<EOF
+tell application "Finder" to set sb to bounds of window of desktop
+set scrW to item 3 of sb
+set scrH to item 4 of sb
+try
+  tell application "System Events" to tell (first process whose unix id is $1)
+    if (count of windows) is 0 then return
+    set pos to position of item 1 of windows
+    set px to item 1 of pos
+    set py to item 2 of pos
+    if px < 0 or (px + $2) > scrW then set px to 20
+    if py < 30 or (py + $3 + $TITLEBAR) > scrH then set py to 40
+    set position of item 1 of windows to {px, py}
+    set size of item 1 of windows to {$2, $3 + $TITLEBAR}
+    -- Con piu' schermi il rettangolo del desktop e' l'unione, quindi il calcolo
+    -- sopra puo' sbagliare e macOS tronca la larghezza: se e' successo, si riprova
+    -- dall'angolo.
+    set got to size of item 1 of windows
+    if (item 1 of got) is not $2 then
+      set position of item 1 of windows to {20, 40}
+      set size of item 1 of windows to {$2, $3 + $TITLEBAR}
+    end if
+  end tell
+end try
+EOF
+}
+
+# Quanto puo' essere grande una finestra su questo Mac, in punti. Il rettangolo del
+# desktop di Finder e' l'unione di tutti gli schermi e su piu' monitor mente, quindi
+# si misura sul serio: si chiede una finestra enorme e si guarda cosa concede macOS.
+screen_size(){ # pid di una finestra gia' aperta (opzionale)
+  local got=""
+  if [ -n "${1:-}" ]; then
+    got="$(osascript 2>/dev/null <<EOF
+try
+  tell application "System Events" to tell (first process whose unix id is $1)
+    if (count of windows) is 0 then return ""
+    set old to size of item 1 of windows
+    set position of item 1 of windows to {0, 0}
+    set size of item 1 of windows to {99999, 99999}
+    set big to size of item 1 of windows
+    set size of item 1 of windows to old
+    return (((item 1 of big) as integer) as text) & "x" & (((item 2 of big) as integer) as text)
+  end tell
+on error
+  return ""
+end try
+EOF
+)"
+  fi
+  if [ -z "$got" ]; then
+    got="$(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null |
+      awk -F', *' '{printf "%dx%d", $3, $4}')"
+  fi
+  echo "$got"
+}
+
+# Aspetta che il ridimensionamento si fermi e restituisce la modalita' da adottare;
+# vuoto se lo stream e' finito. Ridimensionare la finestra sul Mac deve cambiare
+# davvero la risoluzione dello schermo su Windows, non scalare l'immagine.
+watch_resize(){ # pid slot modalita-corrente
+  local pid="$1" slot="$2" mode="$3" cur last="" stable=0 m
+  while kill -0 "$pid" 2>/dev/null; do
+    cur="$(win_size "$pid")"
+    if [ -n "$cur" ] && [ "$cur" != "$mode" ] && [ "$cur" = "$last" ]; then
+      stable=$(( stable + 1 ))
+      if [ "$stable" -ge 2 ]; then
+        m="$(nearest_mode "$slot" "${cur%x*}" "${cur#*x}")"
+        if [ -n "$m" ] && [ "$m" != "$mode" ]; then echo "$m"; return 0; fi
+        win_set "$pid" "${mode%x*}" "${mode#*x}"   # nessuna modalita' piu' vicina: si torna a filo
+        stable=0
+      fi
+    else
+      stable=0
+    fi
+    last="$cur"
+    sleep 0.4
+  done
+  echo ""
+}
+
+# Un ciclo per finestra: apre lo stream, e quando la finestra cambia forma cambia la
+# risoluzione del monitor virtuale e riapre. La app resta viva fra un giro e l'altro
+# (auto-detach lato host), quindi si ritrova solo ridimensionata.
+supervise_window(){ # slot app modalita chiave exe
+  local slot="$1" app="$2" mode="$3" key="$4" exe="$5" addr pid br want i
+  addr="$(slot_addr "$slot")"
+  while true; do
+    vdd_set "$slot" "$mode"
+    sleep 2
+    place_app "$slot" "$exe"
+    br="$(stream_bitrate "$mode")"
+    "$MOONLIGHT" stream "$addr" Desktop --display-mode windowed --fps "$FPS" --bitrate "$br" \
+      --absolute-mouse --no-vsync --quit-after --resolution "$mode" \
+      >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
+    pid=$!
+    for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
+    win_set "$pid" "${mode%x*}" "${mode#*x}"
+    hide_gui "$pid"
+
+    want="$(watch_resize "$pid" "$slot" "$mode")"
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    [ -n "$want" ] || break
+    mode="$want"
+    save_cfg "size_$key" "$mode"
+    refresh_vdd
+  done
+  place_stop "$slot"
+}
+
 cmd_fit(){
   local res pid; res="$(stream_res)"; pid="$(stream_pid)"
   [ -n "$res" ] || res="$(detect_host_res)" || die "Risoluzione sconosciuta: avvia uno stream una volta."
   [ -n "$pid" ] || die "Nessuno stream aperto."
   win_fix "$pid" "${res%x*}" "${res#*x}"
   ok "finestra riportata alle proporzioni ${res%x*}:${res#*x}"
+}
+
+# ---------------------------------------------------------------------------
+# Istanze e monitor virtuali (una finestra per istanza)
+# ---------------------------------------------------------------------------
+VDD_CACHE="$CONFIG_DIR/vdd.json"
+
+slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
+
+# Moonlight cerca prima fra gli host che gia' conosce e li confronta per indirizzo
+# ignorando la porta: con "192.168.1.3:48089" finirebbe sull'istanza di sistema.
+# Il nome mDNS non collide con nulla, quindi indirizza l'istanza giusta.
+slot_addr(){ echo "$HOST_NAME:$(slot_port "$1")"; }
+
+slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
+  curl -s --max-time 4 "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+    | tr '<' '\n' | awk -F'>' '/^state/{print $2}'
+}
+
+pick_slot(){
+  local i
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    case "$(slot_state "$i")" in *FREE*) echo "$i"; return 0;; esac
+  done
+  return 1
+}
+
+refresh_vdd(){
+  need_ssh
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \
+    | tr -d '\r' >"$VDD_CACHE.tmp"
+  if [ -s "$VDD_CACHE.tmp" ]; then mv "$VDD_CACHE.tmp" "$VDD_CACHE"; else rm -f "$VDD_CACHE.tmp"; fi
+}
+
+vdd_field(){ # slot campo
+  [ -s "$VDD_CACHE" ] || refresh_vdd
+  VDD_CACHE="$VDD_CACHE" WF_SLOT="$1" WF_FIELD="$2" python3 -c '
+import json, os, sys
+try:
+    for m in json.load(open(os.environ["VDD_CACHE"])):
+        if m["slot"] == int(os.environ["WF_SLOT"]):
+            print(m[os.environ["WF_FIELD"]]); break
+except Exception:
+    pass
+' 2>/dev/null
+}
+
+# Il monitor virtuale accetta solo un elenco fisso di modalita': si prende quella
+# piu' vicina alla finestra, preferendo una che la contenga.
+nearest_mode(){ # slot larghezza altezza
+  local modes; modes="$(vdd_field "$1" modes)"
+  [ -n "$modes" ] || { echo ""; return; }
+  WF_MODES="$modes" WF_W="$2" WF_H="$3" python3 -c '
+import os
+w, h = int(os.environ["WF_W"]), int(os.environ["WF_H"])
+best, score = None, None
+for m in os.environ["WF_MODES"].split():
+    mw, mh = (int(x) for x in m.split("x"))
+    s = (mw - w) ** 2 + (mh - h) ** 2
+    if mw < w or mh < h:
+        s += 4000000
+    if score is None or s < score:
+        best, score = m, s
+print(best or "")
+'
+}
+
+# Sunshine non lancia l'app: per aprire una finestra nella sessione interattiva
+# duplicherebbe il token della console, privilegio riservato a LocalSystem. La apre
+# quindi un task nostro, e Sunshine si limita a trasmettere lo schermo.
+place_app(){ # slot percorso-exe
+  need_ssh
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; Set-Content 'C:\\winfleet\\app$1.txt' '$2'; Start-Sleep 1; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1
+}
+
+place_stop(){ # slot
+  [ -n "${HOST_SSH:-}" ] || return 0
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; if (Test-Path 'C:\\winfleet\\pid$1.txt') { Stop-Process -Id ([int](Get-Content 'C:\\winfleet\\pid$1.txt').Trim()) -Force -EA SilentlyContinue }\"" >/dev/null 2>&1
+}
+
+app_exe(){ # nome app -> percorso sull'host
+  [ -s "$HOST_APPS" ] || return 1
+  awk -F'\t' -v n="$1" 'tolower($1)==tolower(n){print $2; exit}' "$HOST_APPS"
+}
+
+vdd_set(){ # slot LARGHEZZAxALTEZZA
+  need_ssh
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -260,6 +484,34 @@ cmd_endpoint(){
 cmd_open(){
   need_config
   local app="${1:-Desktop}"
+
+  # Con le istanze a monitor virtuale ogni app ha il suo schermo: piu' finestre
+  # insieme, e ridimensionarle cambia davvero la risoluzione lato Windows.
+  if [ "${SLOTS:-0}" -gt 0 ] && [ -n "$HOST_NAME" ] && [ "$app" != "Desktop" ]; then
+    local slot key want mode
+    slot="$(pick_slot)" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+    refresh_vdd
+    key="$(printf '%s' "$app" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+    want="$(sed -n "s/^size_$key=\"\{0,1\}\([0-9]*x[0-9]*\).*/\1/p" "$CONFIG" 2>/dev/null | tail -1)"
+    if [ -z "$want" ]; then
+      # Prima apertura: una finestra che sta comoda su questo schermo, non la
+      # risoluzione con cui il monitor virtuale si e' acceso.
+      local scr; scr="$(screen_size "$(stream_pid)")"
+      want="$(( ${scr%x*} * 7 / 10 ))x$(( ${scr#*x} * 7 / 10 ))"
+    fi
+    mode="$(nearest_mode "$slot" "${want%x*}" "${want#*x}")"
+    [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
+
+    local exe; exe="$(app_exe "$app")" || true
+    [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
+
+    printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
+      "$app" "$(( slot + 1 ))" "$HOST_NAME" "$mode" "$FPS"
+    ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    return
+  fi
+
   read -r addr kind <<<"$(resolve_endpoint)"
   [ -n "$addr" ] || die "Host irraggiungibile. Controlla:  winfleet doctor"
 
@@ -295,6 +547,20 @@ cmd_open(){
 
   hide_gui "$mpid"
   [ -n "$res" ] && aspect_keeper "$mpid" "${res%x*}" "${res#*x}"
+}
+
+cmd_windows(){
+  [ "${SLOTS:-0}" -gt 0 ] || { info "nessuna istanza a finestre configurata (SLOTS=0)"; return; }
+  printf "${c_bold}Finestre${c_off}\n"
+  local i st
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    st="$(slot_state "$i")"
+    case "$st" in
+      *FREE*) info "finestra $(( i + 1 ))  libera        ${c_dim}porta $(slot_port "$i")${c_off}";;
+      *BUSY*) ok   "finestra $(( i + 1 ))  in uso        $(vdd_field "$i" width)x$(vdd_field "$i" height)";;
+      *)      bad  "finestra $(( i + 1 ))  non risponde  ${c_dim}porta $(slot_port "$i")${c_off}";;
+    esac
+  done
 }
 
 cmd_stop(){
@@ -427,6 +693,7 @@ CFG
 # ---------------------------------------------------------------------------
 case "${1:-}" in
   open)     shift; cmd_open "$@";;
+  windows)  cmd_windows;;
   search)   shift; cmd_search "$@";;
   scan)     cmd_scan;;
   fit)      cmd_fit;;

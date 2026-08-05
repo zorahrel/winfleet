@@ -137,75 +137,77 @@ re-snaps it at any time.
 - **Mouse.** WinFleet uses Moonlight's `--absolute-mouse` (remote-desktop pointer), the
   right mode for productivity apps.
 
-## Modes
+## Windows, one per app
 
-| Mode | What you see | Setup |
-|---|---|---|
-| **Desktop** | the entire live session in one window | works out of the box |
-| **Isolated** | **one app, alone** — no desktop, no taskbar, nothing else | `setup-isolated.ps1` + `add-isolated-app.ps1` |
+`winfleet search telegram` opens Telegram as a Mac window. Not a desktop with Telegram
+in it, and not a scaled picture of one: the window *is* the app, and resizing it resizes
+the Windows window.
 
-### Isolated windows — one app, 1:1
+That works because each app gets **a screen of its own**. WinFleet plugs virtual monitors
+into the Parsec Virtual Display Adapter — already present on most gaming PCs, so nothing
+is installed — and runs one Sunshine instance per monitor. Isolation then costs nothing:
+no taskbar, no other windows, no desktop, because nothing else ever draws on that screen.
+The PC's real desktop is left completely alone, and several apps stream at once, one per
+monitor.
 
-`winfleet open <App>` gives you a Mac window containing that Windows app and *only* that
-app. Not a cropped desktop, not a maximized window with the taskbar peeking out: the app
-is the entire frame.
-
-```powershell
-.\setup-isolated.ps1                                              # once
-.\add-isolated-app.ps1 -Name Blender -Path "C:\...\blender.exe"
+```sh
+winfleet windows          # quali finestre sono libere
+winfleet search edge      # apre Edge nella prima libera
+winfleet search telegram  # e Telegram in un'altra, insieme
 ```
 
-Then on the Mac: `winfleet add blender "Blender"` and `winfleet open Blender`.
+### Resizing
 
-**How it works — a dedicated desktop.** Windows can host several *desktop objects* in one
-session, each with its own set of windows. WinFleet creates one called `WinFleet`, starts
-your app there, and switches the screen to it. Nothing else lives on that desktop — no
-Explorer, so no taskbar and no icons — so whatever Sunshine captures *is* the app. This is
-isolation by construction, not by hiding: no amount of other windows opening on your real
-desktop can leak into the stream. When the app closes (or the client disconnects) the
-screen returns to your real desktop and the app is closed.
+Drag the Mac window and the **Windows display changes resolution to match**: the app
+reflows the way it would on a real monitor of that size, instead of being stretched. When
+you stop dragging, WinFleet picks the closest resolution the virtual monitor supports,
+switches it, and reconnects — about a second, and the app keeps running throughout. The
+size is remembered per app, so it opens that way next time.
 
-Two Windows traps it clears for you:
-
-- **Session-0 isolation.** Sunshine runs as a service in session 0, so neither launching
-  an app nor switching desktops works from there. WinFleet does both through scheduled
-  tasks that run *inside your logged-in session*. You must be logged in on the PC (a
-  locked screen is fine).
-- **Resolution switch.** Sunshine resizes the display to the client's resolution when it
-  connects. The launcher keeps refitting the app to the current display, so it fills the
-  frame after the switch rather than before it.
-
-**Trade-offs, honestly:**
-
-- While an isolated app is streaming, the PC's own monitor shows that app, not your
-  desktop. This is a *remote* mode, not a share-my-screen mode. `wf-vdd.ps1` is the way
-  out of this — see below.
-- Sunshine streams one session at a time, so it is one app at a time — not several side
-  by side.
-- The app is found by watching for the window that appears on the fresh desktop, which is
-  robust for apps whose visible window belongs to a different process than the one you
-  launch (Store-packaged apps, Chromium, Electron).
-
-### Virtual monitors (groundwork for several windows at once)
-
-`host/wf-vdd.ps1` plugs virtual monitors into the **Parsec Virtual Display Adapter**,
-which ships with Parsec and is already present on most gaming PCs — nothing new is
-installed, the script only speaks the adapter's documented control protocol.
+### Setup on the PC (once, PowerShell as Administrator)
 
 ```powershell
-.\wf-vdd.ps1 -Count 2      # two virtual monitors; they last while this runs
+.\setup.ps1 -WebPass '<scegli-una-password>'   # Sunshine, encoder, firewall
+.\setup-vdd.ps1 -Slots 2                       # 2 monitor virtuali = 2 finestre
+schtasks /run /tn winfleet-vdd
+.\wf-instance.ps1 -Slot 0                      # un'istanza Sunshine per monitor
+.\wf-instance.ps1 -Slot 1
 ```
 
-A monitor of its own is a better kind of isolation than a dedicated desktop: the app
-gets a screen nobody else draws on, and the PC's real desktop is left alone. It is also
-what several simultaneous windows require, since one Sunshine instance streams one
-screen — several windows means one Sunshine instance per virtual monitor, each on its
-own ports and paired separately.
+Then on the Mac, once per instance: open Moonlight, click the padlocked **WinFleet N**,
+and enter the PIN it shows in that instance's web UI (`https://<host>:48090`, `:48190`, …).
 
-The driver unplugs its monitors unless it is pinged more often than every 100 ms, so the
-script stays resident and pings. That is a useful property rather than a nuisance: kill
-it, lose the process, reboot — the virtual monitors disappear on their own and the PC is
-left exactly as it was.
+### How the pieces fit
+
+| | |
+|---|---|
+| `wf-vdd.ps1` | plugs the virtual monitors, keeps them alive, changes their resolution on request |
+| `wf-instance.ps1` | creates a Sunshine instance bound to one monitor, on its own ports |
+| `wf-inst-ctl.ps1` | starts/stops an instance |
+| `wf-place.ps1` | opens the app and holds it over its monitor |
+| `bin/winfleet` | picks a free window, follows resizes, keeps the Mac window honest |
+
+Four Windows details this had to work around, all documented in the scripts:
+
+- **A service cannot open your windows, and your session cannot see your screens.**
+  Sunshine as a service lives in session 0 and can only launch apps by duplicating the
+  console token — a privilege only LocalSystem holds, so an instance running as you fails
+  with `ACCESS_DENIED` even elevated. Meanwhile a plain process in session 0 enumerates no
+  displays at all. So Sunshine only streams, and WinFleet opens apps from a scheduled task
+  in your own session.
+- **Sunshine is a console program.** Owned by a scheduled task it takes `CTRL_CLOSE` when
+  that console goes away — a remote shell disconnecting was enough to kill a session
+  mid-stream. The task now only launches it, detached.
+- **An indirect display driver refuses `ChangeDisplaySettingsEx` with a position or
+  staged with `CDS_NORESET`** — `DISP_CHANGE_FAILED` every time. Resolution alone, applied
+  immediately, works; Windows re-lays-out the desktop itself.
+- **PowerShell's `Set-Content -Encoding UTF8` writes a BOM**, which Sunshine treats as a
+  broken `apps.json` and silently replaces with its defaults.
+
+## Whole-desktop mode
+
+`winfleet open Desktop` still streams the PC's live session in a window, at native
+resolution, aspect-locked. No virtual monitors involved.
 
 ## Troubleshooting
 
@@ -221,21 +223,20 @@ left exactly as it was.
 
 ```
 winfleet/
-├── bin/winfleet        # Mac orchestrator (CLI): open / list / dock / pair / doctor
+├── bin/winfleet              # Mac: open / search / windows / fit / dock / doctor
 ├── host/
-│   ├── setup.ps1              # Windows: install & configure Sunshine, encoder, firewall
-│   ├── add-app.ps1            # Windows: register an .exe as a Sunshine app
-│   ├── setup-isolated.ps1     # Windows: enable isolated (single-app) mode
-│   ├── add-isolated-app.ps1   # Windows: register an .exe as an isolated app
-│   ├── scan-apps.ps1          # Windows: list installed apps (for `winfleet search`)
-│   ├── wf-launch.ps1          # creates the dedicated desktop and switches to it
-│   ├── wf-inner.ps1           # runs on that desktop: starts + fits the app
-│   └── wf-reset.ps1           # teardown: close the app, back to the real desktop
-└── install.sh          # Mac: install Moonlight + the winfleet command
+│   ├── setup.ps1             # Sunshine: installazione, encoder, firewall
+│   ├── setup-vdd.ps1         # registra il gestore dei monitor virtuali
+│   ├── wf-vdd.ps1            # monitor virtuali: aggancio, keep-alive, risoluzione
+│   ├── wf-instance.ps1       # crea un'istanza Sunshine legata a un monitor
+│   ├── wf-inst-ctl.ps1       # avvia/ferma/interroga un'istanza
+│   ├── wf-place.ps1          # apre l'app e la tiene sul suo schermo
+│   └── scan-apps.ps1         # elenca le app installate (per `winfleet search`)
+└── install.sh                # Mac: Moonlight + il comando winfleet
 ```
 
-Config lives in `~/.config/winfleet/config.env` (host addresses, fps, bitrate) and is
-never committed.
+Config in `~/.config/winfleet/config.env` (indirizzi, SSH dell'host, numero di finestre,
+fps, bitrate) — mai committato.
 
 ## License
 
