@@ -20,19 +20,21 @@ for ($i=0; $i -lt 20 -and $p.MainWindowHandle -eq 0; $i++){ Start-Sleep -Millise
 $h = $p.MainWindowHandle
 if ($h -eq 0) { return }
 
-$GWL_STYLE = -16
-$WS_CAPTION = 0x00C00000; $WS_THICKFRAME = 0x00040000; $WS_BORDER = 0x00800000
-# rimuovi bordo e barra titolo (mantieni il resto dello stile)
-$style = [int64][W]::GetWindowLongPtr($h, $GWL_STYLE)
-$style = $style -band (-bnot ($WS_CAPTION -bor $WS_THICKFRAME -bor $WS_BORDER))
-[W]::SetWindowLongPtr($h, $GWL_STYLE, [IntPtr]$style) | Out-Null
+# minimizza tutto UNA VOLTA (chiamarlo di nuovo farebbe UndoMinimizeAll = sfarfallio)
+(New-Object -ComObject Shell.Application).MinimizeAll()
+Start-Sleep -Milliseconds 300
 
-# loop continuo: copre l'intero schermo, segue ogni cambio di risoluzione,
-# finché l'app resta aperta
+$GWL_STYLE=-16; $rm = 0x00C00000 -bor 0x00040000 -bor 0x00800000
+$st=[int64][W]::GetWindowLongPtr($h,$GWL_STYLE)
+[W]::SetWindowLongPtr($h,$GWL_STYLE,[IntPtr]($st -band (-bnot $rm)))|Out-Null
+$TOP=[IntPtr](-1)
+
+# loop: SOLO tiene l'app fullscreen topmost (niente MinimizeAll nel loop)
 while (-not $p.HasExited) {
-  $sw = [W]::GetSystemMetrics(0); $sh = [W]::GetSystemMetrics(1)
-  [W]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, $sw, $sh, 0x0044) | Out-Null  # NOZORDER|SHOWWINDOW
-  [W]::SetForegroundWindow($h) | Out-Null
-  Start-Sleep -Milliseconds 700
+  $sw=[W]::GetSystemMetrics(0); $sh=[W]::GetSystemMetrics(1)
+  [W]::ShowWindow($h,9)|Out-Null
+  [W]::SetWindowPos($h,$TOP,0,0,$sw,$sh,0x0040)|Out-Null
+  [W]::SetForegroundWindow($h)|Out-Null
+  Start-Sleep -Milliseconds 1000
   $p.Refresh()
 }
