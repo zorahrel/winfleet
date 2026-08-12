@@ -37,6 +37,14 @@ while [ -L "$WF_SELF" ]; do
     *)  WF_SELF="$(dirname "$WF_SELF")/$WF_LINK" ;;
   esac
 done
+# Assoluto, sempre: questo percorso finisce dentro i lanciatori .app, e un "./bin/winfleet"
+# li' dentro vale solo per chi si trova nella cartella del repo — cioe' per nessuno, quando
+# a lanciarli e' il Dock. I bundle costruiti da una cartella diversa da quella del repo
+# non aprivano niente.
+case "$WF_SELF" in
+  /*) ;;
+  *)  WF_SELF="$(cd "$(dirname "$WF_SELF")" && pwd)/$(basename "$WF_SELF")" ;;
+esac
 WF_ROOT="$(cd "$(dirname "$WF_SELF")/.." && pwd)"
 
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
@@ -65,7 +73,16 @@ AGENT_PORT=48088    # agente sull'host: ridimensiona la finestra dell'app e conf
 SUN_PORT=47990
 TITLEBAR=28         # altezza barra titolo macOS, esclusa dall'area video
 
-[ -f "$CONFIG" ] && . "$CONFIG"
+# Solo le righe che sono davvero un'assegnazione, e con un nome che la shell accetta.
+# Le versioni precedenti hanno scritto chiavi con lettere accentate (size_gestioneattività):
+# sourcing fallisce su quella riga, e con set -e muore il comando prima di cominciare —
+# qualunque comando, anche solo "winfleet doctor".
+[ -f "$CONFIG" ] && . <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$CONFIG")
+
+# Il nome di un'app diventa una chiave di configurazione e un identificativo di
+# bundle: solo ASCII, o non e' ne' l'una ne' l'altro. "[:alnum:]" qui non basta,
+# perche' tiene le lettere accentate.
+slug(){ printf '%s' "$1" | LC_ALL=C tr -cd 'A-Za-z0-9' | LC_ALL=C tr 'A-Z' 'a-z'; }
 
 c_grn=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off=$'\033[0m'
 ok(){ printf "  ${c_grn}✓${c_off} %s\n" "$1"; }
@@ -91,7 +108,11 @@ resolve_endpoint(){
   elif [ -n "$HOST_TS" ] && reachable "$HOST_TS" "$SUN_PORT" 2; then
     echo "$HOST_TS tailscale"
   else
-    echo " unreachable"
+    # Una riga vuota, non un segnaposto: "read addr kind" salta gli spazi iniziali,
+    # quindi " unreachable" finiva dentro addr e ogni controllo "[ -n "$addr" ]"
+    # passava. A PC spento winfleet provava a connettersi a un host di nome
+    # "unreachable" invece di dire che il PC e' spento.
+    echo ""
   fi
 }
 
@@ -668,7 +689,12 @@ slot_get(){ # slot campo
 
 slot_live(){ # slot -> 0 se la finestra e' viva
   local sup; sup="$(slot_get "$1" sup)"
-  [ -n "$sup" ] && kill -0 "$sup" 2>/dev/null
+  [ -n "$sup" ] || return 1
+  kill -0 "$sup" 2>/dev/null || return 1
+  # I numeri di processo si riusano: dopo un riavvio del Mac quel numero e' di
+  # qualcun altro, e una finestra "viva" che non esiste tiene occupato lo slot per
+  # sempre — con "tutte le finestre sono occupate" al posto di una finestra.
+  ps -o command= -p "$sup" 2>/dev/null | grep -q winfleet
 }
 
 slot_forget(){ rm -f "$(slot_file "$1")"; }
@@ -698,7 +724,12 @@ runner_bin(){ # nome app -> binario da usare per lo stream
 # — e al posto della sola finestra si vede tutto lo schermo virtuale, desktop
 # compreso. Si crea alla prima apertura e resta.
 ensure_runner(){ # nome exe
-  [ -x "$RUNNERS/$1.app/Contents/MacOS/Moonlight" ] && return 0
+  # Anche un bundle che c'e' gia' va rifatto se e' di una versione precedente: si
+  # riconosce dal programma d'ingresso che non ha (wf-open). Senza quello un doppio
+  # click apre Moonlight invece dell'app, e con le chiavi di gioco di Moonlight
+  # l'app finisce fra i videogiochi.
+  [ -x "$RUNNERS/$1.app/Contents/MacOS/Moonlight" ] && \
+    [ -x "$RUNNERS/$1.app/Contents/MacOS/wf-open" ] && return 0
   local icns="$CONFIG_DIR/icons/$1.icns"
   mkdir -p "$CONFIG_DIR/icons"
   [ -f "$icns" ] || build_icns "$1" "$2" "$icns" || icns=""
@@ -851,7 +882,14 @@ cmd_open(){
       fi
     done
 
-    slot="$(pick_slot)" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+    # Un'istanza che non risponde non e' un'istanza occupata: a PC spento il
+    # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
+    # esistono.
+    slot="$(pick_slot)" || {
+      read -r addr _ <<<"$(resolve_endpoint)"
+      [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso?  winfleet doctor"
+      die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+    }
     refresh_vdd
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
@@ -862,7 +900,7 @@ cmd_open(){
     # deciso prima di ogni calcolo di geometria.
     chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
 
-    key="$(printf '%s' "$app" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+    key="$(slug "$app")"
     want="$(sed -n "s/^size_$key=\"\{0,1\}\([0-9]*x[0-9]*\).*/\1/p" "$CONFIG" 2>/dev/null | tail -1)"
     local cap; cap="$(usable_screen "$(stream_pid)")"
     if [ -z "$want" ]; then
@@ -1045,6 +1083,70 @@ build_icns(){ # nome exe destinazione.icns
   rm -rf "$tmp"
 }
 
+# Una stringa che puo' finire dentro uno script di shell senza sorprese: i nomi delle
+# app di Windows hanno spazi, apostrofi e accenti.
+sh_quote(){ printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Moonlight e' un client di gioco, e lo dichiara: categoria "games", modalita' gioco,
+# controller. Da macOS 26 quelle chiavi bastano perche' il sistema metta il bundle nel
+# catalogo dell'app Giochi — e Telegram o Esplora file fra i videogiochi, oltre che
+# sbagliato, li fa lanciare da li'. Le copie intestate a un'app non sono giochi:
+# le chiavi si tolgono e la categoria diventa quella vera.
+ungame_plist(){ # Info.plist nome
+  local plist="$1" name="$2" pb=/usr/libexec/PlistBuddy k
+  for k in LSApplicationCategoryType LSSupportsGameMode GCSupportsGameMode \
+           GCSupportedGameControllers GCSupportsControllerUserInteraction; do
+    "$pb" -c "Delete :$k" "$plist" >/dev/null 2>&1 || true
+  done
+  "$pb" -c "Add :LSApplicationCategoryType string public.app-category.utilities" \
+    "$plist" >/dev/null 2>&1 || true
+  # Anche la descrizione parlava di giochi, e si legge in Finder.
+  "$pb" -c "Set :CFBundleGetInfoString $name, da Windows tramite WinFleet" "$plist" >/dev/null 2>&1 || \
+    "$pb" -c "Add :CFBundleGetInfoString string $name, da Windows tramite WinFleet" "$plist" >/dev/null 2>&1 || true
+}
+
+# Aperto dal Finder, da Spotlight o dal Dock, un bundle per app deve aprire LA SUA
+# finestra. Senza questo parte il binario di Moonlight cosi' com'e', che mostra il suo
+# elenco di host: la finestra sbagliata, e nessuna app.
+#
+# Lo stream continua a partire dal binario, che winfleet lancia per percorso: il
+# programma dichiarato nel bundle e' solo la porta d'ingresso di chi apre con un
+# doppio click. L'identita' del processo (nome e icona in Dock e ⌘-Tab) resta quella
+# del bundle in entrambi i casi.
+runner_shim(){ # bundle nome
+  local app="$1" name="$2" pb=/usr/libexec/PlistBuddy
+  cat > "$app/Contents/MacOS/wf-open" <<SHIM
+#!/bin/sh
+exec $(sh_quote "$WF_SELF") open $(sh_quote "$name")
+SHIM
+  chmod +x "$app/Contents/MacOS/wf-open"
+  "$pb" -c "Set :CFBundleExecutable wf-open" "$app/Contents/Info.plist" >/dev/null 2>&1 || \
+    "$pb" -c "Add :CFBundleExecutable string wf-open" "$app/Contents/Info.plist" >/dev/null 2>&1 || \
+    die "Non riesco a scrivere CFBundleExecutable in $app"
+}
+
+# Il catalogo dei giochi e' una cache che il sistema si tiene: finche' non la si
+# butta, un bundle che ieri era un gioco resta fra i giochi anche dopo che le chiavi
+# non ci sono piu'. Si ricostruisce da sola al primo avvio delle app vere.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+winfleet_in_game_catalog(){
+  defaults export com.apple.GamePolicyAgent - 2>/dev/null \
+    | plutil -extract installedGames raw -o - - 2>/dev/null \
+    | base64 -d 2>/dev/null | grep -a -q 'dev\.winfleet\.'
+}
+
+forget_games(){ # bundle...
+  local app
+  for app in "$@"; do
+    [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$app" >/dev/null 2>&1 || true
+  done
+  winfleet_in_game_catalog || return 0
+  defaults delete com.apple.GamePolicyAgent installedGames >/dev/null 2>&1 || true
+  killall GamePolicyAgent >/dev/null 2>&1 || true
+  info "tolte le app di WinFleet dal catalogo Giochi di macOS"
+}
+
 # Copia di Moonlight intestata all'app: e' il processo che disegna la finestra,
 # quindi da lui dipendono nome e icona in Dock, ⌘-Tab e barra dei menu. Su APFS
 # "cp -c" e' un clone: istantaneo e senza occupare spazio.
@@ -1058,7 +1160,7 @@ build_runner(){ # nome icns|""
   rm -rf "$app"; mkdir -p "$RUNNERS"
   cp -Rc "$MOONLIGHT_APP" "$app" 2>/dev/null || cp -R "$MOONLIGHT_APP" "$app"
 
-  local id plist k; id="$(printf '%s' "$name" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+  local id plist k; id="$(slug "$name")"
   plist="$app/Contents/Info.plist"
   # Moonlight non ha CFBundleName: Set su una chiave assente fallisce e basta,
   # quindi ogni chiave va aggiunta se manca.
@@ -1078,10 +1180,14 @@ build_runner(){ # nome icns|""
       "$pb" -c "Add :CFBundleIconFile string $f" "$plist" >/dev/null 2>&1 || true
   fi
 
+  ungame_plist "$plist" "$name"
+  runner_shim "$app" "$name"
+
   # Su Apple Silicon la firma del binario sigilla anche Info.plist: dopo averlo
   # toccato il bundle non parte finché non lo si rifirma.
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || \
     die "Non riesco a rifirmare $app (serve per farlo partire su Apple Silicon)."
+  forget_games "$app"
 }
 
 # Lanciatore da Dock/Spotlight: apre la finestra e sparisce, il resto lo fa il
@@ -1098,22 +1204,24 @@ build_launcher(){ # nome icns|""
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>$name</string>
   <key>CFBundleDisplayName</key><string>$name</string>
-  <key>CFBundleIdentifier</key><string>dev.winfleet.$(printf '%s' "$name" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')</string>
+  <key>CFBundleIdentifier</key><string>dev.winfleet.$(slug "$name")</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
   cat > "$app/Contents/MacOS/launch" <<LAUNCH
 #!/bin/sh
-exec "$self" open "$name"
+exec $(sh_quote "$self") open $(sh_quote "$name")
 LAUNCH
   chmod +x "$app/Contents/MacOS/launch"
   [ -n "$icns" ] && [ -f "$icns" ] && cp "$icns" "$app/Contents/Resources/icon.icns"
   codesign --force --sign - "$app" >/dev/null 2>&1 || true
   touch "$app"   # LaunchServices rilegge il bundle
+  forget_games "$app"
 }
 
 # Il pannello: un\'app in barra dei menu con la tendina. Si costruisce come la
@@ -1177,7 +1285,10 @@ cmd_dock(){
     exe="$(app_exe "$name")" || true
     [ -n "$exe" ] || { bad "«${name}» non è tra le app dell'host (winfleet scan)"; continue; }
     icns="$CONFIG_DIR/icons/$name.icns"
-    if build_icns "$name" "$exe" "$icns"; then :; else icns=""; info "$name: icona non recuperata, resta quella di Moonlight"; fi
+    # Se l'icona non arriva dall'host (PC spento) vale quella gia' scaricata: senza
+    # questo un secondo "dock" a PC spento cancellerebbe le icone di tutti.
+    if build_icns "$name" "$exe" "$icns" || [ -f "$icns" ]; then :
+    else icns=""; info "$name: icona non recuperata, resta quella di Moonlight"; fi
     build_runner "$name" "$icns"
     build_launcher "$name" "$icns"
     ok "$name  ${c_dim}$LAUNCHERS/$name.app${c_off}"

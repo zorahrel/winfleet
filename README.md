@@ -82,6 +82,16 @@ winfleet dock Telegram "Microsoft Edge"    # launchers with the real Windows ico
   stream is drawn by a copy of Moonlight that carries the app's identity. On APFS the copy
   is a clone: instant, and it costs no disk space.
 - **Spotlight** finds it, and a click on the Dock icon opens the window.
+- **Not a game.** The copy inherits Moonlight's Info.plist, and Moonlight declares itself a
+  game client: `public.app-category.games`, Game Mode, game controllers. Since macOS 26 those
+  keys are enough for the system to file the bundle under the Games app, which then lists
+  Telegram among your video games and launches it from there — as bare Moonlight, showing its
+  host list instead of the app. WinFleet strips those keys, files the bundle under Utilities,
+  and drops the stale entries from the Games catalog when it rebuilds a bundle.
+- **Opened by hand** — from Finder, Spotlight or anywhere else — the bundle opens the app's
+  window too: the executable declared in the bundle is a small door that runs
+  `winfleet open <app>`. The stream still starts from the Moonlight binary next to it, which
+  WinFleet launches by path.
 
 The icon is pulled off the Windows executable at full 256×256 through the shell's image
 factory — the same path Explorer uses — so it is the real icon, transparency included, not
