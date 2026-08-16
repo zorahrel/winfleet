@@ -55,6 +55,7 @@ public class P {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
   [DllImport("user32.dll")] public static extern IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v);
@@ -210,6 +211,15 @@ while ($true) {
     if ($tw -ne $lastW -or $th -ne $lastH -or $h -ne $lastH2) {
         [P]::ShowWindow($h, 9) | Out-Null              # SW_RESTORE
         [P]::SetWindowPos($h, [IntPtr]::Zero, $mon.x, $mon.y, $tw, $th, $SWP_SHOWWINDOW) | Out-Null
+        # Posizionata non vuol dire davanti. Ogni schermo ha un suo ordine di
+        # sovrapposizione, e una finestra puo' stare al posto giusto, con la misura
+        # giusta, visibile e non nascosta — e avere sopra un'altra finestra a schermo
+        # intero (l'overlay di NVIDIA sta esattamente li'). Sunshine cattura il
+        # monitor, non la finestra: quello che si ottiene e' un rettangolo nero con
+        # tutti i controlli che dicono che va bene, ed e' il caso piu' difficile da
+        # diagnosticare perche' non lascia traccia da nessuna parte.
+        [P]::BringWindowToTop($h) | Out-Null
+        [P]::SetForegroundWindow($h) | Out-Null
         $lastW = $tw; $lastH = $th; $lastH2 = $h
     }
     Start-Sleep -Milliseconds 100
