@@ -419,7 +419,17 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   # $pid e' lo stream: va ucciso esplicitamente, perche' non muore col padre - e
   # finche' vive tiene occupata la sessione di Sunshine, quindi lo slot risulta in uso
   # anche dopo che il supervisore non c'e' piu'.
-  trap 'kill "${pid:-0}" 2>/dev/null; place_stop "$slot" 2>/dev/null; slot_forget "$slot" 2>/dev/null; exit' EXIT INT TERM HUP
+  #
+  # Il "${pid:-0}" che stava qui era una bomba. La trap viene armata QUI, ma $pid
+  # riceve un valore solo ~40 righe piu' sotto (pid=$!): se si esce nel mezzo -
+  # l'host non risponde, lo stream non parte, arriva un TERM - l'espansione dava
+  # `kill 0`, che in POSIX non vuol dire "non uccidere niente" ma "manda il segnale
+  # a TUTTO il mio process group". Chiamato da dentro una sessione jcode quel gruppo
+  # e' il daemon jcode: il 16/08/2026 ha ammazzato il server 15 volte, e ogni morte
+  # lasciava 8 sessioni a ciclare su reconnect per 45 minuti. Riprodotto in
+  # isolamento replicando questa struttura.
+  # Ora: si uccide solo se c'e' davvero un pid, e mai il gruppo.
+  trap 'if [ -n "${pid:-}" ] && [ "$pid" -gt 0 ] 2>/dev/null; then kill "$pid" 2>/dev/null; fi; place_stop "$slot" 2>/dev/null; slot_forget "$slot" 2>/dev/null; exit' EXIT INT TERM HUP
   addr="$(slot_addr "$slot")"
   bin="$(runner_bin "$app")"
   # Con la libreria dentro, la geometria la tiene lei: sa distinguere un
@@ -1151,11 +1161,23 @@ cmd_windows(){
 # Chiude una finestra, o tutte. Il supervisore va fermato per primo: e' lui che
 # riapre lo stream quando lo vede sparire, quindi ucciderlo dopo lo farebbe
 # resuscitare una volta.
+#
+# I pid arrivano da un file su disco e possono essere STALE: su macOS i pid si
+# riciclano, e sparare a un numero letto mezz'ora fa vuol dire sparare a chi
+# quel numero ce l'ha adesso. Un pid vuoto sarebbe anche peggio - `kill ""` con
+# certi shell degenera nel gruppo. Quindi: numero valido, o non si tira.
+kill_if_sane(){ # pid
+  local p="${1:-}"
+  [ -n "$p" ] || return 0
+  [ "$p" -gt 1 ] 2>/dev/null || return 0   # mai 0 (gruppo) ne' 1 (launchd)
+  kill "$p" 2>/dev/null || true
+}
+
 close_slot(){ # slot
   local sup pid app; app="$(slot_get "$1" app)"
   sup="$(slot_get "$1" sup)"; pid="$(slot_get "$1" pid)"
-  [ -n "$sup" ] && kill "$sup" 2>/dev/null || true
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  kill_if_sane "$sup"
+  kill_if_sane "$pid"
   place_stop "$1"
   slot_forget "$1"
   ok "finestra $(( $1 + 1 )) chiusa${app:+  ${c_dim}($app)${c_off}}"
