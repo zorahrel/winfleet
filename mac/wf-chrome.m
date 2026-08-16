@@ -134,6 +134,49 @@ static void sweep(void) {
     for (NSWindow *w in [NSApp windows]) adopt(w);
 }
 
+// I tre pulsanti si vedono ma non rispondono al mouse: con il contenuto a tutta
+// finestra la vista di SDL li copre, e SDL prende gli eventi a livello di finestra —
+// sopra AppKit, quindi non e' questione di ordine delle viste. Il risultato e'
+// peggio che non averli: si prova a chiudere e invece si clicca dentro Windows.
+//
+// Provato e scartato: rimettere i pulsanti in cima al theme frame (l'ordine si
+// ristabilisce al primo ridisegno) e restringere la vista del video sotto la barra
+// (il click continua ad arrivare a SDL).
+//
+// Quello che regge e' guardare gli eventi prima che li veda chiunque altro: un
+// monitor locale gira all'inizio della catena, dentro questo processo. Se il click
+// cade su uno dei pulsanti lo si esegue e si toglie l'evento di mezzo (ritornando
+// nil), cosi' SDL non lo vede nemmeno; tutto il resto passa intatto e lo stream
+// continua a ricevere il mouse come prima.
+static void watchTitlebarClicks(void) {
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
+                                          handler:^NSEvent *(NSEvent *e) {
+        NSWindow *w = e.window;
+        if (!isStreamWindow(w)) return e;
+
+        // Coordinate della finestra: i pulsanti stanno nel theme frame, che ha
+        // l'origine in basso a sinistra come tutto in Cocoa.
+        NSPoint p = e.locationInWindow;
+        NSButton *hit = nil;
+        for (NSNumber *k in @[@(NSWindowCloseButton),
+                              @(NSWindowMiniaturizeButton),
+                              @(NSWindowZoomButton)]) {
+            NSButton *b = [w standardWindowButton:(NSWindowButton)k.unsignedIntegerValue];
+            if (!b || b.isHidden) continue;
+            NSRect r = [b convertRect:b.bounds toView:nil];
+            // Un margine di 4 punti: i semafori sono 16 punti e la mira non e'
+            // chirurgica, mentre qui intorno non c'e' nient'altro da colpire.
+            if (NSPointInRect(p, NSInsetRect(r, -4, -4))) { hit = b; break; }
+        }
+        if (!hit) return e;
+
+        if      (hit == [w standardWindowButton:NSWindowCloseButton])       [w performClose:nil];
+        else if (hit == [w standardWindowButton:NSWindowMiniaturizeButton]) [w miniaturize:nil];
+        else                                                                [w zoom:nil];
+        return nil;   // consumato: SDL non deve vederlo
+    }];
+}
+
 __attribute__((constructor))
 static void wf_chrome_init(void) {
     const char *env = getenv("WF_WIN");
@@ -161,6 +204,7 @@ static void wf_chrome_init(void) {
         // SDL ricrea la finestra piu' di una volta (cambio di schermo, di renderer):
         // conviene ripassare invece di fidarsi di un solo giro all'avvio.
         sweep();
+        watchTitlebarClicks();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { sweep(); }];
     });
 }
