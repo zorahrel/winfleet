@@ -36,7 +36,13 @@ static const char *kWant  = "wf_want";
 
 static NSSize gAsked = {0, 0};      // misura chiesta da WinFleet
 static BOOL   gKeepChrome = NO;
-static BOOL   gLocalCursor = YES;   // WF_CURSOR=remote per tenere solo quello di Windows
+// Il puntatore locale e' spento di default. Rimetterlo sembrava un miglioramento —
+// e' istantaneo perche' lo disegna macOS — ma se ne vedono DUE: il proprio, che
+// segue la mano, e quello di Windows disegnato dentro il video, che arriva un
+// viaggio di rete dopo. Due frecce che si rincorrono si leggono come lag, e sono
+// peggio di una sola freccia in ritardo, perche' l'occhio non sa piu' quale
+// guardare. WF_CURSOR=local per riaccenderlo.
+static BOOL   gLocalCursor = NO;
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 
@@ -239,7 +245,7 @@ static void wf_chrome_init(void) {
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
     const char *cur = getenv("WF_CURSOR");
-    gLocalCursor = !(cur && strcmp(cur, "remote") == 0);
+    gLocalCursor = (cur && strcmp(cur, "local") == 0);
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResizeNotification

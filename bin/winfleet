@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Serve bash 4 o superiore. macOS ne spedisce ancora una del 2007 (3.2, ferma per
+# ragioni di licenza) e "env bash" prende quella se e' prima nel PATH: il file viene
+# rifiutato con "unexpected EOF" su una riga in fondo, lontanissima dal punto vero,
+# e sembra un file corrotto invece che una shell vecchia. Si riparte con quella
+# giusta invece di far indovinare a chi legge l'errore.
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$b" ] && exec "$b" "$0" "$@"
+  done
+  echo "winfleet richiede bash 4+ (questa e' ${BASH_VERSION:-sconosciuta})." >&2
+  echo "Installalo con:  brew install bash" >&2
+  exit 1
+fi
 # WinFleet — finestre di Windows sul Mac, a piena GPU.
 #
 # Orchestra Sunshine (host, NVENC) + Moonlight (client) per aprire le app o il
@@ -340,7 +353,7 @@ trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"
 # ridimensionamento, quindi segue il trascinamento senza ritardo; qui si manda a
 # Windows la misura nuova appena la finestra si ferma per un istante.
 follow_resize(){ # pid slot misura-iniziale file-ritaglio
-  local pid="$1" slot="$2" sent="$3" cropf="$4" cur cw ch got aw ah
+  local pid="$1" slot="$2" sent="$3" cropf="$4" cur cw ch got aw ah idle=0
   aw="${3%x*}"; ah="${3#*x}"
   trace "segui: slot=$slot misura iniziale=$sent"
   got="$(rect_set "$slot" "$aw" "$ah")"
@@ -371,8 +384,16 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
       esac
       sent="$cur"
       sed -i '' "s/^mode=.*/mode=$cur/" "$(slot_file "$slot")" 2>/dev/null || true
+      idle=0
+    else
+      idle=$(( idle + 1 ))
     fi
-    sleep 0.03
+    # Trenta letture al secondo servono solo MENTRE si trascina. Il resto del tempo
+    # sono trenta processi al secondo per sentirsi rispondere che non e' cambiato
+    # niente, e su una macchina che sta anche decodificando un video a 60 fps quel
+    # rumore si sente sull'input. Dopo un secondo di quiete si rallenta; al primo
+    # movimento si torna reattivi, quindi il trascinamento resta fluido come prima.
+    if [ "$idle" -gt 30 ]; then sleep 0.25; else sleep 0.03; fi
   done
   echo ""
 }
@@ -623,8 +644,14 @@ place_app(){ # slot percorso-exe
 
 place_stop(){ # slot
   [ -n "${HOST_SSH:-}" ] || return 0
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; if (Test-Path 'C:\\winfleet\\pid$1.txt') { Stop-Process -Id ([int](Get-Content 'C:\\winfleet\\pid$1.txt').Trim()) -Force -EA SilentlyContinue }\"" >/dev/null 2>&1 || true
+  # In secondo piano e con un tetto complessivo. ConnectTimeout copre solo la
+  # connessione: se il PC risponde ma PowerShell ci mette (o non torna), il comando
+  # resta appeso per sempre - e questo sta dentro "winfleet stop", che deve chiudere
+  # una finestra, non aspettare Windows. Chiudere lo stream sul Mac e' gia' successo;
+  # fermare l'app di la' e' pulizia, e la pulizia non blocca chi l'ha chiesta.
+  ( ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=2 -o ServerAliveCountMax=3 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; if (Test-Path 'C:\\winfleet\\pid$1.txt') { Stop-Process -Id ([int](Get-Content 'C:\\winfleet\\pid$1.txt').Trim()) -Force -EA SilentlyContinue }\"" >/dev/null 2>&1 || true ) &
+  disown 2>/dev/null || true
 }
 
 app_exe(){ # nome app -> percorso sull'host
@@ -974,18 +1001,87 @@ cmd_open(){
 
     # Senza barra del titolo la finestra E' il video: niente punti da scalare.
     chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
-    printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
-      "$app" "$(( slot + 1 ))" "$HOST_NAME" "$want" "$FPS"
+    printf "${c_dim}%s → finestra %d…${c_off}\n" "$app" "$(( slot + 1 ))"
     # In una subshell propria e con la gestione dei segnali attiva: senza, un kill al
     # supervisore lo faceva sparire lasciando dietro lo stream e il file di stato -
     # lo slot restava "occupato" con lo schermo vuoto davanti.
+    # Via la misura del giro precedente PRIMA di lanciare il supervisore: e' il
+    # segnale che si aspetta, e trovarne una vecchia significa dichiarare aperta una
+    # finestra che non esiste ancora. Il supervisore la ricancella per conto suo, ma
+    # qualche decimo di secondo dopo - e in quei decimi l'attesa e' gia' finita.
+    rm -f "$CONFIG_DIR/slot$slot.size" 2>/dev/null || true
     ( WF_SUP=1 supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
     WF_SUP_PID=$!
     # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
     # ad arrivare allo stream, e nel frattempo un secondo "open" la sceglierebbe.
     slot_save "$slot" "$app" "$mode" "" "$WF_SUP_PID"
     disown 2>/dev/null || true
-    return
+
+    # Si aspetta che la finestra ci sia davvero. Il segnale e' il file della misura,
+    # che la libreria dentro il processo scrive quando la finestra e' sullo schermo:
+    # e' l'unico momento in cui "aperta" e' vero. Il limite di tempo e' generoso
+    # perche' la prima apertura di un'app su Windows puo' essere lenta, ma non
+    # infinito: se non arriva si dice, invece di restare li'.
+    local i sz=""
+    # 45 secondi al massimo (90 mezzi secondi): la prima apertura di un'app su
+    # Windows puo' essere lenta, ma un comando che non torna mai e' peggio di uno
+    # che dice "non ce l'ha fatta".
+    # Si aspetta la FINESTRA, chiedendola a macOS. Il file della misura sembrava il
+    # segnale naturale ma non lo e': il supervisore lo cancella e lo ricrea per conto
+    # suo, quindi leggerlo qui e' una corsa fra due processi - quello del giro
+    # precedente veniva letto come se fosse gia' pronto, e "aperta" tornava a essere
+    # una bugia detta mezzo secondo dopo invece che subito.
+    local dead=0
+    for i in $(seq 1 90); do
+      sleep 0.5
+      # La misura si legge dal file che scrive la libreria dentro Moonlight, non con
+      # AppleScript: chiedere la geometria a System Events richiede il permesso di
+      # Accessibilita', che l'utente puo' non aver dato (o che macOS revoca quando il
+      # binario cambia firma, come succede a ogni ricompilazione). Senza quel
+      # permesso osascript non fallisce in modo visibile: risponde vuoto, e l'attesa
+      # scadeva sempre su finestre che si erano aperte benissimo.
+      # "|| true" non e' pignoleria: con set -e attivo, un'assegnazione il cui
+      # comando fallisce (il file non c'e' ancora, che e' il caso NORMALE mentre si
+      # aspetta) termina la funzione. L'attesa moriva al primo giro, sempre, e il
+      # comando tornava dopo un secondo e mezzo senza dire niente.
+      sz="$(cat "$CONFIG_DIR/slot$slot.size" 2>/dev/null || true)"
+      # Niente "case ... break": dentro un case, break esce dal case e non dal ciclo,
+      # quindi il for continuava a girare e riazzerava la misura appena trovata - il
+      # comando finiva senza dire niente su una finestra che si era aperta benissimo.
+      # Un "case" il cui ultimo ramo assegna una stringa vuota esce con stato 1, e
+      # con "set -e" attivo quello basta a terminare la funzione: l'attesa moriva al
+      # primo giro, sempre, e il comando tornava senza dire niente. Con un if il
+      # valore di uscita e' quello del test, non dell'assegnamento.
+      if [ -n "${sz:-}" ] && [ "$sz" != "${sz#*x}" ]; then break; fi
+      sz=""
+      # Il supervisore si ricontrolla dallo stato dello slot, non da una variabile:
+      # e' lui stesso a riscrivere il file col proprio pid appena parte, e quello e'
+      # l'unico numero che vale. Un giro di grazia perche' la misura e la fine del
+      # processo possono capitare nello stesso mezzo secondo.
+      # I primi secondi non si giudica: il supervisore sta ancora scrivendo il
+      # proprio pid nello stato, e slot_live risponde "morto" a una finestra che sta
+      # nascendo. Chiedere troppo presto significa dichiarare fallita ogni apertura.
+      if [ "$i" -gt 8 ]; then
+        if slot_live "$slot" 2>/dev/null; then
+          dead=0
+        else
+          dead=$(( dead + 1 ))
+          [ "$dead" -ge 3 ] && break
+        fi
+      fi
+    done
+
+    if [ -n "$sz" ]; then
+      printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
+        "$app" "$(( slot + 1 ))" "$HOST_NAME" "$sz" "$FPS"
+      return 0
+    fi
+    if kill -0 "$WF_SUP_PID" 2>/dev/null; then
+      bad "«$app» non ha aperto una finestra entro 45 secondi (ci sta ancora provando)"
+    else
+      bad "«$app» non si e' aperta.  winfleet doctor"
+    fi
+    return 1
   fi
 
   read -r addr kind <<<"$(resolve_endpoint)"
@@ -1082,7 +1178,17 @@ cmd_stop(){
   read -r addr kind <<<"$(resolve_endpoint)"
   # chiusura graceful della sessione lato host (meglio di uccidere il client:
   # lascia Sunshine libero per la prossima connessione)
-  [ -n "$addr" ] && "$MOONLIGHT" quit "$addr" >/dev/null 2>&1 || true
+  # Con un tetto di tempo e in secondo piano: "Moonlight quit" verso un host che non
+  # ha una sessione attiva non torna mai, e resta li' per sempre. Se ne accumulava
+  # uno per ogni "winfleet stop" chiamato a vuoto, e dal quinto in poi il comando si
+  # bloccava - il sintomo era winfleet che non rispondeva piu' senza motivo.
+  if [ -n "$addr" ]; then
+    ( "$MOONLIGHT" quit "$addr" >/dev/null 2>&1 & 
+      qp=$!
+      ( sleep 8; kill "$qp" 2>/dev/null ) >/dev/null 2>&1 &
+      wait "$qp" 2>/dev/null ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
   pkill -f "Moonlight.*stream" 2>/dev/null || true
   echo "Sessione chiusa."
 }
@@ -1526,15 +1632,14 @@ PY
 # lanciato da un'altra shell.
 public_nics_on_host(){
   [ -n "$HOST_SSH" ] || return 0
-  local ps
-  ps=$(cat <<'PSCRIPT'
-Get-NetConnectionProfile |
-  Where-Object { $_.NetworkCategory -eq 'Public' -and $_.InterfaceAlias -notmatch 'Tailscale' } |
-  ForEach-Object { $_.InterfaceAlias }
-PSCRIPT
-)
-  ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
-      "powershell -NoProfile -Command -" <<<"$ps" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ *$//'
+  # Lo script PowerShell sta in una variabile normale, non in un heredoc dentro
+  # $(...): quella forma rompe il parser di bash - l'errore che riporta e' "EOF
+  # cercando un apice" alla FINE del file, cioe' a duecento righe di distanza da
+  # dove sta il problema, e l'intero comando smette di funzionare.
+  # Gli apici sono doppi fuori e singoli dentro, senza annidamenti.
+  local ps="Get-NetConnectionProfile | Where-Object { \$_.NetworkCategory -eq 'Public' -and \$_.InterfaceAlias -notmatch 'Tailscale' } | ForEach-Object { \$_.InterfaceAlias }"
+  printf '%s' "$ps" | ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
+      "powershell -NoProfile -Command -" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ *$//'
 }
 
 # Rimette private le schede del PC: e' l'unica cosa che separa uno stream nero da
