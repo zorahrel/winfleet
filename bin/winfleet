@@ -14,6 +14,7 @@
 #   winfleet stop [n]          chiude una finestra, o tutte
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
 #   winfleet panel             pannello in barra dei menu (finestre, app, strumenti)
+#   winfleet dockpanel         pannello nel Dock: click sull'icona, con la ricerca
 #   winfleet apps              lanciatori creati
 #   winfleet list              app pubblicate dall'host
 #   winfleet clean             toglie da Moonlight gli host che non rispondono più
@@ -1227,6 +1228,7 @@ LAUNCH
 # Il pannello: un\'app in barra dei menu con la tendina. Si costruisce come la
 # libreria — sorgente nel repo, binario fuori — e si apre da solo se non gira gia\'.
 PANEL_APP="$HOME/Applications/WinFleet/WinFleet.app"
+DOCK_APP="$HOME/Applications/WinFleet/WinFleet Dock.app"
 
 build_panel(){
   local src="$WF_ROOT/mac/wf-panel.m"
@@ -1251,6 +1253,46 @@ PLIST
   clang -framework Cocoa -o "$bin.new" "$src" >/dev/null 2>&1 || { rm -f "$bin.new"; return 1; }
   mv -f "$bin.new" "$bin"
   codesign --force -s - "$PANEL_APP" >/dev/null 2>&1 || true
+}
+
+# Il pannello nel Dock. E' un'app normale, non un LSUIElement: deve avere l'icona
+# nel Dock, perche' e' li' che si va a cercare un'app da aprire.
+build_dock_panel(){
+  local src="$WF_ROOT/mac/wf-dock.m"
+  [ -f "$src" ] || return 1
+  command -v clang >/dev/null 2>&1 || return 1
+  local bin="$DOCK_APP/Contents/MacOS/WinFleet Dock"
+  [ -x "$bin" ] && [ "$bin" -nt "$src" ] && return 0
+  mkdir -p "$DOCK_APP/Contents/MacOS" "$DOCK_APP/Contents/Resources"
+  cat > "$DOCK_APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>WinFleet Dock</string>
+  <key>CFBundleDisplayName</key><string>WinFleet</string>
+  <key>CFBundleIdentifier</key><string>dev.winfleet.dock</string>
+  <key>CFBundleExecutable</key><string>WinFleet Dock</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>app.icns</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+  # L'icona: quella di una delle app gia' scaricate dall'host, se c'e'. Meglio
+  # qualcosa di riconoscibile che il rettangolo bianco di default.
+  local ic
+  ic="$(find "$CONFIG_DIR/icons" -name '*.icns' 2>/dev/null | head -1)"
+  [ -n "$ic" ] && cp -f "$ic" "$DOCK_APP/Contents/Resources/app.icns" 2>/dev/null || true
+  clang -framework Cocoa -o "$bin.new" "$src" >/dev/null 2>&1 || { rm -f "$bin.new"; return 1; }
+  mv -f "$bin.new" "$bin"
+  codesign --force -s - "$DOCK_APP" >/dev/null 2>&1 || true
+}
+
+cmd_dockpanel(){
+  build_dock_panel || die "Non riesco a compilare il pannello del Dock (serve clang)."
+  [ -s "$HOST_APPS" ] || { info "catalogo vuoto: lo costruisco"; cmd_scan; }
+  open "$DOCK_APP"
+  ok "pannello nel Dock  ${c_dim}(clicca l'icona per app, finestre e ricerca)${c_off}"
 }
 
 cmd_panel(){
@@ -1382,6 +1424,68 @@ PY
   info "copia di sicurezza: $MOON_PREFS.winfleet-bak"
 }
 
+# Le schede di rete del PC marcate "Pubblica". Lo script PowerShell sta in un
+# heredoc e non in una stringa: annidare virgolette per shell, ssh e PowerShell
+# insieme produce righe che sembrano giuste e non lo sono — questa qui aveva un
+# apice che chiudeva la stringa a meta' e rompeva l'intero file, ma solo quando
+# lanciato da un'altra shell.
+public_nics_on_host(){
+  [ -n "$HOST_SSH" ] || return 0
+  local ps
+  ps=$(cat <<'PSCRIPT'
+Get-NetConnectionProfile |
+  Where-Object { $_.NetworkCategory -eq 'Public' -and $_.InterfaceAlias -notmatch 'Tailscale' } |
+  ForEach-Object { $_.InterfaceAlias }
+PSCRIPT
+)
+  ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
+      "powershell -NoProfile -Command -" <<<"$ps" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ *$//'
+}
+
+# Rimette private le schede del PC: e' l'unica cosa che separa uno stream nero da
+# uno che funziona, e va fatta ogni volta che Windows vede una rete nuova.
+cmd_fixnet(){
+  need_ssh
+  local pub; pub="$(public_nics_on_host)"
+  [ -n "$pub" ] || { ok "le reti del PC sono gia' private"; return; }
+  local n
+  for n in $pub; do
+    ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"Set-NetConnectionProfile -InterfaceAlias '$n' -NetworkCategory Private\"" >/dev/null 2>&1 \
+      && ok "rete '$n' ora privata" || bad "non riesco a cambiare '$n' (serve un terminale da amministratore sul PC)"
+  done
+}
+
+# La sessione bloccata e' il guasto piu' insidioso del sistema: quando Windows blocca
+# lo schermo la sessione grafica si riduce, i monitor virtuali smettono di disegnare e
+# ogni finestra diventa un rettangolo nero. Da fuori sembra un problema di stream.
+#
+# Non e' diagnosticabile da SSH nel modo ovvio: una sessione SSH non vede il desktop,
+# e chiedere gli schermi da li' restituisce sempre un finto "1024x768 WinDisc" anche
+# quando va tutto bene. Bisogna guardare la presenza di LogonUI, che e' il processo
+# della schermata di blocco.
+host_locked(){
+  [ -n "$HOST_SSH" ] || return 1
+  local n
+  n="$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
+       'powershell -NoProfile -Command "(Get-Process LogonUI -EA SilentlyContinue|Measure-Object).Count"' 2>/dev/null | tr -d '\r ')"
+  [ "${n:-0}" != "0" ]
+}
+
+cmd_unlock(){
+  need_ssh
+  host_locked || { ok "la sessione del PC e' gia' sbloccata"; return; }
+  info "la sessione e' bloccata: senza sbloccarla le finestre restano nere"
+  # Non c'e' modo di sbloccare Windows da remoto senza la password: il blocco esiste
+  # apposta. Quello che si puo' fare e' togliere il motivo per cui si e' bloccata,
+  # cosi' che non ricapiti dopo che l'hai sbloccata a mano una volta.
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
+      'schtasks /run /tn wf-nolock' >/dev/null 2>&1 \
+    && ok "blocco automatico disattivato (non si ribloccera' da solo)" \
+    || bad "non riesco a disattivare il blocco automatico: winfleet push, poi riprova"
+  info "adesso sblocca il PC a mano una volta: e' l'unica cosa che la password protegge"
+}
+
 cmd_doctor(){
   printf "${c_bold}WinFleet doctor${c_off}\n"
   [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
@@ -1416,13 +1520,22 @@ cmd_doctor(){
   # connette, negozia e decodifica, ma ogni frame arriva incompleto e la finestra
   # resta nera mentre i log dicono che va tutto bene. Windows marca Pubblica ogni
   # rete nuova, quindi ricapita da solo dopo un reinstall o un cambio di scheda.
+  # Una sessione bloccata rende nera ogni finestra, e nessun altro controllo se ne
+  # accorge: monitor, ritaglio, rete e agente risultano tutti a posto.
+  if [ -n "$HOST_SSH" ]; then
+    if host_locked; then
+      bad "il PC e' sulla schermata di blocco: le finestre resteranno nere"
+      info "  sbloccalo una volta e poi:  winfleet unlock  (toglie il blocco automatico)"
+    else
+      ok "sessione del PC: sbloccata  ${c_dim}(i monitor virtuali disegnano)${c_off}"
+    fi
+  fi
   if [ -n "$HOST_SSH" ]; then
     local pub
-    pub="$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
-      'powershell -NoProfile -Command "(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq \"Public\" -and $_.InterfaceAlias -notmatch \"Tailscale\" }).InterfaceAlias"' 2>/dev/null | tr -d '\r')"
+    pub="$(public_nics_on_host)"
     if [ -n "$pub" ]; then
       bad "rete '$pub' sul PC e' marcata Pubblica: lo stream restera' nero"
-      printf "    ${c_dim}sistema con:  ssh %s 'powershell -c \"Set-NetConnectionProfile -InterfaceAlias %s -NetworkCategory Private\"'${c_off}\n" "$HOST_SSH" "$pub"
+      info "  sistemala con:  winfleet fixnet"
     else
       ok "reti del PC: private  ${c_dim}(il video passa)${c_off}"
     fi
@@ -1484,10 +1597,13 @@ case "${1:-}" in
   apps)     cmd_apps;;
   dock)     shift; cmd_dock "$@";;
   panel)    cmd_panel;;
+  dockpanel|dock-panel) cmd_dockpanel;;
   clean)    cmd_clean;;
   pair)     cmd_pair;;
   endpoint) cmd_endpoint;;
   setup)    cmd_setup;;
+  fixnet)   cmd_fixnet;;
+  unlock)   cmd_unlock;;
   doctor|"") cmd_doctor;;
   -h|--help|help)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//';;
