@@ -1381,6 +1381,11 @@ cmd_icons(){
 cmd_dockpanel(){
   build_dock_panel || die "Non riesco a compilare il pannello del Dock (serve clang)."
   [ -s "$HOST_APPS" ] || { info "catalogo vuoto: lo costruisco"; cmd_scan; }
+  # Le icone servono al pannello per essere leggibile: senza, e' un elenco di
+  # settanta righe di testo. Si scaricano una volta, alla prima apertura.
+  local nic=0
+  [ -d "$CONFIG_DIR/icons" ] && nic=$(find "$CONFIG_DIR/icons" -name '*.icns' | wc -l | tr -d ' ')
+  [ "$nic" -lt 10 ] && { info "scarico le icone delle app (si fa una volta sola)"; cmd_icons; }
   open "$DOCK_APP"
   ok "pannello nel Dock  ${c_dim}(clicca l'icona per app, finestre e ricerca)${c_off}"
 }
