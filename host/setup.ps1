@@ -60,6 +60,19 @@ $conf = Join-Path $dir 'config\sunshine.conf'
 ) | Set-Content -Path $conf -Encoding UTF8
 Write-Host "sunshine.conf scritto"
 
+# Una scheda marcata "Pubblica" fa cadere il video anche con le regole giuste: il
+# profilo pubblico blocca in ingresso a un livello che le regole per porta non
+# recuperano, e il sintomo non assomiglia a un firewall. Lo stream si connette,
+# negozia e decodifica; solo che ogni frame arriva incompleto, il client chiede di
+# rigenerarlo all'infinito e la finestra resta nera. Nei log va tutto bene.
+# Windows marca Pubblica ogni rete nuova, quindi succede da solo, di solito dopo un
+# reinstall o un cambio di scheda.
+$eth = Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' -and $_.InterfaceAlias -notmatch 'Tailscale' }
+foreach ($p in $eth) {
+    Set-NetConnectionProfile -InterfaceAlias $p.InterfaceAlias -NetworkCategory Private
+    Write-Host ("rete '{0}' da Pubblica a Privata (senza, lo stream resta nero)" -f $p.InterfaceAlias) -ForegroundColor Yellow
+}
+
 # firewall: solo LAN + Tailscale
 $nets = @('192.168.0.0/16','100.64.0.0/10')
 Get-NetFirewallRule -DisplayName 'WinFleet Sunshine*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue

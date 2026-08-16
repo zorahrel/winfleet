@@ -1412,6 +1412,21 @@ cmd_doctor(){
   else
     bad "non riesco a compilare wf-chrome.dylib (serve clang): la barra del Mac resta"
   fi
+  # Una scheda "Pubblica" sul PC fa cadere il video senza dirlo: lo stream si
+  # connette, negozia e decodifica, ma ogni frame arriva incompleto e la finestra
+  # resta nera mentre i log dicono che va tutto bene. Windows marca Pubblica ogni
+  # rete nuova, quindi ricapita da solo dopo un reinstall o un cambio di scheda.
+  if [ -n "$HOST_SSH" ]; then
+    local pub
+    pub="$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$HOST_SSH" \
+      'powershell -NoProfile -Command "(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq \"Public\" -and $_.InterfaceAlias -notmatch \"Tailscale\" }).InterfaceAlias"' 2>/dev/null | tr -d '\r')"
+    if [ -n "$pub" ]; then
+      bad "rete '$pub' sul PC e' marcata Pubblica: lo stream restera' nero"
+      printf "    ${c_dim}sistema con:  ssh %s 'powershell -c \"Set-NetConnectionProfile -InterfaceAlias %s -NetworkCategory Private\"'${c_off}\n" "$HOST_SSH" "$pub"
+    else
+      ok "reti del PC: private  ${c_dim}(il video passa)${c_off}"
+    fi
+  fi
   if [ -n "$HOST_TS$HOST_LAN" ]; then
     printf "${c_bold}Percorso${c_off}\n"
     if [ -n "$HOST_LAN" ]; then reachable "$HOST_LAN" "$SUN_PORT" 2 && ok "LAN $HOST_LAN:$SUN_PORT" || info "LAN $HOST_LAN non raggiungibile"; fi
