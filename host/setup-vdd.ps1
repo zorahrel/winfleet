@@ -25,11 +25,17 @@ $arg = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet
        "-Count $Slots"
 $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
 $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
-# Niente -RestartCount qui: senza un trigger registrato rende il task invalido
-# e Task Scheduler lo fa fallire con risultato 1 senza eseguire nulla.
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+# Un trigger al logon, non perche' serva a far girare il task a mano, ma perche'
+# senza nessun trigger dopo ogni riavvio del PC winfleet e' morto: i monitor
+# virtuali non esistono, le istanze non ascoltano, e dal Mac si vede solo "finestra
+# non risponde" senza capire che basta riaccendere qualcosa. Il ritardo lascia
+# arrivare la sessione grafica: il driver dei monitor virtuali chiede un desktop.
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+$trigger.Delay = 'PT10S'
+Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $principal `
+    -Settings $settings -Trigger $trigger -Force | Out-Null
 
 Write-Host "Task 'winfleet-vdd' registrato: $Slots monitor virtuali" -ForegroundColor Green
 Write-Host "Avvia con:  schtasks /run /tn winfleet-vdd     (stato in C:\winfleet\vdd.json)"
@@ -43,8 +49,11 @@ $agentAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
 # Elevato: mettersi in ascolto su una porta per tutte le interfacce e' un privilegio,
 # e senza si otterrebbe un rifiuto di accesso invece di un errore comprensibile.
 $agentPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
+# Dopo i monitor: l'agente muove finestre su schermi che devono gia' esistere.
+$agentTrigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+$agentTrigger.Delay = 'PT30S'
 Register-ScheduledTask -TaskName 'winfleet-agent' -Action $agentAction -Principal $agentPrincipal `
-    -Settings $settings -Force | Out-Null
+    -Settings $settings -Trigger $agentTrigger -Force | Out-Null
 Remove-NetFirewallRule -DisplayName 'WinFleet agent' -EA SilentlyContinue
 New-NetFirewallRule -DisplayName 'WinFleet agent' -Direction Inbound -Action Allow -Protocol TCP `
     -LocalPort 48088 -RemoteAddress @('192.168.0.0/16','100.64.0.0/10') | Out-Null

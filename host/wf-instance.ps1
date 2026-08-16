@@ -113,7 +113,12 @@ $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $launch
 $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName "winfleet-sun$Slot" -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+# Al logon, dopo i monitor virtuali: un'istanza di Sunshine legata a uno schermo
+# che non c'e' ancora parte e non trova niente da catturare.
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+$trigger.Delay = 'PT30S'
+Register-ScheduledTask -TaskName "winfleet-sun$Slot" -Action $action -Principal $principal `
+    -Settings $settings -Trigger $trigger -Force | Out-Null
 
 # Sunshine names screens with a device id of its own making, printed at startup:
 # run it once to read ours off the log.
