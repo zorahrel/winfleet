@@ -36,6 +36,7 @@ static const char *kWant  = "wf_want";
 
 static NSSize gAsked = {0, 0};      // misura chiesta da WinFleet
 static BOOL   gKeepChrome = NO;
+static BOOL   gLocalCursor = YES;   // WF_CURSOR=remote per tenere solo quello di Windows
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 
@@ -134,6 +135,29 @@ static void sweep(void) {
     for (NSWindow *w in [NSApp windows]) adopt(w);
 }
 
+// Il puntatore del Mac dentro la finestra.
+//
+// Sunshine disegna il cursore di Windows dentro il video, e Moonlight nasconde
+// quello locale: si finisce per guardare una freccia che e' un'immagine, quindi
+// arriva sempre in ritardo di un viaggio di rete. Su una finestra che si usa per
+// lavorare (non per giocare) il ritardo si sente su ogni click.
+//
+// La versione di Sunshine installata non ha capture_cursor — controllato nelle
+// stringhe del binario: c'e' solo nel fork di AlkaidLab — quindi il cursore remoto
+// non si puo' spegnere dall'host. Ma il puntatore locale si puo' rimettere: e'
+// istantaneo perche' lo disegna macOS, e da' la sensazione giusta anche se sotto ne
+// resta uno finto che lo insegue.
+//
+// Si mostra solo dentro l'area del video, e solo se il puntatore e' davvero li':
+// forzarlo sempre visibile lo farebbe comparire anche sopra altre finestre.
+static void showLocalCursor(void) {
+    static BOOL shown = NO;
+    NSWindow *w = nil;
+    for (NSWindow *x in [NSApp windows]) if (isStreamWindow(x) && x.isKeyWindow) { w = x; break; }
+    if (!w) { if (shown) { [NSCursor unhide]; shown = NO; } return; }
+    if (!shown) { [NSCursor unhide]; shown = YES; }
+}
+
 // I tre pulsanti si vedono ma non rispondono al mouse: con il contenuto a tutta
 // finestra la vista di SDL li copre, e SDL prende gli eventi a livello di finestra —
 // sopra AppKit, quindi non e' questione di ordine delle viste. Il risultato e'
@@ -188,6 +212,8 @@ static void wf_chrome_init(void) {
     gCropFile = getenv("WF_CROP");
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
+    const char *cur = getenv("WF_CURSOR");
+    gLocalCursor = !(cur && strcmp(cur, "remote") == 0);
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResizeNotification
@@ -205,6 +231,9 @@ static void wf_chrome_init(void) {
         // conviene ripassare invece di fidarsi di un solo giro all'avvio.
         sweep();
         watchTitlebarClicks();
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { sweep(); }];
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            sweep();
+            if (gLocalCursor) showLocalCursor();
+        }];
     });
 }
