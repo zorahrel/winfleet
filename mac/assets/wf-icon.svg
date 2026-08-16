@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B7DD8"/><stop offset="1" stop-color="#1F4E9C"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#bg)"/>
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#glass)"/>
+
+  <!-- la finestra: barra del titolo con i tre pallini, come sul Mac -->
+  <g filter="url(#sh)">
+    <rect x="212" y="286" width="600" height="452" rx="44" fill="#F7F8FA"/>
+    <path d="M212 330a44 44 0 0 1 44-44h512a44 44 0 0 1 44 44v56H212z" fill="#E2E5EA"/>
+    <circle cx="266" cy="336" r="15" fill="#FF5F57"/>
+    <circle cx="312" cy="336" r="15" fill="#FEBC2E"/>
+    <circle cx="358" cy="336" r="15" fill="#28C840"/>
+  </g>
+
+  <!-- dentro, il riquadro a quattro ante di Windows -->
+  <g transform="translate(512 566)">
+    <rect x="-118" y="-104" width="108" height="96" rx="10" fill="#3B7DD8"/>
+    <rect x="10"   y="-104" width="108" height="96" rx="10" fill="#3B7DD8"/>
+    <rect x="-118" y="8"    width="108" height="96" rx="10" fill="#3B7DD8"/>
+    <rect x="10"   y="8"    width="108" height="96" rx="10" fill="#3B7DD8"/>
+  </g>
+</svg>

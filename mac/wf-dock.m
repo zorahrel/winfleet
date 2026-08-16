@@ -20,6 +20,10 @@
 //   clang -framework Cocoa -o WinFleetDock wf-dock.m
 
 #import <Cocoa/Cocoa.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 static NSString *kCli;      // percorso del comando winfleet
 static NSString *kConfig;   // ~/.config/winfleet
@@ -83,17 +87,28 @@ static NSString *runRead(NSString *cmd, NSTimeInterval limit) {
     t.standardOutput = p; t.standardError = [NSPipe pipe];
     @try { [t launch]; } @catch (NSException *e) { return @""; }
 
+    // Il dato si legge nel thread che aspetta, non in uno parallelo: passandolo
+    // fuori da un blocco asincrono si finisce per leggerlo mentre l'altro thread
+    // lo sta ancora scrivendo, e il processo muore dentro CoreFoundation con un
+    // messaggio che non nomina nessuna riga di questo file.
     __block NSData *out = nil;
+    __block BOOL finished = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        out = [p.fileHandleForReading readDataToEndOfFile];
+        NSData *d = nil;
+        @try { d = [p.fileHandleForReading readDataToEndOfFile]; } @catch (NSException *e) { d = nil; }
+        @synchronized (p) { out = d; finished = YES; }
         dispatch_semaphore_signal(done);
     });
     if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(limit * NSEC_PER_SEC)))) {
-        [t terminate];
+        @try { [t terminate]; } @catch (NSException *e) {}
         return @"";
     }
-    return [[NSString alloc] initWithData:out ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"";
+    NSData *safe = nil;
+    @synchronized (p) { if (finished) safe = out; }
+    if (!safe.length) return @"";
+    NSString *str = [[NSString alloc] initWithData:safe encoding:NSUTF8StringEncoding];
+    return str ?: @"";
 }
 
 
@@ -114,6 +129,41 @@ static NSArray<NSString *> *hostApps(void) {
     }
     [out sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
     return out;
+}
+
+// Lo stato del PC: acceso, sospeso, o acceso ma bloccato (che e' il caso in cui
+// tutto sembra a posto e le finestre sono nere). Si misura con una connessione TCP
+// alla porta di Sunshine invece che con un ping: risponde solo se il servizio c'e'
+// davvero, ed e' esattamente cio' che serve sapere.
+typedef enum { WFDown, WFUp, WFLocked } WFState;
+
+static WFState gState = WFDown;
+
+static WFState probeHost(void) {
+    NSString *cfg = [NSString stringWithContentsOfFile:[kConfig stringByAppendingPathComponent:@"config.env"]
+                                              encoding:NSUTF8StringEncoding error:nil];
+    NSString *host = nil;
+    for (NSString *line in [cfg componentsSeparatedByString:@"\n"])
+        if ([line hasPrefix:@"HOST_TS="])
+            host = [[line substringFromIndex:8] stringByTrimmingCharactersInSet:
+                    [NSCharacterSet characterSetWithCharactersInString:@"\"' "]];
+    if (!host.length) return WFDown;
+
+    // Un socket vero con timeout breve, aperto qui invece che con nc in una shell:
+    // il pannello non deve mai restare fermo ad aspettare un PC spento, e far
+    // partire una shell per una domanda di due secondi e' sproporzionato.
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return WFDown;
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(47990);
+    a.sin_addr.s_addr = inet_addr(host.UTF8String);
+    BOOL up = (a.sin_addr.s_addr != INADDR_NONE) && connect(fd, (struct sockaddr *)&a, sizeof a) == 0;
+    close(fd);
+    return up ? WFUp : WFDown;
 }
 
 // Quali finestre sono aperte adesso, lette dai file di stato degli slot: costa
@@ -181,6 +231,8 @@ static NSArray<NSDictionary *> *openWindows(void) {
                               NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate>
 @property (nonatomic, strong) WFPanel      *panel;
 @property (nonatomic, strong) NSSearchField *search;
+@property (nonatomic, strong) NSTextField  *status;
+@property (nonatomic, strong) NSButton     *power;
 @property (nonatomic, strong) NSTableView  *table;
 @property (nonatomic, strong) NSArray      *rows;      // righe mostrate ora
 @property (nonatomic, strong) NSArray      *apps;      // catalogo completo
@@ -220,7 +272,23 @@ static NSArray<NSDictionary *> *openWindows(void) {
     bg.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.panel.contentView = bg;
 
-    self.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(12, frame.size.height - 44, 316, 24)];
+    // La riga di stato in cima: dice se il PC c'e', e da li' lo si accende o si
+    // sospende. Senza, l'unica risposta a "perche' non si apre niente" e' provare.
+    self.status = [[NSTextField alloc] initWithFrame:NSMakeRect(14, frame.size.height - 26, 200, 16)];
+    self.status.bezeled = NO; self.status.editable = NO; self.status.drawsBackground = NO;
+    self.status.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    self.status.autoresizingMask = NSViewMinYMargin;
+    [bg addSubview:self.status];
+
+    self.power = [[NSButton alloc] initWithFrame:NSMakeRect(frame.size.width - 96, frame.size.height - 30, 84, 20)];
+    self.power.bezelStyle = NSBezelStyleInline;
+    self.power.font = [NSFont systemFontOfSize:11];
+    self.power.target = self;
+    self.power.action = @selector(togglePower:);
+    self.power.autoresizingMask = NSViewMinYMargin | NSViewMinXMargin;
+    [bg addSubview:self.power];
+
+    self.search = [[NSSearchField alloc] initWithFrame:NSMakeRect(12, frame.size.height - 70, 316, 24)];
     self.search.placeholderString = @"Cerca un'app sul PC";
     self.search.delegate = self;
     // NSSearchField manda l'azione al bersaglio invece di passare Invio al delegato
@@ -235,7 +303,7 @@ static NSArray<NSDictionary *> *openWindows(void) {
     self.search.focusRingType = NSFocusRingTypeNone;
     [bg addSubview:self.search];
 
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 60)];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 86)];
     scroll.hasVerticalScroller = YES;
     scroll.drawsBackground = NO;
     scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -264,6 +332,7 @@ static NSArray<NSDictionary *> *openWindows(void) {
     if (self.panel.isVisible) { [self.panel orderOut:nil]; return; }
     self.apps = hostApps();
     self.windows = openWindows();
+    [self refreshState];
     self.search.stringValue = @"";
     [self filter:@""];
 
@@ -332,8 +401,28 @@ static NSArray<NSDictionary *> *openWindows(void) {
         [found addObject:@{@"kind": @"app", @"title": a}];
     }
     if (found.count) {
-        [rows addObject:@{@"kind": @"head", @"title": q.length ? @"App trovate" : @"App sul PC"}];
-        [rows addObjectsFromArray:found];
+        if (q.length) {
+            // Mentre si cerca i gruppi sono d'intralcio: si vuole la lista corta,
+            // ordinata per quanto somiglia a quello che si e' scritto.
+            [found sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                BOOL pa = [a[@"title"] rangeOfString:q options:NSCaseInsensitiveSearch|NSAnchoredSearch].location != NSNotFound;
+                BOOL pb = [b[@"title"] rangeOfString:q options:NSCaseInsensitiveSearch|NSAnchoredSearch].location != NSNotFound;
+                if (pa != pb) return pa ? NSOrderedAscending : NSOrderedDescending;
+                return [a[@"title"] localizedCaseInsensitiveCompare:b[@"title"]];
+            }];
+            [rows addObject:@{@"kind": @"head", @"title": @"App trovate"}];
+            [rows addObjectsFromArray:found];
+        } else {
+            // Settantadue voci di fila non sono un elenco, sono un muro. Si
+            // raggruppano per iniziale, che e' l'unico criterio che non richiede di
+            // sapere cos'e' ogni app e che regge quando ne installi una nuova.
+            NSString *cur = nil;
+            for (NSDictionary *a in found) {
+                NSString *ini = [[a[@"title"] substringToIndex:1] uppercaseString];
+                if (![ini isEqual:cur]) { cur = ini; [rows addObject:@{@"kind": @"head", @"title": ini}]; }
+                [rows addObject:a];
+            }
+        }
     }
 
     if (!q.length) {
@@ -352,6 +441,61 @@ static NSArray<NSDictionary *> *openWindows(void) {
             [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
             break;
         }
+    }
+}
+
+// Lo stato si chiede in secondo piano: interrogare la rete mentre si apre il
+// pannello lo farebbe comparire mezzo secondo dopo il click, e mezzo secondo su un
+// menu si nota.
+- (void)refreshState {
+    [self paint:gState];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        WFState st = probeHost();
+        dispatch_async(dispatch_get_main_queue(), ^{ gState = st; [self paint:st]; });
+    });
+}
+
+- (void)paint:(WFState)st {
+    switch (st) {
+        case WFUp:
+            self.status.stringValue = @"● PC acceso";
+            self.status.textColor = [NSColor systemGreenColor];
+            self.power.title = @"Sospendi";
+            break;
+        case WFLocked:
+            self.status.stringValue = @"● PC bloccato";
+            self.status.textColor = [NSColor systemOrangeColor];
+            self.power.title = @"Sospendi";
+            break;
+        default:
+            self.status.stringValue = @"○ PC spento";
+            self.status.textColor = [NSColor secondaryLabelColor];
+            self.power.title = @"Accendi";
+            break;
+    }
+}
+
+// Accendere e spegnere sono asimmetrici, e devono restare tali: il magic packet e'
+// gratis e reversibile, sospendere invece butta via lo stato delle finestre aperte.
+- (void)togglePower:(id)sender {
+    if (gState == WFDown) {
+        logLine(@"accendo il PC");
+        self.status.stringValue = @"… accendo";
+        NSTask *t = [NSTask new];
+        t.launchPath = [NSHomeDirectory() stringByAppendingPathComponent:@"bin/pc"];
+        t.arguments = @[@"wake"];
+        @try { [t launch]; } @catch (NSException *e) { logLine(@"pc wake non disponibile"); }
+        // Si ricontrolla da soli fra un po': accendere ci mette una ventina di
+        // secondi e nessuno vuole riaprire il pannello per sapere se e' andata.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC),
+                       dispatch_get_main_queue(), ^{ [self refreshState]; });
+    } else {
+        logLine(@"sospendo il PC");
+        NSTask *t = [NSTask new];
+        t.launchPath = [NSHomeDirectory() stringByAppendingPathComponent:@"bin/pc"];
+        t.arguments = @[@"sleep"];
+        @try { [t launch]; } @catch (NSException *e) { logLine(@"pc sleep non disponibile"); }
+        [self.panel orderOut:nil];
     }
 }
 

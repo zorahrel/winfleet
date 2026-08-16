@@ -15,6 +15,7 @@
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
 #   winfleet panel             pannello in barra dei menu (finestre, app, strumenti)
 #   winfleet dockpanel         pannello nel Dock: click sull'icona, con la ricerca
+#   winfleet icons             scarica le icone di tutte le app dell'host
 #   winfleet apps              lanciatori creati
 #   winfleet list              app pubblicate dall'host
 #   winfleet clean             toglie da Moonlight gli host che non rispondono più
@@ -1278,14 +1279,43 @@ build_dock_panel(){
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-  # L'icona: quella di una delle app gia' scaricate dall'host, se c'e'. Meglio
-  # qualcosa di riconoscibile che il rettangolo bianco di default.
-  local ic
-  ic="$(find "$CONFIG_DIR/icons" -name '*.icns' 2>/dev/null | head -1)"
-  [ -n "$ic" ] && cp -f "$ic" "$DOCK_APP/Contents/Resources/app.icns" 2>/dev/null || true
+  # Un'icona propria. Prima si prendeva la prima icona trovata fra quelle scaricate
+  # dall'host: il pannello finiva per avere l'icona di Telegram, che e' il tipo di
+  # dettaglio che fa sembrare un programma messo insieme in fretta.
+  cp -f "$WF_ROOT/mac/assets/wf-icon.icns" "$DOCK_APP/Contents/Resources/app.icns" 2>/dev/null || true
   clang -framework Cocoa -o "$bin.new" "$src" >/dev/null 2>&1 || { rm -f "$bin.new"; return 1; }
   mv -f "$bin.new" "$bin"
   codesign --force -s - "$DOCK_APP" >/dev/null 2>&1 || true
+}
+
+# Le icone di tutte le app, in un colpo solo. Estrarle una alla volta al momento del
+# bisogno vuol dire un pannello che si riempie di icone mancanti, e ognuna costa un
+# giro di SSH: con settanta app sono settanta connessioni. Qui si paga una volta.
+cmd_icons(){
+  need_ssh
+  [ -s "$HOST_APPS" ] || cmd_scan
+  mkdir -p "$CONFIG_DIR/icons"
+  local name exe icns n=0 skip=0 fail=0 tot
+  tot=$(wc -l < "$HOST_APPS" | tr -d ' ')
+  info "estraggo le icone di $tot app dall'host…"
+  while IFS=$'\t' read -r name exe; do
+    [ -n "$name" ] && [ -n "$exe" ] || continue
+    icns="$CONFIG_DIR/icons/$name.icns"
+    # Gia' presente: non si rifa'. Le icone di Windows non cambiano da sole, e
+    # rifarle tutte a ogni giro trasformerebbe un comando da usare in uno da evitare.
+    [ -f "$icns" ] && { skip=$(( skip + 1 )); continue; }
+    # </dev/null: ssh legge dallo standard input e si mangerebbe il resto del file
+    # letto dal while, fermando il ciclo dopo la prima app. Sintomo: "1 icona nuova"
+    # e nessun errore.
+    if build_icns "$name" "$exe" "$icns" </dev/null; then
+      n=$(( n + 1 ))
+      printf "\r  ${c_dim}%d nuove, %d gia' presenti, %d senza icona${c_off}   " "$n" "$skip" "$fail"
+    else
+      fail=$(( fail + 1 ))
+    fi
+  done < "$HOST_APPS"
+  printf "\r"
+  ok "$n icone nuove  ${c_dim}($skip gia' c'erano, $fail senza icona estraibile)${c_off}"
 }
 
 cmd_dockpanel(){
@@ -1603,6 +1633,7 @@ case "${1:-}" in
   endpoint) cmd_endpoint;;
   setup)    cmd_setup;;
   fixnet)   cmd_fixnet;;
+  icons)    cmd_icons;;
   unlock)   cmd_unlock;;
   doctor|"") cmd_doctor;;
   -h|--help|help)
