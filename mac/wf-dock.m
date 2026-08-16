@@ -350,7 +350,7 @@ static NSArray<NSDictionary *> *openWindows(void) {
     self.notice.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
     [bg addSubview:self.notice];
 
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 110)];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 86)];
     scroll.hasVerticalScroller = YES;
     scroll.drawsBackground = NO;
     scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -486,7 +486,7 @@ static NSArray<NSDictionary *> *openWindows(void) {
 - (void)busy:(NSString *)what {
     self.notice.stringValue = what ?: @"";
     self.notice.textColor = NSColor.secondaryLabelColor;
-    self.notice.hidden = NO;
+    [self showNotice:YES];
     [self.spin startAnimation:nil];
     self.spin.hidden = NO;
 }
@@ -494,10 +494,26 @@ static NSArray<NSDictionary *> *openWindows(void) {
 - (void)done:(NSString *)err {
     [self.spin stopAnimation:nil];
     self.spin.hidden = YES;
-    if (!err) { self.notice.hidden = YES; return; }
+    if (!err) { [self showNotice:NO]; return; }
     self.notice.stringValue = err;
     self.notice.textColor = NSColor.systemRedColor;
-    self.notice.hidden = NO;
+    [self showNotice:YES];
+}
+
+// La riga di avviso non lascia il suo spazio quando non c'e': una fascia vuota fra
+// la ricerca e l'elenco si nota, e sembra un difetto di allineamento invece che
+// posto riservato a un messaggio che compare di rado.
+- (void)showNotice:(BOOL)on {
+    if (self.notice.hidden == !on) return;
+    self.notice.hidden = !on;
+    NSView *scroll = self.table.enclosingScrollView.superview ?: self.table.enclosingScrollView;
+    NSScrollView *sv = self.table.enclosingScrollView;
+    NSRect f = sv.frame;
+    CGFloat gap = 24;
+    if (on) { f.size.height -= gap; }
+    else    { f.size.height += gap; }
+    sv.frame = f;
+    (void)scroll;
 }
 
 // Lo stato si chiede in secondo piano: interrogare la rete mentre si apre il
