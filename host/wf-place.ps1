@@ -116,11 +116,30 @@ $packaged = $Exe -like 'shell:AppsFolder\*'
 # finestra di Esplora file, che tra l'altro si apre benissimo senza.
 $isShell = $Exe -match '(^|\\)explorer\.exe$'
 
-if (-not $packaged -and -not $isShell) {
-    # Single-instance apps would otherwise just raise their existing window on another
-    # screen instead of opening one here.
-    $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
-    Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+if (-not $isShell) {
+    # Un'app a istanza singola non aprirebbe una finestra qui: riporterebbe in primo
+    # piano quella che ha gia', su un altro schermo. Vale anche per le app dello
+    # Store — anzi soprattutto per quelle, che sono quasi tutte a istanza singola:
+    # saltarle significava streammare uno schermo vuoto mentre la finestra restava
+    # sul desktop vero, ed e' il motivo per cui si vedeva un rettangolo nero.
+    #
+    # Il nome del processo non si ricava dal percorso quando l'app e' pacchettizzata:
+    # 'shell:AppsFolder\Microsoft.WindowsNotepad_...!App' non contiene 'Notepad.exe'.
+    # Si prende dall'identificativo del pacchetto, che e' la parte prima del punto.
+    if ($packaged) {
+        $pkg = ($Exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
+        $leaf = ($pkg -split '_')[0]              # Microsoft.WindowsNotepad
+        $name = ($leaf -split '\.')[-1]           # WindowsNotepad
+        # 'WindowsNotepad' come processo si chiama 'Notepad': si cerca per prefisso
+        # e si accetta qualunque processo il cui nome sia contenuto in quello del
+        # pacchetto, che copre sia Notepad sia Calculator sia Photos.
+        Get-Process -EA SilentlyContinue |
+            Where-Object { $_.ProcessName.Length -gt 3 -and $leaf -match [regex]::Escape($_.ProcessName) } |
+            Stop-Process -Force -EA SilentlyContinue
+    } else {
+        $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
+        Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+    }
     Start-Sleep 1
 }
 
