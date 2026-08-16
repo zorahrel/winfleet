@@ -63,7 +63,12 @@ static void logLine(NSString *what) {
 // 2. Senza shell di mezzo, i nomi con spazi, accenti e apostrofi ("Gestione
 //    attivita'") non vanno protetti, e nessun nome di app puo' finire interpretato
 //    come comando.
-static void runArgs(NSArray<NSString *> *args) {
+// Il comando gira staccato ma il suo esito NON si butta via: winfleet ha messaggi
+// veri da dare ("tutte le finestre sono occupate", "app non trovata") e il pannello
+// li stava scartando, quindi si premeva una voce e non succedeva niente — senza
+// alcun modo di sapere se stava caricando, se aveva fallito o se il click era
+// andato perso.
+static void runArgs(NSArray<NSString *> *args, void (^done)(BOOL ok, NSString *msg)) {
     logLine([args componentsJoinedByString:@"  "]);
     NSTask *t = [NSTask new];
     t.launchPath = kCli;
@@ -72,9 +77,34 @@ static void runArgs(NSArray<NSString *> *args) {
     // clang, e senza questo li cercherebbe dove non ci sono.
     NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
     env[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    env[@"NO_COLOR"] = @"1";      // i codici colore in un avviso si vedono, e male
     t.environment = env;
+    NSPipe *out = [NSPipe pipe];
+    t.standardOutput = out; t.standardError = out;
+
     @try { [t launch]; }
-    @catch (NSException *e) { logLine([@"ERRORE: " stringByAppendingString:e.reason]); }
+    @catch (NSException *e) {
+        logLine([@"ERRORE: " stringByAppendingString:e.reason]);
+        if (done) done(NO, @"non riesco ad avviare winfleet");
+        return;
+    }
+    if (!done) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSData *d = nil;
+        @try { d = [out.fileHandleForReading readDataToEndOfFile]; } @catch (NSException *e) {}
+        [t waitUntilExit];
+        NSString *txt = d.length ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : @"";
+        BOOL ok = (t.terminationStatus == 0);
+        // L'ultima riga non vuota: winfleet stampa il risultato alla fine, e le
+        // righe di avanzamento prima non servono a chi guarda un avviso.
+        NSString *last = @"";
+        for (NSString *l in [txt componentsSeparatedByString:@"\n"]) {
+            NSString *c = [l stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (c.length) last = c;
+        }
+        logLine([NSString stringWithFormat:@"  -> %@ (%d)", last, t.terminationStatus]);
+        dispatch_async(dispatch_get_main_queue(), ^{ done(ok, last); });
+    });
 }
 
 // Sincrono, per leggere elenchi. Con un limite di tempo: se il PC e' spento o la
@@ -232,6 +262,8 @@ static NSArray<NSDictionary *> *openWindows(void) {
 @property (nonatomic, strong) WFPanel      *panel;
 @property (nonatomic, strong) NSSearchField *search;
 @property (nonatomic, strong) NSTextField  *status;
+@property (nonatomic, strong) NSTextField  *notice;
+@property (nonatomic, strong) NSProgressIndicator *spin;
 @property (nonatomic, strong) NSButton     *power;
 @property (nonatomic, strong) NSTableView  *table;
 @property (nonatomic, strong) NSArray      *rows;      // righe mostrate ora
@@ -303,7 +335,22 @@ static NSArray<NSDictionary *> *openWindows(void) {
     self.search.focusRingType = NSFocusRingTypeNone;
     [bg addSubview:self.search];
 
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 86)];
+    self.spin = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(14, frame.size.height - 92, 14, 14)];
+    self.spin.style = NSProgressIndicatorStyleSpinning;
+    self.spin.controlSize = NSControlSizeSmall;
+    self.spin.hidden = YES;
+    self.spin.autoresizingMask = NSViewMinYMargin;
+    [bg addSubview:self.spin];
+
+    self.notice = [[NSTextField alloc] initWithFrame:NSMakeRect(34, frame.size.height - 94, 292, 16)];
+    self.notice.bezeled = NO; self.notice.editable = NO; self.notice.drawsBackground = NO;
+    self.notice.font = [NSFont systemFontOfSize:11];
+    self.notice.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.notice.hidden = YES;
+    self.notice.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    [bg addSubview:self.notice];
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, 8, 324, frame.size.height - 110)];
     scroll.hasVerticalScroller = YES;
     scroll.drawsBackground = NO;
     scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -334,38 +381,27 @@ static NSArray<NSDictionary *> *openWindows(void) {
     self.windows = openWindows();
     [self refreshState];
     self.search.stringValue = @"";
+    [self done:nil];
     [self filter:@""];
 
-    // Sopra il Dock, non sotto il mouse. La posizione del mouse sembra la scelta
-    // ovvia ma e' sbagliata due volte: quando il pannello si apre con un click
-    // sull'icona il mouse e' gia' li' (e allora tanto vale calcolarlo dal Dock), e
-    // quando si apre in altro modo il puntatore puo' essere su un altro schermo —
-    // il pannello compariva sull'ultrawide mentre il Dock era sul portatile.
+    // Centrato sullo schermo che si sta guardando. Le due alternative provate erano
+    // peggio: sotto il puntatore lo faceva comparire su un altro schermo quando il
+    // mouse era altrove, e ancorato al Dock lo incollava a un bordo, dove per
+    // leggerlo bisogna comunque spostare lo sguardo. Un pannello che si apre al
+    // centro si trova sempre, ed e' dove l'occhio e' gia'.
     //
-    // Lo schermo giusto e' quello che ha il Dock, cioe' quello con la barra dei menu:
-    // NSScreen.screens[0], che non cambia con il puntatore.
-    NSScreen *scr = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
-    NSRect full = scr.frame, vis = scr.visibleFrame, f = self.panel.frame;
-
-    // visibleFrame toglie Dock e barra dei menu: la differenza fra i due rettangoli
-    // dice dov'e' il Dock e quanto e' spesso, senza doverlo chiedere a nessuno.
-    CGFloat dockBottom = NSMinY(vis) - NSMinY(full);   // Dock in basso
-    CGFloat dockLeft   = NSMinX(vis) - NSMinX(full);
-    CGFloat dockRight  = NSMaxX(full) - NSMaxX(vis);
-    CGFloat x, y;
+    // "Lo schermo che si sta guardando" e' quello con la finestra attiva, non quello
+    // con il puntatore: si puo' aver lasciato il mouse su un monitor e stare
+    // lavorando su un altro.
+    NSScreen *scr = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
     NSPoint m = NSEvent.mouseLocation;
-    BOOL mouseHere = NSPointInRect(m, full);
+    for (NSScreen *s in NSScreen.screens) if (NSPointInRect(m, s.frame)) { scr = s; break; }
 
-    if (dockLeft > 8) {                       // Dock a sinistra
-        x = NSMinX(vis) + 8;
-        y = mouseHere ? m.y - f.size.height / 2 : NSMidY(vis) - f.size.height / 2;
-    } else if (dockRight > 8) {               // Dock a destra
-        x = NSMaxX(vis) - f.size.width - 8;
-        y = mouseHere ? m.y - f.size.height / 2 : NSMidY(vis) - f.size.height / 2;
-    } else {                                  // Dock in basso (o nascosto)
-        x = mouseHere ? m.x - f.size.width / 2 : NSMidX(vis) - f.size.width / 2;
-        y = NSMinY(full) + MAX(dockBottom, 8) + 8;   // sopra il Dock, mai sotto
-    }
+    NSRect vis = scr.visibleFrame, f = self.panel.frame;
+    // Leggermente sopra il centro: un pannello centrato esatto sembra basso, perche'
+    // si legge dall'alto e il peso visivo sta nelle prime righe.
+    CGFloat x = NSMidX(vis) - f.size.width / 2;
+    CGFloat y = NSMidY(vis) - f.size.height / 2 + f.size.height * 0.08;
     x = MAX(NSMinX(vis) + 8, MIN(x, NSMaxX(vis) - f.size.width - 8));
     y = MAX(NSMinY(vis) + 8, MIN(y, NSMaxY(vis) - f.size.height - 8));
     [self.panel setFrameOrigin:NSMakePoint(x, y)];
@@ -444,6 +480,26 @@ static NSArray<NSDictionary *> *openWindows(void) {
     }
 }
 
+// Il riscontro: una riga sotto la ricerca che dice cosa sta succedendo. Serve a
+// coprire i venti secondi fra il click e la finestra, che senza niente sullo schermo
+// sono venti secondi in cui il programma sembra rotto.
+- (void)busy:(NSString *)what {
+    self.notice.stringValue = what ?: @"";
+    self.notice.textColor = NSColor.secondaryLabelColor;
+    self.notice.hidden = NO;
+    [self.spin startAnimation:nil];
+    self.spin.hidden = NO;
+}
+
+- (void)done:(NSString *)err {
+    [self.spin stopAnimation:nil];
+    self.spin.hidden = YES;
+    if (!err) { self.notice.hidden = YES; return; }
+    self.notice.stringValue = err;
+    self.notice.textColor = NSColor.systemRedColor;
+    self.notice.hidden = NO;
+}
+
 // Lo stato si chiede in secondo piano: interrogare la rete mentre si apre il
 // pannello lo farebbe comparire mezzo secondo dopo il click, e mezzo secondo su un
 // menu si nota.
@@ -475,28 +531,71 @@ static NSArray<NSDictionary *> *openWindows(void) {
     }
 }
 
-// Accendere e spegnere sono asimmetrici, e devono restare tali: il magic packet e'
-// gratis e reversibile, sospendere invece butta via lo stato delle finestre aperte.
+static void runPc(NSString *arg) {
+    NSTask *t = [NSTask new];
+    t.launchPath = [NSHomeDirectory() stringByAppendingPathComponent:@"bin/pc"];
+    t.arguments = @[arg];
+    @try { [t launch]; } @catch (NSException *e) { logLine([@"pc non disponibile: " stringByAppendingString:arg]); }
+}
+
+// Accendere e' un click solo: e' gratis e reversibile. Spegnere no, quindi passa da
+// un menu con due voci distinte — sospendere e spegnere non sono la stessa cosa e
+// confonderle costa caro: da spento il PC si riaccende solo con il Wake-on-LAN, che
+// richiede una voce del BIOS non ancora attiva. Il menu lo dice invece di lasciarlo
+// scoprire a PC spento.
 - (void)togglePower:(id)sender {
     if (gState == WFDown) {
         logLine(@"accendo il PC");
-        self.status.stringValue = @"… accendo";
-        NSTask *t = [NSTask new];
-        t.launchPath = [NSHomeDirectory() stringByAppendingPathComponent:@"bin/pc"];
-        t.arguments = @[@"wake"];
-        @try { [t launch]; } @catch (NSException *e) { logLine(@"pc wake non disponibile"); }
-        // Si ricontrolla da soli fra un po': accendere ci mette una ventina di
-        // secondi e nessuno vuole riaprire il pannello per sapere se e' andata.
+        [self busy:@"accendo il PC…"];
+        runPc(@"wake");
+        // Ricontrollo da solo: accendere ci mette una ventina di secondi e nessuno
+        // vuole riaprire il pannello per sapere se e' andata.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC),
-                       dispatch_get_main_queue(), ^{ [self refreshState]; });
-    } else {
-        logLine(@"sospendo il PC");
-        NSTask *t = [NSTask new];
-        t.launchPath = [NSHomeDirectory() stringByAppendingPathComponent:@"bin/pc"];
-        t.arguments = @[@"sleep"];
-        @try { [t launch]; } @catch (NSException *e) { logLine(@"pc sleep non disponibile"); }
-        [self.panel orderOut:nil];
+                       dispatch_get_main_queue(), ^{ [self done:nil]; [self refreshState]; });
+        return;
     }
+
+    NSMenu *m = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *sl = [m addItemWithTitle:@"Sospendi  (si riaccende dal Mac)"
+                                  action:@selector(doSleep:) keyEquivalent:@""];
+    sl.target = self;
+    NSMenuItem *off = [m addItemWithTitle:@"Spegni  (poi va acceso a mano)"
+                                   action:@selector(doShutdown:) keyEquivalent:@""];
+    off.target = self;
+    [m addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *rb = [m addItemWithTitle:@"Riavvia" action:@selector(doReboot:) keyEquivalent:@""];
+    rb.target = self;
+    [m popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, -4) inView:self.power];
+}
+
+- (void)doSleep:(id)sender {
+    logLine(@"sospendo il PC");
+    runPc(@"sleep");
+    [self.panel orderOut:nil];
+}
+
+// Spegnere e' l'unica azione qui che non si annulla da sola: da spento il magic
+// packet non basta finche' il BIOS non e' configurato, quindi si chiede conferma.
+// Non e' cerimonia: e' la differenza fra riaccenderlo dal divano e alzarsi.
+- (void)doShutdown:(id)sender {
+    NSAlert *a = [NSAlert new];
+    a.messageText = @"Spegnere il PC?";
+    a.informativeText = @"Da spento non si riaccende dal Mac: il Wake-on-LAN richiede "
+                        @"una voce del BIOS non ancora attiva. Per riaccenderlo dovrai "
+                        @"premere il pulsante.\n\nSe vuoi solo metterlo a riposo, usa Sospendi.";
+    [a addButtonWithTitle:@"Spegni"];
+    [a addButtonWithTitle:@"Annulla"];
+    a.alertStyle = NSAlertStyleWarning;
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    logLine(@"spengo il PC");
+    runPc(@"off");
+    [self.panel orderOut:nil];
+}
+
+- (void)doReboot:(id)sender {
+    logLine(@"riavvio il PC");
+    runPc(@"reboot");
+    [self.panel orderOut:nil];
 }
 
 - (void)controlTextDidChange:(NSNotification *)n { [self filter:self.search.stringValue]; }
@@ -529,11 +628,22 @@ static NSArray<NSDictionary *> *openWindows(void) {
     NSString *kind = r[@"kind"], *title = r[@"title"];
     if ([kind isEqual:@"head"]) return;
 
-    [self.panel orderOut:nil];      // si e' scelto: via
-
     if ([kind isEqual:@"app"]) {
-        runArgs(@[@"open", title]);
-    } else if ([kind isEqual:@"win"]) {
+        // Il pannello resta e dice cosa sta facendo. Chiuderlo subito sembrava
+        // pulito, ma aprire una finestra ci mette una ventina di secondi: sparire
+        // senza lasciare traccia significa non sapere se il click e' arrivato, se
+        // sta caricando o se e' fallito. Si chiude quando la finestra c'e'.
+        [self busy:[NSString stringWithFormat:@"apro %@…", title]];
+        runArgs(@[@"open", title], ^(BOOL ok, NSString *msg) {
+            if (ok) { [self done:nil]; [self.panel orderOut:nil]; }
+            else    { [self done:msg.length ? msg : @"non si e' aperta"]; }
+        });
+        return;
+    }
+
+    [self.panel orderOut:nil];      // le altre azioni sono immediate
+
+    if ([kind isEqual:@"win"]) {
         // La finestra c'e' gia': si porta davanti invece di riaprirla.
         logLine([@"attiva finestra " stringByAppendingString:title]);
         for (NSRunningApplication *a in NSWorkspace.sharedWorkspace.runningApplications)
@@ -541,9 +651,9 @@ static NSArray<NSDictionary *> *openWindows(void) {
                 [a activateWithOptions:0];
     } else if ([kind isEqual:@"cmd"]) {
         NSString *c = r[@"cmd"];
-        if ([c isEqual:@"stop"])          runArgs(@[@"stop"]);
-        else if ([c isEqual:@"explorer"]) runArgs(@[@"open", @"Esplora file"]);
-        else                              runArgs(@[@"open", @"Gestione attività"]);
+        if ([c isEqual:@"stop"])          runArgs(@[@"stop"], nil);
+        else if ([c isEqual:@"explorer"]) runArgs(@[@"open", @"Esplora file"], nil);
+        else                              runArgs(@[@"open", @"Gestione attività"], nil);
     }
 }
 

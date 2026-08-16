@@ -385,6 +385,20 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   # wsize = quanto grande sta la finestra sul Mac. Puo' essere piu' piccola: lo
   #         schermo di Windows la segue a caldo, senza riaprire nulla.
   local -a pre=()
+  # Il pid di QUESTA subshell, letto una volta sola qui: dentro $(...) BASHPID e'
+  # della sotto-subshell che muore subito, e il numero salvato non corrisponderebbe a
+  # nessun processo vivo - lo slot risulterebbe morto pur essendo occupato.
+  local sup_pid="${BASHPID:-$$}"
+  # Comunque finisca la funzione - chiusura normale, kill dall'esterno, terminale che
+  # se ne va - lo stato dello slot va tolto e l'app su Windows chiusa. Senza, chiudere
+  # la finestra dal Mac lasciava lo slot "occupato" per sempre: winfleet rispondeva
+  # "tutte le finestre sono occupate" con lo schermo vuoto davanti, e l'unico rimedio
+  # era cancellare i file a mano. La pulizia in fondo alla funzione non basta: ci si
+  # arriva solo se il ciclo esce dalla porta principale.
+  # $pid e' lo stream: va ucciso esplicitamente, perche' non muore col padre - e
+  # finche' vive tiene occupata la sessione di Sunshine, quindi lo slot risulta in uso
+  # anche dopo che il supervisore non c'e' piu'.
+  trap 'kill "${pid:-0}" 2>/dev/null; place_stop "$slot" 2>/dev/null; slot_forget "$slot" 2>/dev/null; exit' EXIT INT TERM HUP
   addr="$(slot_addr "$slot")"
   bin="$(runner_bin "$app")"
   # Con la libreria dentro, la geometria la tiene lei: sa distinguere un
@@ -438,7 +452,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
         pid=$!
       fi
     fi
-    slot_save "$slot" "$app" "$wsize" "$pid" "$(self_pid)"
+    slot_save "$slot" "$app" "$wsize" "$pid" "$sup_pid"
     for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
     # Prima finestra della vita: e' l'unica occasione per sapere quanto grande la
     # puo' fare macOS davvero. Da qui in poi il dato e' in config.
@@ -467,6 +481,9 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     [ -n "$seen" ] && { wsize="$seen"; save_cfg "size_$key" "$wsize"; }
     kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
+    # want vuoto vuol dire che nessuno ha chiesto una misura nuova: la finestra e'
+    # stata chiusa, quindi si esce invece di riaprirla. E' il ramo che fa della X
+    # una chiusura e non un lampeggio.
     [ -n "$want" ] || break
     smode="$want"; wsize="$want"
     refresh_vdd
@@ -503,7 +520,12 @@ slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
 slot_addr(){ echo "$HOST_NAME:$(slot_port "$1")"; }
 
 slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
-  curl -s --max-time 4 "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+  # Due secondi, non quattro, e --connect-timeout separato: quattro slot interrogati
+  # in fila fanno l'attesa per quattro, e "winfleet windows" e' un comando a cui si
+  # guarda la risposta, non uno che si lancia e si aspetta. Se un'istanza e' giu' lo
+  # si scopre in due secondi invece che in sedici.
+  curl -s --max-time 2 --connect-timeout 1 \
+    "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
     | tr '<' '\n' | awk -F'>' '/^state/{print $2}'
 }
 
@@ -679,7 +701,14 @@ slot_file(){ echo "$CONFIG_DIR/slot$1.state"; }
 
 # Pid della shell corrente anche dentro una sottoshell, dove $$ resta quello del
 # padre. BASHPID lo direbbe, ma non esiste sul bash 3.2 di serie su macOS.
-self_pid(){ exec sh -c 'echo $PPID'; }
+# Il pid della subshell che sta girando, non quello del processo principale.
+#
+# $$ dentro una subshell resta il pid del padre - e' documentato e sorprende
+# comunque. Il vecchio "exec sh -c 'echo $PPID'" cercava di aggirarlo ma restituiva
+# a sua volta il padre della sh, cioe' ancora il processo principale: il numero
+# salvato come "supervisore" era di qualcun altro, e ucciderlo non fermava niente.
+# Sintomo: la finestra chiusa dal Mac restava aperta e lo slot occupato per sempre.
+self_pid(){ echo "${BASHPID:-$$}"; }
 
 slot_save(){ # slot app modalita pid-stream pid-supervisore
   printf 'app=%s\nmode=%s\npid=%s\nsup=%s\n' "$2" "$3" "$4" "$5" >"$(slot_file "$1")"
@@ -690,13 +719,30 @@ slot_get(){ # slot campo
 }
 
 slot_live(){ # slot -> 0 se la finestra e' viva
-  local sup; sup="$(slot_get "$1" sup)"
+  local sup pid; sup="$(slot_get "$1" sup)"; pid="$(slot_get "$1" pid)"
   [ -n "$sup" ] || return 1
-  kill -0 "$sup" 2>/dev/null || return 1
+  # Lo stream morto vuol dire finestra chiusa, comunque stia il supervisore: e' il
+  # caso della X, dove il supervisore e' ancora vivo per qualche istante mentre
+  # raccoglie la misura finale. Senza questo, per quegli istanti lo slot risulta
+  # occupato da una finestra che non esiste piu' - e se il supervisore muore male,
+  # per sempre.
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    kill "$sup" 2>/dev/null
+    slot_forget "$1" 2>/dev/null
+    return 1
+  fi
+  # Un supervisore morto lascia dietro il suo file di stato: se il processo non c'e'
+  # piu' lo stato e' spazzatura e va tolto subito, non semplicemente ignorato.
+  # Ignorarlo bastava per rispondere alla domanda "e' viva?", ma lasciava lo slot
+  # occupato per chiunque leggesse il file dopo - compreso il pannello, che elencava
+  # finestre aperte che non esistevano.
+  if ! kill -0 "$sup" 2>/dev/null; then slot_forget "$1" 2>/dev/null; return 1; fi
   # I numeri di processo si riusano: dopo un riavvio del Mac quel numero e' di
   # qualcun altro, e una finestra "viva" che non esiste tiene occupato lo slot per
   # sempre — con "tutte le finestre sono occupate" al posto di una finestra.
-  ps -o command= -p "$sup" 2>/dev/null | grep -q winfleet
+  if ! ps -o command= -p "$sup" 2>/dev/null | grep -q winfleet; then
+    slot_forget "$1" 2>/dev/null; return 1
+  fi
 }
 
 slot_forget(){ rm -f "$(slot_file "$1")"; }
@@ -930,10 +976,14 @@ cmd_open(){
     chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
     printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
       "$app" "$(( slot + 1 ))" "$HOST_NAME" "$want" "$FPS"
-    ( supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
+    # In una subshell propria e con la gestione dei segnali attiva: senza, un kill al
+    # supervisore lo faceva sparire lasciando dietro lo stream e il file di stato -
+    # lo slot restava "occupato" con lo schermo vuoto davanti.
+    ( WF_SUP=1 supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
+    WF_SUP_PID=$!
     # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
     # ad arrivare allo stream, e nel frattempo un secondo "open" la sceglierebbe.
-    slot_save "$slot" "$app" "$mode" "" "$!"
+    slot_save "$slot" "$app" "$mode" "" "$WF_SUP_PID"
     disown 2>/dev/null || true
     return
   fi
@@ -984,11 +1034,21 @@ cmd_windows(){
     app=""; size=""
     if slot_live "$i"; then app="$(slot_get "$i" app)"; size="$(slot_get "$i" mode)"; fi
     [ -n "$size" ] || size="$(vdd_field "$i" width)x$(vdd_field "$i" height)"
-    case "$st" in
-      *FREE*) info "finestra $(( i + 1 ))  libera        ${c_dim}porta $(slot_port "$i")${c_off}";;
-      *BUSY*) ok   "finestra $(( i + 1 ))  ${app:-in uso}  ${c_dim}$size${c_off}";;
-      *)      bad  "finestra $(( i + 1 ))  non risponde  ${c_dim}porta $(slot_port "$i")${c_off}";;
-    esac
+    # Chi comanda e' lo stato locale, non quello che dice l'host. Sunshine
+    # dichiara la sessione libera in due momenti in cui la finestra sul Mac c'e'
+    # eccome: durante la negoziazione, e dopo un riavvio dell'istanza mentre il
+    # client e' ancora connesso. Fidandosi solo dell'host, "winfleet windows"
+    # elencava quattro finestre libere con due app aperte davanti agli occhi — e
+    # peggio, la prossima "open" gliele sovrascriveva.
+    if [ -n "$app" ]; then
+      ok "finestra $(( i + 1 ))  $app  ${c_dim}$size${c_off}"
+    else
+      case "$st" in
+        *FREE*) info "finestra $(( i + 1 ))  libera        ${c_dim}porta $(slot_port "$i")${c_off}";;
+        *BUSY*) ok   "finestra $(( i + 1 ))  in uso        ${c_dim}$size (da un altro client)${c_off}";;
+        *)      bad  "finestra $(( i + 1 ))  non risponde  ${c_dim}porta $(slot_port "$i")${c_off}";;
+      esac
+    fi
   done
 }
 

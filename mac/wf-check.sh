@@ -43,7 +43,13 @@ PY
 )"
 
 printf 'finestra %sx%s  luminosita media %s  variazione %s  ' "$w" "$h" "$avg" "$dev"
+# Due criteri, non uno. La luminosita' da sola boccia le finestre legittimamente
+# scure: un terminale e' nero con qualche riga di testo, e faceva media 16 —
+# "schermo nero" secondo il controllo, ma sullo schermo si legge benissimo.
+# Quello che distingue una finestra vuota da una scura ma piena e' la VARIAZIONE fra
+# le celle: un rettangolo nero e' uniforme, un terminale no.
 awk -v a="$avg" -v d="$dev" -v s="$soglia" 'BEGIN{
-  if (a+0 <  s+0) { print "✗ schermo nero"; exit 1 }
-  if (d+0 <  3)   { print "✗ tinta piatta, nessun contenuto"; exit 1 }
-  print "✓ immagine presente"; exit 0 }'
+  if (d+0 >= 8)             { print "✓ immagine presente"; exit 0 }   # contenuto vero
+  if (a+0 >= s+0 && d+0 >=3){ print "✓ immagine presente"; exit 0 }   # chiara e non piatta
+  if (a+0 <  s+0)           { print "✗ schermo nero"; exit 1 }
+  print "✗ tinta piatta, nessun contenuto"; exit 1 }'

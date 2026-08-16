@@ -148,14 +148,40 @@ static void sweep(void) {
 // istantaneo perche' lo disegna macOS, e da' la sensazione giusta anche se sotto ne
 // resta uno finto che lo insegue.
 //
-// Si mostra solo dentro l'area del video, e solo se il puntatore e' davvero li':
-// forzarlo sempre visibile lo farebbe comparire anche sopra altre finestre.
+// Il puntatore si rimette solo mentre e' davvero dentro la finestra dello stream.
+//
+// La prima versione lo mostrava quando la finestra era attiva, e sbagliava il caso
+// piu' comune: uscendo dalla finestra il puntatore restava nascosto: si perdeva la
+// freccia sul resto dello schermo e bisognava cliccare da qualche parte per
+// riaverla. Moonlight nasconde il cursore quando entra nell'area del video, quindi
+// va rimesso e ritolto seguendo la posizione, non il fuoco.
+//
+// unhide/hide di NSCursor sono contati: chiamarli sbilanciati lascia il cursore in
+// uno stato che nessun altro sa risolvere, quindi si tiene traccia di cosa si e'
+// fatto e si fa esattamente una chiamata per cambio di stato.
 static void showLocalCursor(void) {
-    static BOOL shown = NO;
-    NSWindow *w = nil;
-    for (NSWindow *x in [NSApp windows]) if (isStreamWindow(x) && x.isKeyWindow) { w = x; break; }
-    if (!w) { if (shown) { [NSCursor unhide]; shown = NO; } return; }
-    if (!shown) { [NSCursor unhide]; shown = YES; }
+    static BOOL unhidden = NO;
+    NSPoint m = NSEvent.mouseLocation;
+    BOOL inside = NO;
+
+    for (NSWindow *w in [NSApp windows]) {
+        if (!isStreamWindow(w) || !w.isVisible) continue;
+        // Solo l'area del video, senza la barra del titolo: li' il cursore lo
+        // gestisce macOS e non serve interferire.
+        NSRect f = w.frame;
+        CGFloat bar = f.size.height - [w contentRectForFrameRect:f].size.height;
+        f.size.height -= bar;
+        if (NSPointInRect(m, f)) { inside = YES; break; }
+    }
+
+    // Solo unhide, mai hide. Nascondere il cursore quando esce dalla finestra
+    // sembra la simmetria giusta ed e' la trappola: NSCursor vale per tutta
+    // l'applicazione, non per una finestra, quindi lo si nasconderebbe anche sopra
+    // la barra del titolo e sopra il pannello. Contro-annullare l'hide di Moonlight
+    // e lasciarlo cosi' e' sufficiente: quando il puntatore esce dalla finestra
+    // dello stream, comanda comunque l'app che sta sotto.
+    if (inside && !unhidden) { [NSCursor unhide]; unhidden = YES; }
+    (void)unhidden;
 }
 
 // I tre pulsanti si vedono ma non rispondono al mouse: con il contenuto a tutta
