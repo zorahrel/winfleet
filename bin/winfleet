@@ -461,7 +461,8 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
       cropf="$CONFIG_DIR/slot$slot.crop"
       printf '0 0 %s %s\n' "${wsize%x*}" "${wsize#*x}" >"$cropf"
       pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
-            "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" )
+            "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" \
+            "WF_AGENT=$(agent_host):$AGENT_PORT" "WF_SLOT=$slot" )
     fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \

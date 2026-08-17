@@ -24,6 +24,8 @@
 
   Endpoint (solo LAN, nessun dato personale, nessuna scrittura fuori da C:\winfleet):
     GET /rect?slot=0&w=1200&h=800   ->  "ok 1200 800"   (misura davvero applicata)
+    GET /show?slot=0&how=min        ->  "ok"  riduce a icona l'app su Windows
+    GET /show?slot=0&how=restore    ->  "ok"  la rimette com'era
     GET /windows                    ->  una riga per finestra: "<hwnd>\t<titolo>"
     GET /raise?hwnd=123             ->  "ok"  porta quella finestra in primo piano
     GET /ping                       ->  "ok"
@@ -147,6 +149,26 @@ while ($listener.IsListening) {
             $h    = [int]$req.QueryString['h']
             $got  = Set-AppSize $slot $w $h
             $body = if ($got) { "ok $got" } else { 'no' }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/show') {
+            # Riduci a icona sul Mac deve ridurre a icona anche su Windows.
+            #
+            # Senza questo, minimizzare sul Mac lasciava la finestra dell'app in
+            # primo piano sul suo schermo virtuale: lo stream continua a mandarla e
+            # al ripristino si vedeva quello che nel frattempo Windows aveva messo
+            # sopra, cioe' una finestra che l'utente non aveva mai aperto li'.
+            #
+            # SW_SHOWMINNOACTIVE (7) e non SW_MINIMIZE (6): minimizzare "attivando"
+            # sposta il fuoco su un'altra finestra dello schermo virtuale, che e'
+            # esattamente cio' che faceva emergere quella sotto.
+            $slot = [int]$req.QueryString['slot']
+            $how  = "$($req.QueryString['how'])"
+            $hwnd = Get-Hwnd $slot
+            if ([A]::IsWindow($hwnd)) {
+                if ($how -eq 'min') { [void][A]::ShowWindow($hwnd, 7) }
+                else                { [void][A]::ShowWindow($hwnd, 9) }   # SW_RESTORE
+                $body = 'ok'
+            }
         }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
         elseif ($req.Url.AbsolutePath -eq '/raise') {

@@ -45,6 +45,28 @@ static BOOL   gKeepChrome = NO;
 static BOOL   gLocalCursor = NO;
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
+static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
+static int    gSlot = -1;            // quale schermo virtuale e' il nostro
+
+// Dice all'app su Windows di ridursi a icona, o di tornare.
+//
+// Sul Mac la finestra la minimizza Cocoa e si vede subito; su Windows l'app
+// resterebbe in primo piano sul suo schermo virtuale, e al ripristino si
+// tornerebbe a vedere cio' che nel frattempo le e' finito sopra. Le due cose vanno
+// dette insieme.
+//
+// In coda separata e senza aspettare la risposta: parte da un handler di eventi, e
+// un giro di rete dentro il thread principale si sente come uno scatto sul click.
+static void tellWindows(BOOL minimize) {
+    if (!gAgent || gSlot < 0) return;
+    NSString *url = [NSString stringWithFormat:@"http://%s/show?slot=%d&how=%s",
+                     gAgent, gSlot, minimize ? "min" : "restore"];
+    NSURLRequest *r = [NSURLRequest requestWithURL:[NSURL URLWithString:url]
+                                      cachePolicy:NSURLRequestReloadIgnoringCacheData
+                                  timeoutInterval:2.0];
+    [[NSURLSession.sharedSession dataTaskWithRequest:r] resume];
+}
+
 
 // Chi sta fuori deve sapere quanto e' grande la finestra per far seguire la
 // risoluzione di Windows, e chiederlo con AppleScript costa decine di millisecondi
@@ -84,6 +106,26 @@ static BOOL isStreamWindow(NSWindow *w) {
     NSString *cls = NSStringFromClass([w class]);
     if ([cls hasPrefix:@"QNS"] || [cls containsString:@"Qt"]) return NO;
     return YES;
+}
+
+// Una finestra che abbiamo gia' preso in carico, riconosciuta dal marchio che le
+// abbiamo messo addosso e non dal suo stato.
+//
+// Serve perche' isStreamWindow chiede isVisible, e una finestra RIDOTTA A ICONA non
+// e' visibile: usarla per decidere se reagire alla minimizzazione scartava proprio
+// l'evento che ci interessava. Trovato dal test, non a mente: la chiamata di
+// ripristino partiva e quella di minimizzazione no.
+static BOOL isAdopted(NSWindow *w) {
+    return w && objc_getAssociatedObject(w, kSeen) != nil;
+}
+
+// Quanto e' alta la barra del titolo di QUESTA finestra. Con
+// NSWindowStyleMaskFullSizeContentView il contenuto ci passa sotto, quindi la
+// differenza frame/contentRect resta il modo onesto di misurarla: non si assume
+// un valore fisso, che cambia con lo stile e con il display.
+static CGFloat titlebarHeight(NSWindow *w) {
+    NSRect f = w.frame;
+    return f.size.height - [w contentRectForFrameRect:f].size.height;
 }
 
 static void adopt(NSWindow *w) {
@@ -175,8 +217,7 @@ static void showLocalCursor(void) {
         // Solo l'area del video, senza la barra del titolo: li' il cursore lo
         // gestisce macOS e non serve interferire.
         NSRect f = w.frame;
-        CGFloat bar = f.size.height - [w contentRectForFrameRect:f].size.height;
-        f.size.height -= bar;
+        f.size.height -= titlebarHeight(w);
         if (NSPointInRect(m, f)) { inside = YES; break; }
     }
 
@@ -224,7 +265,27 @@ static void watchTitlebarClicks(void) {
             // chirurgica, mentre qui intorno non c'e' nient'altro da colpire.
             if (NSPointInRect(p, NSInsetRect(r, -4, -4))) { hit = b; break; }
         }
-        if (!hit) return e;
+
+        if (!hit) {
+            // Trascinare la finestra sul Mac deve muovere la finestra sul MAC.
+            //
+            // Con il contenuto a tutta finestra il video arriva fin sotto la barra,
+            // e SDL prende gli eventi a livello di finestra: premere sulla barra
+            // finiva dentro Windows. Siccome quasi tutte le app ci disegnano la
+            // PROPRIA barra, quel premi-e-trascina afferrava la finestra dell'app su
+            // Windows e la spostava sul suo schermo virtuale - mentre la finestra
+            // sul Mac restava ferma. Due finestre che si scollano: l'app usciva dal
+            // rettangolo ritagliato e si vedeva il desktop di Windows intorno.
+            //
+            // La striscia in cima e' del Mac, punto. Qui il drag lo fa Cocoa
+            // (performWindowDragWithEvent: segue il mouse a 120 Hz e conosce snap,
+            // Spaces e schermi) e l'evento non arriva a SDL.
+            if (p.y > w.frame.size.height - titlebarHeight(w)) {
+                [w performWindowDragWithEvent:e];
+                return nil;
+            }
+            return e;
+        }
 
         if      (hit == [w standardWindowButton:NSWindowCloseButton])       [w performClose:nil];
         else if (hit == [w standardWindowButton:NSWindowMiniaturizeButton]) [w miniaturize:nil];
@@ -242,6 +303,9 @@ static void wf_chrome_init(void) {
     }
     gSizeFile = getenv("WF_SIZE");
     gCropFile = getenv("WF_CROP");
+    gAgent    = getenv("WF_AGENT");
+    const char *slot = getenv("WF_SLOT");
+    if (slot) gSlot = atoi(slot);
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
     const char *cur = getenv("WF_CURSOR");
@@ -258,6 +322,21 @@ static void wf_chrome_init(void) {
                                                       usingBlock:^(NSNotification *n) {
             NSWindow *w = n.object;
             if (isStreamWindow(w)) { setWant(w, w.frame.size); publish(w.frame.size); }
+        }];
+        // Riduci a icona e ripristino vanno detti anche a Windows. Si ascoltano le
+        // notifiche invece di agire solo nel click sul semaforo, cosi' vale anche
+        // per Cmd+M, per il menu Finestra e per il click sull'icona nel Dock.
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidMiniaturizeNotification
+                                                          object:nil
+                                                           queue:nil
+                                                      usingBlock:^(NSNotification *n) {
+            if (isAdopted(n.object)) tellWindows(YES);
+        }];
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidDeminiaturizeNotification
+                                                          object:nil
+                                                           queue:nil
+                                                      usingBlock:^(NSNotification *n) {
+            if (isAdopted(n.object)) tellWindows(NO);
         }];
         // SDL ricrea la finestra piu' di una volta (cambio di schermo, di renderer):
         // conviene ripassare invece di fidarsi di un solo giro all'avvio.
