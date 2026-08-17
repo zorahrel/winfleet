@@ -24,6 +24,7 @@
 
   Endpoint (solo LAN, nessun dato personale, nessuna scrittura fuori da C:\winfleet):
     GET /rect?slot=0&w=1200&h=800   ->  "ok 1200 800"   (misura davvero applicata)
+    GET /mode?slot=0                ->  "1800x1200"  misura attuale del monitor
     GET /show?slot=0&how=min        ->  "ok"  riduce a icona l'app su Windows
     GET /show?slot=0&how=restore    ->  "ok"  la rimette com'era
     GET /windows                    ->  una riga per finestra: "<hwnd>\t<titolo>"
@@ -211,6 +212,14 @@ while ($listener.IsListening) {
                 $body = 'ok'
             }
             }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/mode') {
+            # La misura ATTUALE del monitor virtuale di uno slot, per chi deve
+            # aspettare che un cambio di risoluzione sia andato a buon fine senza
+            # dormire a occhio.
+            $slot = [int]$req.QueryString['slot']
+            $mon = Get-Monitor $slot
+            if ($mon) { $body = "$($mon.width)x$($mon.height)" }
         }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
         elseif ($req.Url.AbsolutePath -eq '/raise') {

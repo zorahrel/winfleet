@@ -1,3 +1,91 @@
+diff --git a/app/gui/StreamSegue.qml b/app/gui/StreamSegue.qml
+index 377b533..0b44cf2 100644
+--- a/app/gui/StreamSegue.qml
++++ b/app/gui/StreamSegue.qml
+@@ -51,6 +51,18 @@ Item {
+ 
+     function quitStarting()
+     {
++        // WinFleet: chiudendo la finestra non deve comparire NIENTE.
++        //
++        // Qui Moonlight rimette in scena la finestra Qt per mostrare
++        // "Quitting Desktop...": ha senso in un client a tutto schermo, dove
++        // qualcosa deve restare sullo schermo mentre l'host chiude la sessione.
++        // In WinFleet la finestra E' l'app: chiudendola ci si aspetta che
++        // sparisca, e quella schermata di cortesia e' un lampo grigio che nessuno
++        // ha chiesto. La chiusura vera prosegue identica: e' solo muta.
++        if (winFleetQuietQuit) {
++            return
++        }
++
+         // Avoid the push transition animation
+         var component = Qt.createComponent("QuitSegue.qml")
+         stackView.replace(stackView.currentItem, component.createObject(stackView, {"appName": appName}), StackView.Immediate)
+diff --git a/app/main.cpp b/app/main.cpp
+index c0be000..4cf6662 100644
+--- a/app/main.cpp
++++ b/app/main.cpp
+@@ -1036,6 +1036,12 @@ int main(int argc, char *argv[])
+         engine.rootContext()->setContextProperty("initialView", initialView);
+         engine.rootContext()->setContextProperty("runConfigChecks", commandLineParserResult == GlobalCommandLineParser::NormalStartRequested);
+ 
++        // WinFleet: quando la finestra E' l'app, chiudendola non deve comparire
++        // nient'altro - nemmeno la schermata "Quitting ...". Si riconosce dallo
++        // stesso segnale che accende il ritaglio, per non avere due verita'.
++        engine.rootContext()->setContextProperty("winFleetQuietQuit",
++                                                 qEnvironmentVariableIsSet("WF_CROP"));
++
+         // Load the main.qml file
+         engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));
+         if (engine.rootObjects().isEmpty())
+diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
+index 85169d1..3c7d7e7 100644
+--- a/app/streaming/input/mouse.cpp
++++ b/app/streaming/input/mouse.cpp
+@@ -136,11 +136,42 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+             }
+         }
+         if (mouseInVideoRegion || m_MouseWasInVideoRegion || m_PendingMouseButtonsAllUpOnVideoRegionLeave) {
+-            LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
++            // WinFleet: la finestra mostra solo un RITAGLIO dello schermo
++            // remoto, non tutto. Se si manda la posizione riferita alla finestra,
++            // l'host la riscala su tutta la larghezza dello schermo e il click
++            // cade piu' lontano di dove punti: con un ritaglio 1209x806 dentro uno
++            // schermo 1800x1200 l'errore e' 1.49 volte, cioe' mirando al centro
++            // della finestra si colpisce in basso a destra.
++            //
++            // Si porta quindi il punto nelle coordinate dello schermo intero
++            // (origine del ritaglio + posizione scalata dentro di esso) e si
++            // dichiara come riferimento lo schermo, non la finestra.
++            SDL_Rect wfCrop;
++            if (StreamUtils::getWinFleetCrop(&wfCrop) && dst.w > 0 && dst.h > 0) {
++                int rx = wfCrop.x + (int)((long long)x * wfCrop.w / dst.w);
++                int ry = wfCrop.y + (int)((long long)y * wfCrop.h / dst.h);
++                LiSendMousePositionEvent((short)rx, (short)ry,
++                                         (short)m_StreamWidth, (short)m_StreamHeight);
++            }
++            else {
++                LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
++            }
+         }
+ 
+         // Adjust the cursor visibility if applicable
+         if (mouseInVideoRegion ^ m_MouseWasInVideoRegion) {
++            // WinFleet: dentro il video il puntatore deve restare quello del MAC.
++            //
++            // Il cursore remoto lo si spegne gia' su Windows (cursori di sistema
++            // vuoti), quindi nascondere anche quello locale lascia la finestra
++            // senza nessun puntatore. Rimetterlo da fuori, a 60 Hz, funziona ma si
++            // vede: e' una gara con questa riga, e la gara si legge come flicker.
++            // Qui la gara non nasce proprio.
++            SDL_Rect wfDummy;
++            if (StreamUtils::getWinFleetCrop(&wfDummy)) {
++                SDL_ShowCursor(SDL_ENABLE);
++            }
++            else
+             SDL_ShowCursor((mouseInVideoRegion && m_MouseCursorCapturedVisibilityState == SDL_DISABLE) ? SDL_DISABLE : SDL_ENABLE);
+             if (!mouseInVideoRegion && buttonState != 0) {
+                 // If we still have a button pressed on leave, wait for that to come up
 diff --git a/app/streaming/streamutils.cpp b/app/streaming/streamutils.cpp
 index 9bd32f5..0fdf665 100644
 --- a/app/streaming/streamutils.cpp
@@ -242,51 +330,3 @@ index 2852d43..bd29655 100644
          };
  
          [m_VideoVertexBuffer release];
-diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
-index 85169d1..3c7d7e7 100644
---- a/app/streaming/input/mouse.cpp
-+++ b/app/streaming/input/mouse.cpp
-@@ -136,11 +136,42 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
-             }
-         }
-         if (mouseInVideoRegion || m_MouseWasInVideoRegion || m_PendingMouseButtonsAllUpOnVideoRegionLeave) {
--            LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
-+            // WinFleet: la finestra mostra solo un RITAGLIO dello schermo
-+            // remoto, non tutto. Se si manda la posizione riferita alla finestra,
-+            // l'host la riscala su tutta la larghezza dello schermo e il click
-+            // cade piu' lontano di dove punti: con un ritaglio 1209x806 dentro uno
-+            // schermo 1800x1200 l'errore e' 1.49 volte, cioe' mirando al centro
-+            // della finestra si colpisce in basso a destra.
-+            //
-+            // Si porta quindi il punto nelle coordinate dello schermo intero
-+            // (origine del ritaglio + posizione scalata dentro di esso) e si
-+            // dichiara come riferimento lo schermo, non la finestra.
-+            SDL_Rect wfCrop;
-+            if (StreamUtils::getWinFleetCrop(&wfCrop) && dst.w > 0 && dst.h > 0) {
-+                int rx = wfCrop.x + (int)((long long)x * wfCrop.w / dst.w);
-+                int ry = wfCrop.y + (int)((long long)y * wfCrop.h / dst.h);
-+                LiSendMousePositionEvent((short)rx, (short)ry,
-+                                         (short)m_StreamWidth, (short)m_StreamHeight);
-+            }
-+            else {
-+                LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
-+            }
-         }
- 
-         // Adjust the cursor visibility if applicable
-         if (mouseInVideoRegion ^ m_MouseWasInVideoRegion) {
-+            // WinFleet: dentro il video il puntatore deve restare quello del MAC.
-+            //
-+            // Il cursore remoto lo si spegne gia' su Windows (cursori di sistema
-+            // vuoti), quindi nascondere anche quello locale lascia la finestra
-+            // senza nessun puntatore. Rimetterlo da fuori, a 60 Hz, funziona ma si
-+            // vede: e' una gara con questa riga, e la gara si legge come flicker.
-+            // Qui la gara non nasce proprio.
-+            SDL_Rect wfDummy;
-+            if (StreamUtils::getWinFleetCrop(&wfDummy)) {
-+                SDL_ShowCursor(SDL_ENABLE);
-+            }
-+            else
-             SDL_ShowCursor((mouseInVideoRegion && m_MouseCursorCapturedVisibilityState == SDL_DISABLE) ? SDL_DISABLE : SDL_ENABLE);
-             if (!mouseInVideoRegion && buttonState != 0) {
-                 // If we still have a button pressed on leave, wait for that to come up

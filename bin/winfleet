@@ -335,7 +335,15 @@ screen_guess(){
 # davvero la risoluzione dello schermo su Windows, non scalare l'immagine.
 # WINFLEET_TRACE=1 registra cosa vede il sorvegliante: e' l'unico modo di capire
 # perche' una finestra "si ridimensiona da sola" senza starle davanti a guardarla.
-trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"$CONFIG_DIR/trace.log" || true; }
+# Il tempo si annota in millisecondi dall'inizio del comando, non come ora del
+# giorno: quando si cerca dove se ne vanno i secondi, "12:42:07" costringe a fare
+# le sottrazioni a mano, "+1840ms" si legge da solo.
+WF_T0="${WF_T0:-$(python3 -c 'import time; print(int(time.time()*1000))')}"
+trace(){
+  [ -n "${WINFLEET_TRACE:-}" ] || return 0
+  local now; now="$(python3 -c 'import time; print(int(time.time()*1000))')"
+  printf '+%sms %s\n' "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
+}
 
 # Ridimensionare dal vivo, davvero.
 #
@@ -452,7 +460,12 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   while true; do
     vdd_set "$slot" "$smode"
     trace "risoluzione chiesta"
-    sleep 2
+    # Si aspetta che il monitor virtuale sia DAVVERO alla misura chiesta, invece
+    # di dormire due secondi a occhio: quando la risoluzione e' gia' quella
+    # giusta - il caso normale riaprendo la stessa app - non c'e' niente da
+    # aspettare e quei due secondi erano regalati a ogni apertura.
+    wait_vdd_mode "$slot" "$smode" 3
+    trace "risoluzione pronta"
     # L'app si avvia una volta sola: al cambio di risoluzione la rimette a misura il
     # task che la tiene sul suo schermo, quindi si ritrova ridimensionata invece che
     # ripartita da capo.
@@ -485,7 +498,12 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     # prima di eseguire una riga: meglio accorgersene e riprovare senza, con la barra
     # del titolo al suo posto, che lasciare una finestra che non si apre mai.
     if [ -n "$owned" ]; then
-      sleep 2
+      # Mezzo secondo, non due: qui si guarda solo se dyld ha ammazzato il
+      # processo all'istante perche' la libreria non era caricabile. Quel tipo di
+      # morte avviene prima che venga eseguita una riga, quindi se dopo 500ms il
+      # processo e' vivo lo sara' anche dopo. Due secondi erano un'attesa a vuoto
+      # su ogni apertura riuscita, cioe' praticamente sempre.
+      sleep 0.5
       if ! kill -0 "$pid" 2>/dev/null; then
         trace "avvio fallito con la libreria: riprovo senza"
         owned=""; pre=(); TITLEBAR=28
@@ -797,6 +815,28 @@ vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"'$1 $2' | Set-Content C:\\winfleet\\vdd-request.txt\"" >/dev/null 2>&1 || true
+}
+
+# Aspetta che il monitor virtuale sia DAVVERO alla misura chiesta.
+#
+# Al posto di un "sleep 2" a occhio: se la risoluzione e' gia' quella giusta -
+# cioe' ogni volta che si riapre la stessa app - non c'e' niente da aspettare, e
+# quei due secondi erano regalati a ogni apertura. Se invece il cambio serve, lo
+# si aspetta finche' serve e non un istante di piu'.
+#
+# Si interroga l'agente e non ssh: una GET su LAN costa millisecondi, un comando
+# ssh un paio di decimi, e qui si guarda piu' volte.
+wait_vdd_mode(){ # slot misura [secondi-max]
+  local slot="$1" want="$2" max="${3:-3}" i now
+  local deadline=$(( $(date +%s) + max ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    now="$(curl -s --max-time 1 "http://$(agent_host):$AGENT_PORT/mode?slot=$slot" 2>/dev/null)"
+    case "$now" in
+      "$want") return 0;;
+    esac
+    sleep 0.15
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
