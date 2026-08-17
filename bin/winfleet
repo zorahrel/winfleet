@@ -1741,13 +1741,18 @@ cmd_doctor(){
   else
     bad "agente sull'host non risponde: il ridimensionamento restera' indietro"
   fi
-  # Il permesso "Rete locale" di macOS, che si traveste da guasto di rete.
+  # Moonlight non raggiunge l'host mentre il resto del Mac ci parla benissimo.
   #
-  # Se e' negato a Moonlight, il client non raggiunge NIENTE su 192.168.x mentre
-  # tutto il resto del Mac ci parla benissimo: curl risponde, il ping va, e da
-  # fuori sembra che sia l'host a rifiutare. Il segno che lo smaschera e' che via
-  # Tailscale (100.x, che rete locale non e') lo stesso binario si connette.
-  # Costato due ore una volta: qui viene detto in due righe.
+  # Il sintomo e' lo stesso per due cause diverse, e la piu' comune non e' quella
+  # che verrebbe in mente: l'elenco degli host di Moonlight (le sue preferenze)
+  # tiene anche il PAIRING. Se quell'elenco viene ripulito, il client non e' piu'
+  # accoppiato e da' "Failed to connect" identico a un guasto di rete - misurato,
+  # e risolto semplicemente riaprendo la GUI, che rifa' la scoperta e riaggancia.
+  #
+  # L'altra causa e' il permesso macOS "Rete locale": li' pero' nemmeno Tailscale
+  # cambierebbe le cose... anzi, Tailscale FUNZIONA perche' 100.x non e' rete
+  # locale. E' il modo per distinguerle: se Tailscale va e la LAN no, e' il
+  # permesso; se non va nessuno dei due, e' il pairing.
   if [ -n "$HOST_LAN" ] && [ "${SLOTS:-0}" -gt 0 ] && [ -x "$MOONLIGHT" ]; then
     if curl -s --max-time 2 "http://$HOST_LAN:$(slot_port 0)/serverinfo?uniqueid=winfleet" >/dev/null 2>&1; then
       # L'output si cattura PRIMA di esaminarlo: `if cmd 2>&1 | grep -q` dentro
@@ -1757,9 +1762,16 @@ cmd_doctor(){
       local mlout=""
       mlout="$("$MOONLIGHT" list "$HOST_LAN:$(slot_port 0)" 2>&1 || true)"
       if printf '%s' "$mlout" | grep -q "Failed to connect"; then
-        bad "Moonlight non raggiunge la LAN ma curl si': e' il permesso «Rete locale»"
-        info "  Impostazioni → Privacy e sicurezza → Rete locale → abilita Moonlight"
-        info "  (verifica: via Tailscale lo stesso comando funziona)"
+        bad "Moonlight non raggiunge l'host, ma curl si'"
+        local tsout=""
+        [ -n "${HOST_TS:-}" ] && tsout="$("$MOONLIGHT" list "$HOST_TS:$(slot_port 0)" 2>&1 || true)"
+        if [ -n "$tsout" ] && ! printf '%s' "$tsout" | grep -q "Failed to connect"; then
+          info "  via Tailscale funziona → e' il permesso «Rete locale» di macOS"
+          info "  Impostazioni → Privacy e sicurezza → Rete locale → abilita Moonlight"
+        else
+          info "  non funziona nemmeno via Tailscale → e' il pairing"
+          info "  apri Moonlight (l'app), lascia che ritrovi il PC, poi riprova"
+        fi
       else
         ok "Moonlight raggiunge l'host in LAN"
       fi
