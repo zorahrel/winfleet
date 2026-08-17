@@ -612,6 +612,30 @@ except Exception:
 # meta' e Python riceve spezzoni. La penalita' sulla forma serve perche' la sessione
 # e' negoziata a un rapporto solo: se lo schermo di Windows ne prende un altro,
 # Sunshine riempie il resto di nero.
+# La modalita' piu' piccola che COPRE una misura data, cioe' il tetto piu' basso
+# che non ti sta stretto. Serve a lasciare margine per ingrandire: con un tetto
+# piu' piccolo dello schermo, "ingrandisci" si ferma prima del bordo e sembra
+# rotto. A parita' di copertura si preferisce l'area minore, per non trasmettere
+# uno schermo enorme quando non serve.
+covering_mode(){ # slot larghezza altezza
+  local modes; modes="$(vdd_field "$1" modes)"
+  [ -n "$modes" ] || { echo ""; return; }
+  WF_MODES="$modes" WF_W="$2" WF_H="$3" python3 -c '
+import os
+w, h = int(os.environ["WF_W"]), int(os.environ["WF_H"])
+best, area = None, None
+for m in os.environ["WF_MODES"].split():
+    try: mw, mh = (int(x) for x in m.split("x"))
+    except ValueError: continue
+    if mw < w or mh < h:      # non copre: scartata
+        continue
+    a = mw * mh
+    if area is None or a < area:
+        best, area = m, a
+print(best or "")
+'
+}
+
 nearest_mode(){ # slot larghezza altezza [maxLarghezza maxAltezza]
   local modes; modes="$(vdd_field "$1" modes)"
   [ -n "$modes" ] || { echo ""; return; }
@@ -999,11 +1023,21 @@ cmd_open(){
       # risoluzione con cui il monitor virtuale si e' acceso.
       want="$(( ${cap%x*} * 7 / 10 ))x$(( ${cap#*x} * 7 / 10 ))"
     fi
-    # La sessione si negozia alla misura piu' grande che sta su questo schermo, e non
-    # si rinegozia piu': da li' in poi a seguire la finestra e' la risoluzione di
-    # Windows, che cambia a caldo. La finestra parte dalla misura ricordata, con le
-    # stesse proporzioni dello stream — altrimenti Sunshine ci mette le bande nere.
-    mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
+    # La sessione si negozia una volta sola, e la sua risoluzione e' il TETTO di
+    # quanto la finestra potra' diventare grande: il ritaglio mostra un pezzo di
+    # quello schermo, non puo' mostrarne piu' di quanto ce n'e'.
+    #
+    # Prima si cercava la modalita' che stesse DENTRO lo schermo del Mac, e cosi'
+    # il tetto nasceva gia' piu' basso dello schermo: la finestra non arrivava mai
+    # a riempirlo e "ingrandisci" smetteva di rispondere a meta' strada, senza
+    # spiegazioni. Misurato: schermo utile 1728x1084, monitor virtuale a 1680x1050,
+    # richiesta di 1900x1200 tagliata a 1680x1050 dall'agente.
+    #
+    # Ora si prende la piu' piccola modalita' che COPRE lo schermo (e se non ce
+    # n'e', la piu' grande disponibile): il margine per ingrandire c'e' sempre, e
+    # la banda non ne soffre perche' si trasmette comunque solo il ritaglio.
+    mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
+    [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
     local ww="${want%x*}"
     [ "$ww" -gt "${mode%x*}" ] && ww="${mode%x*}"

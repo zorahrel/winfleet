@@ -36,13 +36,24 @@ static const char *kWant  = "wf_want";
 
 static NSSize gAsked = {0, 0};      // misura chiesta da WinFleet
 static BOOL   gKeepChrome = NO;
-// Il puntatore locale e' spento di default. Rimetterlo sembrava un miglioramento —
-// e' istantaneo perche' lo disegna macOS — ma se ne vedono DUE: il proprio, che
-// segue la mano, e quello di Windows disegnato dentro il video, che arriva un
-// viaggio di rete dopo. Due frecce che si rincorrono si leggono come lag, e sono
-// peggio di una sola freccia in ritardo, perche' l'occhio non sa piu' quale
-// guardare. WF_CURSOR=local per riaccenderlo.
-static BOOL   gLocalCursor = NO;
+// Il puntatore: uno solo, e deve essere quello del Mac.
+//
+// Sunshine disegna il cursore di Windows DENTRO il video, quindi quello arriva
+// sempre un viaggio di rete dopo la mano. Moonlight normalmente nasconde quello
+// locale e resti con la freccia in ritardo; se invece quello locale ricompare, se
+// ne vedono DUE che si rincorrono, ed e' peggio: l'occhio non sa quale seguire.
+//
+// La via d'uscita e' quella che usano i client desktop fatti bene (Discord fa
+// cosi'): il cursore che vedi lo disegna il SISTEMA, istantaneo perche' non passa
+// dalla rete, e quello remoto sparisce. Quello remoto non si puo' spegnere da
+// Sunshine - questa build non ha capture_cursor, controllato nel binario - ma si
+// puo' coprire: sotto il puntatore del Mac ci sta esattamente, e finche' i due
+// sono sovrapposti l'occhio ne vede uno solo, quello che risponde subito.
+//
+// Quindi: cursore locale ACCESO di default dentro l'area del video.
+// WF_CURSOR=remote per tornare al comportamento di prima (una freccia sola, in
+// ritardo) se su qualche app la sovrapposizione desse fastidio.
+static BOOL   gLocalCursor = YES;
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
@@ -163,6 +174,10 @@ static void adopt(NSWindow *w) {
         NSLog(@"[wf] finestra %@ frame=%.0fx%.0f barra=%.0f agente=%s slot=%d",
               NSStringFromClass([w class]), w.frame.size.width, w.frame.size.height,
               titlebarHeight(w), gAgent ? gAgent : "(nessuno)", gSlot);
+        NSLog(@"[wf] stile: resizable=%d min=%.0fx%.0f max=%.0fx%.0f aspect=%.2fx%.2f",
+              (w.styleMask & NSWindowStyleMaskResizable) ? 1 : 0,
+              w.minSize.width, w.minSize.height, w.maxSize.width, w.maxSize.height,
+              w.contentAspectRatio.width, w.contentAspectRatio.height);
     }
 
     if (!gKeepChrome) {
@@ -340,8 +355,9 @@ static void wf_chrome_init(void) {
     if (slot) gSlot = atoi(slot);
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
+    // WF_CURSOR=remote torna alla freccia sola (quella di Windows, in ritardo).
     const char *cur = getenv("WF_CURSOR");
-    gLocalCursor = (cur && strcmp(cur, "local") == 0);
+    if (cur && strcmp(cur, "remote") == 0) gLocalCursor = NO;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResizeNotification
