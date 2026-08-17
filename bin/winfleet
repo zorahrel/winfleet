@@ -1093,9 +1093,13 @@ cmd_open(){
       return 0
     fi
     if kill -0 "$WF_SUP_PID" 2>/dev/null; then
-      bad "«$app» non ha aperto una finestra entro 45 secondi (ci sta ancora provando)"
+      # «${app}» e non «$app»: » sono due byte che bash attacca al nome della
+      # variabile, e sotto set -u il messaggio d'errore muore invece di dirti
+      # cosa non e' andato. La regola era gia' scritta 120 righe sopra, ma qui
+      # non era stata applicata: proprio nei due rami che spiegano un fallimento.
+      bad "«${app}» non ha aperto una finestra entro 45 secondi (ci sta ancora provando)"
     else
-      bad "«$app» non si e' aperta.  winfleet doctor"
+      bad "«${app}» non si e' aperta.  winfleet doctor"
     fi
     return 1
   fi
