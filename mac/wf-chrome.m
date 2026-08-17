@@ -119,13 +119,30 @@ static BOOL isAdopted(NSWindow *w) {
     return w && objc_getAssociatedObject(w, kSeen) != nil;
 }
 
-// Quanto e' alta la barra del titolo di QUESTA finestra. Con
-// NSWindowStyleMaskFullSizeContentView il contenuto ci passa sotto, quindi la
-// differenza frame/contentRect resta il modo onesto di misurarla: non si assume
-// un valore fisso, che cambia con lo stile e con il display.
+// Quanto e' alta la barra del titolo di QUESTA finestra.
+//
+// La differenza frame/contentRect sembra il modo onesto di misurarla e invece con
+// NSWindowStyleMaskFullSizeContentView vale ZERO: e' proprio il senso di quello
+// stile, il contenuto occupa tutto il frame. Misurato: 32 punti prima di
+// applicarlo, 0 dopo. Usarla per decidere dove finisce la barra spegneva il
+// trascinamento senza un errore, perche' la striscia da guardare era alta zero.
+//
+// Si chiede quindi a Cocoa quanto vale la barra per uno stile titolato puro, che e'
+// il valore che il pulsante di chiusura conferma (il semaforo sta a ~27 punti dal
+// bordo alto, dentro i 32). Con WF_CHROME=native la finestra tiene la sua barra
+// vera e la differenza frame/contentRect torna valida: si preferisce quella.
 static CGFloat titlebarHeight(NSWindow *w) {
     NSRect f = w.frame;
-    return f.size.height - [w contentRectForFrameRect:f].size.height;
+    CGFloat real = f.size.height - [w contentRectForFrameRect:f].size.height;
+    if (real > 1) return real;
+    static CGFloat canonical = 0;
+    if (canonical <= 0) {
+        NSRect probe = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100)
+                                               styleMask:NSWindowStyleMaskTitled];
+        canonical = probe.size.height - 100;
+        if (canonical <= 0) canonical = 28;   // non resta mai a zero
+    }
+    return canonical;
 }
 
 static void adopt(NSWindow *w) {
