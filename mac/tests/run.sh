@@ -79,4 +79,18 @@ else
   fail=1
 fi
 
+# --- 3. aritmetica del ritaglio ------------------------------------------
+# Durante il resize la finestra sul Mac cresce prima della finestra su Windows.
+# In quell'istante il rettangolo mostrato non deve MAI eccedere quello che
+# Windows ha confermato (si vedrebbe il desktop) ne' avere una forma diversa
+# dalla finestra (comparirebbero bande nere ai lati).
+clang -o "$TMP/crop" mac/tests/crop-arithmetic.c 2>/dev/null || exit 1
+if "$TMP/crop" > "$TMP/crop.out" 2>&1; then
+  say "ok   ritaglio: mai desktop scoperto, mai bande, in tutti i casi provati"
+else
+  say "NO   ritaglio:"
+  sed 's/^/       /' "$TMP/crop.out"
+  fail=1
+fi
+
 exit "$fail"

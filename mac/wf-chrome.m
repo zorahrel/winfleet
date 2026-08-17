@@ -56,6 +56,10 @@ static BOOL   gKeepChrome = NO;
 static BOOL   gLocalCursor = YES;
 static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
+// La misura piu' grande che Windows ha CONFERMATO di aver applicato. La scrive il
+// ciclo esterno dopo la risposta dell'agente; qui serve a non allargare il
+// ritaglio prima che ci sia davvero qualcosa da mostrare.
+static const char *gAckFile  = NULL;
 static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
 static int    gSlot = -1;            // quale schermo virtuale e' il nostro
 // Alzata quando un click sulla barra viene trattato come trascinamento del Mac.
@@ -93,13 +97,50 @@ static void publish(NSSize s) {
         FILE *f = fopen(gSizeFile, "w");
         if (f) { fprintf(f, "%dx%d\n", w, h); fclose(f); }
     }
-    // Il rettangolo che il client deve mostrare. L'app sta nell'angolo in alto a
-    // sinistra dello schermo virtuale, quindi coincide con la finestra. Scriverlo qui
-    // e non da fuori e' il motivo per cui segue il trascinamento senza ritardo: qui
-    // l'evento arriva mentre trascini, fuori bisognerebbe andarlo a chiedere.
+
+    // Il rettangolo che il client deve mostrare.
+    //
+    // Rimpicciolire e' sempre sicuro: si mostra MENO di quello che gia' c'e', e
+    // farlo subito e' il motivo per cui il ritaglio segue il trascinamento senza
+    // ritardo. Allargare no: finche' la finestra su Windows non e' cresciuta
+    // davvero, oltre il suo bordo c'e' il desktop, e mostrarlo prima significa
+    // vedere lo sfondo spuntare durante il resize. Era esattamente il sintomo.
+    //
+    // Chi sa QUANDO la finestra e' cresciuta e' il ciclo esterno, che lo chiede
+    // all'agente e ne aspetta la conferma: l'allargamento del ritaglio lo scrive
+    // lui. Qui ci si ferma alla misura piu' grande gia' confermata, che il ciclo
+    // esterno pubblica in WF_ACK.
     if (gCropFile) {
+        int cw = w, ch = h;
+        if (gAckFile) {
+            FILE *a = fopen(gAckFile, "r");
+            if (a) {
+                int aw = 0, ah = 0;
+                if (fscanf(a, "%dx%d", &aw, &ah) == 2 && aw > 0 && ah > 0) {
+                    if (cw > aw) cw = aw;
+                    if (ch > ah) ch = ah;
+                    // E si tiene il RAPPORTO della finestra, ritagliando di piu'
+                    // dal lato che avanza. Senza, nell'istante in cui la finestra
+                    // e' gia' cresciuta e Windows no, il rettangolo ha una forma
+                    // diversa dalla finestra: il renderer centra l'immagine e
+                    // riempie il resto di nero - sono le bande sui lati. Meglio
+                    // mostrare qualche pixel in meno dell'app, che nessuno nota,
+                    // di due strisce nere, che si notano subito.
+                    if (w > 0 && h > 0) {
+                        if ((long long)cw * h > (long long)ch * w) cw = (int)((long long)ch * w / h);
+                        else                                       ch = (int)((long long)cw * h / w);
+                    }
+                    if (cw < 1) cw = 1;
+                    if (ch < 1) ch = 1;
+                }
+                fclose(a);
+            }
+        }
         FILE *f = fopen(gCropFile, "w");
-        if (f) { fprintf(f, "0 0 %d %d\n", w, h); fclose(f); }
+        if (f) { fprintf(f, "0 0 %d %d\n", cw, ch); fclose(f); }
+        if (getenv("WF_DEBUG") && (cw != w || ch != h)) {
+            NSLog(@"[wf] crop trattenuto: finestra %dx%d -> mostro %dx%d (Windows non ha ancora seguito)", w, h, cw, ch);
+        }
     }
 }
 
@@ -305,7 +346,7 @@ static void showLocalCursor(void) {
     // perche' non si vede e' indovinare.
     if (getenv("WF_DEBUG")) {
         static int n = 0;
-        if (++n % 120 == 0) NSLog(@"[wf] cursore: giro attivo, CGCursorIsVisible=%d", CGCursorIsVisible());
+        if (++n % 20 == 0) NSLog(@"[wf] cursore: giro attivo");
     }
 }
 
@@ -381,6 +422,7 @@ static void wf_chrome_init(void) {
     }
     gSizeFile = getenv("WF_SIZE");
     gCropFile = getenv("WF_CROP");
+    gAckFile  = getenv("WF_ACK");
     gAgent    = getenv("WF_AGENT");
     const char *slot = getenv("WF_SLOT");
     if (slot) gSlot = atoi(slot);

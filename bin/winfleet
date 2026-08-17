@@ -354,10 +354,15 @@ trace(){ [ -n "${WINFLEET_TRACE:-}" ] && printf '%s %s\n' "$(date +%T)" "$*" >>"
 # Windows la misura nuova appena la finestra si ferma per un istante.
 follow_resize(){ # pid slot misura-iniziale file-ritaglio
   local pid="$1" slot="$2" sent="$3" cropf="$4" cur cw ch got aw ah idle=0
+  local ackf="$CONFIG_DIR/slot$slot.ack"
   aw="${3%x*}"; ah="${3#*x}"
   trace "segui: slot=$slot misura iniziale=$sent"
   got="$(rect_set "$slot" "$aw" "$ah")"
   case "$got" in "ok "*) aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')";; esac
+  # La misura CONFERMATA da Windows. La libreria iniettata la legge per non
+  # allargare il ritaglio prima che ci sia davvero qualcosa da mostrare: senza,
+  # durante il trascinamento si vede spuntare il desktop dietro l'app.
+  printf '%sx%s\n' "$aw" "$ah" >"$ackf"
   printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
 
   while kill -0 "$pid" 2>/dev/null; do
@@ -379,6 +384,7 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
       case "$got" in
         "ok "*)
           aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')"
+          printf '%sx%s\n' "$aw" "$ah" >"$ackf"
           printf '0 0 %s %s\n' "$(( cw < aw ? cw : aw ))" "$(( ch < ah ? ch : ah ))" >"$cropf"
           ;;
       esac
@@ -462,7 +468,8 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
       printf '0 0 %s %s\n' "${wsize%x*}" "${wsize#*x}" >"$cropf"
       pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
             "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" \
-            "WF_AGENT=$(agent_host):$AGENT_PORT" "WF_SLOT=$slot" )
+            "WF_AGENT=$(agent_host):$AGENT_PORT" "WF_SLOT=$slot" \
+            "WF_ACK=$CONFIG_DIR/slot$slot.ack" )
       # Diagnostica, spenta salvo richiesta: WF_DEBUG stampa la geometria della
       # finestra vera, WF_SELFTEST prova da dentro chi si prende il click sulla
       # barra. Dall'esterno non e' verificabile senza Accessibilita'.
