@@ -339,10 +339,21 @@ screen_guess(){
 # giorno: quando si cerca dove se ne vanno i secondi, "12:42:07" costringe a fare
 # le sottrazioni a mano, "+1840ms" si legge da solo.
 WF_T0="${WF_T0:-$(python3 -c 'import time; print(int(time.time()*1000))')}"
+# La traccia e' SEMPRE accesa, non solo con WINFLEET_TRACE.
+#
+# Le aperture che contano sono quelle dal Dock, e li' non si puo' passare una
+# variabile d'ambiente: ogni volta che qualcosa andava storto cliccando l'icona
+# restavo cieco, e il problema andava riprodotto da terminale - dove magari non
+# si presentava affatto. Il file si tiene corto da solo.
 trace(){
-  [ -n "${WINFLEET_TRACE:-}" ] || return 0
   local now; now="$(python3 -c 'import time; print(int(time.time()*1000))')"
   printf '+%sms %s\n' "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
+  # Corto: interessano le ultime aperture, non la storia. Un file che cresce per
+  # sempre prima o poi si cancella a mano, e non c'e' quando serve.
+  if [ "$(wc -l <"$CONFIG_DIR/trace.log" 2>/dev/null || echo 0)" -gt 400 ]; then
+    tail -200 "$CONFIG_DIR/trace.log" >"$CONFIG_DIR/trace.new" 2>/dev/null &&
+      mv "$CONFIG_DIR/trace.new" "$CONFIG_DIR/trace.log"
+  fi
 }
 
 # Ridimensionare dal vivo, davvero.
@@ -1330,14 +1341,22 @@ cmd_ready(){
   # Se ne servono altre, le prepara QUESTO processo: ogni cmd_open lascia dietro
   # un sorvegliante da tenere in vita, e restare qui e' l'unico modo di non
   # ucciderlo. Si continua finche' non se ne hanno abbastanza o non restano slot.
+  # Le altre si preparano IN PARALLELO, non una dopo l'altra: ogni finestra costa
+  # una cinquantina di secondi (stream da negoziare piu' app da avviare), e in
+  # serie la scorta tornava piena in quasi due minuti - abbastanza perche' un
+  # terzo click la trovasse ancora vuota. In parallelo il tempo e' quello di una
+  # sola. Gli slot sono gia' prenotati uno per uno da slot_save, quindi due
+  # aperture insieme non si contendono lo stesso posto.
   while [ "$(ready_count)" -lt "$want" ]; do
     freeslots=0
     for i in $(seq 0 $(( SLOTS - 1 ))); do
       slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
     done
     [ "$freeslots" -ge 2 ] || break
-    WF_READY_KEEP=1 cmd_open "$app" || true
+    WF_READY_KEEP=1 cmd_open "$app" &
+    sleep 3   # respiro: due stream avviati nello stesso istante litigano sul monitor
   done
+  wait
 
   # Da qui in poi il lucchetto va LASCIATO: si resta in attesa solo per tenere
   # viva la finestra, non per preparare altro. Senza questo, il preparatore
@@ -1406,6 +1425,15 @@ cmd_open(){
     local ready; ready="$(ready_slot)" || true
     if [ -n "$ready" ] && swap_app "$ready" "$app"; then
       trace "riusato slot pronto $ready"
+      # Si chiede SUBITO all'agente di rifornire, invece di aspettare il suo giro.
+      # Le finestre calde sono due e si consumano in due click: al terzo, senza
+      # questo, si aspettavano fino a due minuti - e il terzo click e' proprio
+      # quello in cui l'utente ha gia' preso il ritmo e non se lo aspetta.
+      #
+      # kickstart e non un processo figlio: qualunque cosa lanciata da qui muore
+      # con questo comando (provato con &, nohup, subshell), mentre l'agente
+      # launchd e' fatto per ospitare un preparatore che deve restare vivo.
+      launchctl kickstart "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1 || true
       # Se ne prepara subito un'altra, in secondo piano: la finestra calda si
       # consuma appena la si usa, e senza rigenerarla il vantaggio varrebbe una
       # volta sola. L'utente intanto ha gia' la sua finestra e non aspetta.
