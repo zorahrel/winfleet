@@ -176,6 +176,7 @@ $SWP_SHOWWINDOW = 0x0040
 $RECT = "C:\winfleet\rect$Slot.txt"
 $gone = 0
 $lastW = -1; $lastH = -1; $lastH2 = [IntPtr]::Zero
+$lastScan = Get-Date
 while ($true) {
     if (-not [P]::IsWindow($h) -or -not [P]::IsWindowVisible($h)) {
         $h2 = [P]::FindNew($before.ToArray())          # splash -> finestra vera
@@ -185,7 +186,29 @@ while ($true) {
         # quanto ci mette un'app a sostituire la sua finestra di avvio con quella
         # vera. Tre secondi senza nessuna finestra vogliono dire chiusa davvero.
         elseif (++$gone -ge 30) { break }
-    } else { $gone = 0 }
+    } else {
+        $gone = 0
+        # La finestra vecchia puo' restare viva mentre l'app ne apre un'altra:
+        # succede con le app in pacchetto (la Calcolatrice lo fa) e con Electron.
+        # Il ramo sopra non scatta - la vecchia c'e' ancora - quindi l'handle
+        # pubblicato restava indietro e l'agente comandava una finestra che non si
+        # vede piu': "riduci a icona" non faceva nulla, senza un errore.
+        #
+        # Ogni due secondi si guarda se e' comparsa una finestra NUOVA dello stesso
+        # processo: se c'e', quella e' la finestra buona e si aggiorna il file.
+        if (((Get-Date) - $lastScan).TotalSeconds -ge 2) {
+            $lastScan = Get-Date
+            $h3 = [P]::FindNew($before.ToArray())
+            if ($h3 -ne [IntPtr]::Zero -and $h3 -ne $h) {
+                $p3 = 0; [P]::GetWindowThreadProcessId($h3, [ref]$p3) | Out-Null
+                if ($p3 -eq $appPid) {
+                    $h = $h3
+                    Set-Content "C:\winfleet\hwnd$Slot.txt" ([int64]$h)
+                    Note "finestra sostituita: ora $h"
+                }
+            }
+        }
+    }
 
     $m = Get-Monitor
     if ($m) { $mon = $m }

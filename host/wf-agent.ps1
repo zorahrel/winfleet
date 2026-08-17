@@ -112,7 +112,24 @@ function Get-Hwnd($slot) {
         try { $script:hwndCache[$slot] = [IntPtr][int64](Get-Content $f -Raw).Trim() } catch { return [IntPtr]::Zero }
         $script:hwndStamp[$slot] = $t
     }
-    $script:hwndCache[$slot]
+    $h = $script:hwndCache[$slot]
+
+    # Il file lo scrive wf-place, che aggiorna l'handle solo quando la vecchia
+    # finestra SPARISCE. Un'app che ne apre una nuova mentre la prima e' ancora in
+    # piedi (la Calcolatrice lo fa) lascia il file indietro, e quando il task place
+    # termina non lo aggiorna piu' nessuno: /show agiva su una finestra morta e non
+    # succedeva niente, in silenzio.
+    #
+    # Qui NON si indovina. Provato a cercare "la finestra sul monitor dello slot" e
+    # sul monitor c'era anche un terminale: si sarebbe minimizzata quella. Un
+    # recupero che prende la finestra sbagliata e' peggio del guasto che cura.
+    # L'handle giusto lo conosce wf-place, che ha lanciato l'app: e' li' che va
+    # tenuto aggiornato. Qui ci si limita a non fingere che vada tutto bene.
+    if (-not [A]::IsWindow($h)) {
+        Note "hwnd$slot stale ($($h.ToInt64())): la finestra non esiste piu'"
+        return [IntPtr]::Zero
+    }
+    $h
 }
 
 # La misura applicata si RILEGGE dalla finestra invece di ripetere quella chiesta:
@@ -178,31 +195,17 @@ while ($listener.IsListening) {
                 $body = 'no'
             } else {
             $hwnd = Get-Hwnd $slot
-            $mon  = Get-Monitor $slot
-            # IsWindow da solo basta a fermare il caso peggiore: un handle di una
-            # finestra CHIUSA. Se invece il numero e' stato riciclato da un'altra
-            # finestra viva, serve la posizione - ma il rettangolo va guardato solo
-            # se GetWindowRect ha avuto successo: quando fallisce NON tocca la
-            # struttura, che resta con i valori che aveva in memoria. Misurato:
-            # sporcando la struct a mano prima della chiamata, quei valori
-            # sopravvivono intatti. E' cosi' che un handle morto passava per "mio",
-            # perche' il centro calcolato su spazzatura cadeva dentro il monitor.
-            $mine = $false
-            if ($mon -and [A]::IsWindow($hwnd)) {
-                $r = New-Object A+RECT
-                if ([A]::GetWindowRect($hwnd, [ref]$r)) {
-                    # Il centro della finestra dice su quale schermo vive. Con la
-                    # finestra ridotta a icona le coordinate sono fuori da ogni
-                    # schermo (Windows la parcheggia a -32000), quindi per il
-                    # ripristino ci si fida dell'ultimo stato noto invece di
-                    # pretendere che sia ancora al suo posto.
-                    $cx = ($r.L + $r.R) / 2; $cy = ($r.T + $r.B) / 2
-                    $mine = ($cx -ge $mon.x -and $cx -lt ($mon.x + $mon.width) -and
-                             $cy -ge $mon.y -and $cy -lt ($mon.y + $mon.height))
-                    if (-not $mine -and $r.L -le -30000) { $mine = $true }   # gia' a icona
-                }
-            }
-            if ($mine) {
+            # La prova che la finestra sia "la nostra" e' la stessa che usa /rect:
+            # l'handle pubblicato per questo slot, e che sia ancora una finestra.
+            #
+            # Avevo aggiunto anche "e deve stare dentro il monitor dello slot", e
+            # quella riga rifiutava il caso buono: una finestra GIA' ridotta a icona
+            # sta fuori da ogni monitor, quindi il ripristino diventava impossibile
+            # e il minimize falliva su una finestra appena minimizzata. Misurato:
+            # /rect rispondeva "ok 1209 755" sullo stesso handle su cui /show
+            # rispondeva "no". Una guardia che blocca il lavoro vero non protegge
+            # niente: protegge chi la scrive dal pensarci.
+            if ([A]::IsWindow($hwnd)) {
                 if ($how -eq 'min') { [void][A]::ShowWindow($hwnd, 7) }
                 else                { [void][A]::ShowWindow($hwnd, 9) }   # SW_RESTORE
                 $body = 'ok'
