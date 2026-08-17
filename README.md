@@ -199,11 +199,12 @@ winfleet doctor            diagnostics
 | `wf-rename.ps1` | renames an instance — that is what names the window on the Mac |
 | `wf-place.ps1` | opens the app and holds it at the size the Mac window asks for |
 | `wf-icon.ps1` | hands back an app's icon as a PNG |
-| `wf-agent.ps1` | resizes the app window on request and answers with the size it really got |
+| `wf-agent.ps1` | resizes the app window on request, answers with the size it really got, and minimises/restores it with the Mac window |
 | `mac/wf-panel.m` | the menu bar panel |
 | `scan-apps.ps1` | lists the installed apps, shortcuts and packaged alike |
 | `bin/winfleet` | picks a free window, follows resizes, keeps the Mac window honest |
-| `mac/wf-chrome.m` | injected into the client: drops the macOS title bar, publishes the window rectangle |
+| `mac/wf-chrome.m` | injected into the client: drops the macOS title bar, publishes the window rectangle, keeps the title bar's drag and the minimise button on the Mac side |
+| `mac/tests/run.sh` | proves the two claims above without Accessibility permissions or a running PC: `./mac/tests/run.sh` |
 | `fork/crop.patch` | the one change Moonlight needs: draw a sub-rectangle of the stream |
 
 ### Things that had to be worked around

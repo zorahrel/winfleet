@@ -161,10 +161,41 @@ while ($listener.IsListening) {
             # SW_SHOWMINNOACTIVE (7) e non SW_MINIMIZE (6): minimizzare "attivando"
             # sposta il fuoco su un'altra finestra dello schermo virtuale, che e'
             # esattamente cio' che faceva emergere quella sotto.
+            #
+            # L'handle viene da un file che NON viene ripulito quando lo slot si
+            # libera: verificato dal vivo, hwnd3.txt puntava ancora a una finestra di
+            # Paint dell'utente mentre lo slot risultava libero. Agire su un handle
+            # cosi' vuol dire minimizzare una finestra che non c'entra nulla. Si
+            # accetta il comando solo se quell'handle sta ANCORA sul monitor virtuale
+            # di questo slot: e' l'unica prova che la finestra sia la nostra.
             $slot = [int]$req.QueryString['slot']
             $how  = "$($req.QueryString['how'])"
             $hwnd = Get-Hwnd $slot
-            if ([A]::IsWindow($hwnd)) {
+            $mon  = Get-Monitor $slot
+            # IsWindow da solo basta a fermare il caso peggiore: un handle di una
+            # finestra CHIUSA. Se invece il numero e' stato riciclato da un'altra
+            # finestra viva, serve la posizione - ma il rettangolo va guardato solo
+            # se GetWindowRect ha avuto successo: quando fallisce NON tocca la
+            # struttura, che resta con i valori che aveva in memoria. Misurato:
+            # sporcando la struct a mano prima della chiamata, quei valori
+            # sopravvivono intatti. E' cosi' che un handle morto passava per "mio",
+            # perche' il centro calcolato su spazzatura cadeva dentro il monitor.
+            $mine = $false
+            if ($mon -and [A]::IsWindow($hwnd)) {
+                $r = New-Object A+RECT
+                if ([A]::GetWindowRect($hwnd, [ref]$r)) {
+                    # Il centro della finestra dice su quale schermo vive. Con la
+                    # finestra ridotta a icona le coordinate sono fuori da ogni
+                    # schermo (Windows la parcheggia a -32000), quindi per il
+                    # ripristino ci si fida dell'ultimo stato noto invece di
+                    # pretendere che sia ancora al suo posto.
+                    $cx = ($r.L + $r.R) / 2; $cy = ($r.T + $r.B) / 2
+                    $mine = ($cx -ge $mon.x -and $cx -lt ($mon.x + $mon.width) -and
+                             $cy -ge $mon.y -and $cy -lt ($mon.y + $mon.height))
+                    if (-not $mine -and $r.L -le -30000) { $mine = $true }   # gia' a icona
+                }
+            }
+            if ($mine) {
                 if ($how -eq 'min') { [void][A]::ShowWindow($hwnd, 7) }
                 else                { [void][A]::ShowWindow($hwnd, 9) }   # SW_RESTORE
                 $body = 'ok'
