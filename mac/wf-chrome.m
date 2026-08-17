@@ -247,15 +247,21 @@ static void sweep(void) {
 //
 // La prima versione lo mostrava quando la finestra era attiva, e sbagliava il caso
 // piu' comune: uscendo dalla finestra il puntatore restava nascosto: si perdeva la
-// freccia sul resto dello schermo e bisognava cliccare da qualche parte per
-// riaverla. Moonlight nasconde il cursore quando entra nell'area del video, quindi
-// va rimesso e ritolto seguendo la posizione, non il fuoco.
+// Il puntatore del Mac dentro l'area del video.
 //
-// unhide/hide di NSCursor sono contati: chiamarli sbilanciati lascia il cursore in
-// uno stato che nessun altro sa risolvere, quindi si tiene traccia di cosa si e'
-// fatto e si fa esattamente una chiamata per cambio di stato.
+// Moonlight nasconde il cursore quando entra nello stream, e non lo fa una volta
+// sola: lo rifà a ogni movimento, a ogni rientro nella finestra, a ogni cambio di
+// stato. Contro-annullare l'hide UNA volta - com'era prima, con un flag statico -
+// funziona per un istante e poi vince SDL: il risultato e' che dentro la finestra
+// non si vede nessun puntatore, ne' il nostro ne' quello remoto (che ora e'
+// spento su Windows), e la freccia riappare solo uscendo dai bordi. Misurato.
+//
+// hide/unhide di NSCursor sono CONTATI: ogni hide va bilanciato, e chiamarli a
+// caso lascia il contatore in uno stato che nessuno sa piu' risolvere. Quindi non
+// si conta: si usa setHiddenUntilMouseMoves:NO, che azzera la richiesta di
+// nascondere senza toccare il contatore, e lo si rifa' a ogni giro finche' il
+// puntatore e' dentro il video. E' economico: un campo booleano, non un disegno.
 static void showLocalCursor(void) {
-    static BOOL unhidden = NO;
     NSPoint m = NSEvent.mouseLocation;
     BOOL inside = NO;
 
@@ -267,15 +273,20 @@ static void showLocalCursor(void) {
         f.size.height -= titlebarHeight(w);
         if (NSPointInRect(m, f)) { inside = YES; break; }
     }
+    if (!inside) return;
 
-    // Solo unhide, mai hide. Nascondere il cursore quando esce dalla finestra
-    // sembra la simmetria giusta ed e' la trappola: NSCursor vale per tutta
-    // l'applicazione, non per una finestra, quindi lo si nasconderebbe anche sopra
-    // la barra del titolo e sopra il pannello. Contro-annullare l'hide di Moonlight
-    // e lasciarlo cosi' e' sufficiente: quando il puntatore esce dalla finestra
-    // dello stream, comanda comunque l'app che sta sotto.
-    if (inside && !unhidden) { [NSCursor unhide]; unhidden = YES; }
-    (void)unhidden;
+    // Due leve, perche' SDL puo' usare entrambe le strade per farlo sparire.
+    //
+    // setHiddenUntilMouseMoves e' idempotente: rimetterlo a NO a ogni giro non
+    // sbilancia niente.
+    [NSCursor setHiddenUntilMouseMoves:NO];
+
+    // [NSCursor hide] invece e' CONTATO, e SDL lo chiama di continuo: un solo
+    // unhide - com'era prima - pareggia il primo hide e perde tutti i successivi,
+    // percio' dentro la finestra non si vedeva piu' nessun puntatore. Qui si
+    // pareggia a ogni giro: unhide di troppo non fa danno (il contatore non
+    // scende sotto zero), unhide di meno lascerebbe il cursore invisibile.
+    [NSCursor unhide];
 }
 
 // I tre pulsanti si vedono ma non rispondono al mouse: con il contenuto a tutta
@@ -446,7 +457,14 @@ static void wf_chrome_init(void) {
         }
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             sweep();
-            if (gLocalCursor) showLocalCursor();
         }];
+        // Il cursore ha bisogno di un ritmo suo: SDL lo rinasconde a ogni
+        // movimento, quindi rimetterlo due volte al secondo lo fa lampeggiare.
+        // A 60 Hz il contrasto e' invisibile e resta sempre visibile.
+        if (gLocalCursor) {
+            [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0) repeats:YES block:^(NSTimer *t) {
+                showLocalCursor();
+            }];
+        }
     });
 }
