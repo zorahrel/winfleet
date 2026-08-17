@@ -1206,13 +1206,17 @@ cmd_ready(){
   # l'agente launchd lo rilancia a intervalli: senza lucchetto se ne accumulavano
   # tre o quattro, ognuno in attesa di una finestra che un altro aveva gia'
   # preparato. Il file col pid dentro dice se c'e' gia' qualcuno al lavoro.
-  local lock="$CONFIG_DIR/ready.lock"
-  if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
+  WF_READY_LOCK="$CONFIG_DIR/ready.lock"
+  if [ -f "$WF_READY_LOCK" ] && kill -0 "$(cat "$WF_READY_LOCK" 2>/dev/null)" 2>/dev/null; then
     trace "ready: ce n'e' gia' uno al lavoro"
     return 0
   fi
-  printf '%s\n' "$$" >"$lock"
-  trap 'rm -f "$lock" 2>/dev/null || true' EXIT
+  printf '%s\n' "$$" >"$WF_READY_LOCK"
+  # La trap si valuta all'USCITA, quando le variabili 'local' della funzione non
+  # esistono piu': con set -u lo script moriva li' con "lock: unbound variable",
+  # lasciando il lucchetto sul disco e nessuna finestra preparata. Una variabile
+  # globale sopravvive fino in fondo.
+  trap 'rm -f "${WF_READY_LOCK:-}" 2>/dev/null || true' EXIT
 
   # Quante tenerne calde. Una sola basta finche' si apre un'app per volta, ma
   # aprendone due di fila la seconda paga i quindici secondi pieni - ed e'
@@ -1270,7 +1274,7 @@ cmd_ready(){
       done
     done ) &
   WF_MARKER_PID=$!
-  trap 'kill "${WF_MARKER_PID:-0}" 2>/dev/null; rm -f "$lock" 2>/dev/null || true' EXIT
+  trap 'kill "${WF_MARKER_PID:-0}" 2>/dev/null; rm -f "${WF_READY_LOCK:-}" 2>/dev/null || true' EXIT
   # Se cmd_open esce con 1 non vuol dire che la finestra non c'e': significa che
   # non e' comparsa entro 45 secondi, e il sorvegliante "ci sta ancora provando".
   # Uscire qui ucciderebbe proprio quel sorvegliante, e con lui la finestra calda
@@ -1297,6 +1301,12 @@ cmd_ready(){
 
   # Poi si resta ad aspettare: e' questo processo a tenere viva l'ultima finestra
   # preparata, e uscire vorrebbe dire portarsela via.
+  #
+  # Attenzione a cosa comporta: le finestre nate da qui muoiono con questo
+  # processo. Chi lo ferma - un pkill, un launchctl - si porta via anche le app
+  # che nel frattempo l'utente ha aperto su quelle finestre. Per questo
+  # l'ATTESA e' l'ultima cosa che si fa e il lucchetto e' rigoroso: un secondo
+  # preparatore ucciso a meta' spegnerebbe roba viva.
   if [ -n "$sup" ]; then
     while kill -0 "$sup" 2>/dev/null; do sleep 5; done
   fi
