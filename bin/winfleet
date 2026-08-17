@@ -1741,6 +1741,30 @@ cmd_doctor(){
   else
     bad "agente sull'host non risponde: il ridimensionamento restera' indietro"
   fi
+  # Il permesso "Rete locale" di macOS, che si traveste da guasto di rete.
+  #
+  # Se e' negato a Moonlight, il client non raggiunge NIENTE su 192.168.x mentre
+  # tutto il resto del Mac ci parla benissimo: curl risponde, il ping va, e da
+  # fuori sembra che sia l'host a rifiutare. Il segno che lo smaschera e' che via
+  # Tailscale (100.x, che rete locale non e') lo stesso binario si connette.
+  # Costato due ore una volta: qui viene detto in due righe.
+  if [ -n "$HOST_LAN" ] && [ "${SLOTS:-0}" -gt 0 ] && [ -x "$MOONLIGHT" ]; then
+    if curl -s --max-time 2 "http://$HOST_LAN:$(slot_port 0)/serverinfo?uniqueid=winfleet" >/dev/null 2>&1; then
+      # L'output si cattura PRIMA di esaminarlo: `if cmd 2>&1 | grep -q` dentro
+      # una condizione lascia il comando senza pipe e il test non avviene mai —
+      # il doctor rispondeva "raggiunge" mentre lo stesso comando, lanciato a
+      # mano, falliva. Visto con bash -x, non a intuito.
+      local mlout=""
+      mlout="$("$MOONLIGHT" list "$HOST_LAN:$(slot_port 0)" 2>&1 || true)"
+      if printf '%s' "$mlout" | grep -q "Failed to connect"; then
+        bad "Moonlight non raggiunge la LAN ma curl si': e' il permesso «Rete locale»"
+        info "  Impostazioni → Privacy e sicurezza → Rete locale → abilita Moonlight"
+        info "  (verifica: via Tailscale lo stesso comando funziona)"
+      else
+        ok "Moonlight raggiunge l'host in LAN"
+      fi
+    fi
+  fi
   if [ "$CHROME" = native ]; then
     info "barra del titolo di macOS: mostrata (CHROME=native)"
   elif build_chrome && [ -f "$CHROME_LIB" ]; then
