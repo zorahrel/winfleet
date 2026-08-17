@@ -53,14 +53,24 @@ def main():
         return 2
 
     src = Image.open(sys.argv[1]).convert("RGBA")
-    side = min(src.size)
 
     # Si lavora a una misura fissa e grande: l'icona sorgente puo' arrivare a
     # 32px da un exe vecchio, e ingrandire dopo aver composto il badge lo
     # sgranerebbe. Qui si ingrandisce prima, e il badge si disegna alla fine.
     target = 512
-    if side != target:
-        src = src.resize((target, target), Image.LANCZOS)
+
+    # Il lato lungo va a 512 e l'altro segue in proporzione, poi si centra dentro
+    # il quadrato. Prima si forzavano entrambi i lati a 512: un'icona 200x120
+    # veniva STIRATA, e nel Dock si vedeva un logo schiacciato accanto a icone
+    # sane. Un'icona larga resta larga, con il vuoto sopra e sotto - che e'
+    # esattamente cio' che fa il Mac con le sue.
+    w, h = src.size
+    if (w, h) != (target, target):
+        scale = target / max(w, h)
+        nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+        resized = src.resize((nw, nh), Image.LANCZOS)
+        src = Image.new("RGBA", (target, target), (0, 0, 0, 0))
+        src.alpha_composite(resized, ((target - nw) // 2, (target - nh) // 2))
 
     badge_size = int(target * 0.42)
     badge = windows_logo(badge_size)
