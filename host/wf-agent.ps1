@@ -170,6 +170,13 @@ while ($listener.IsListening) {
             # di questo slot: e' l'unica prova che la finestra sia la nostra.
             $slot = [int]$req.QueryString['slot']
             $how  = "$($req.QueryString['how'])"
+            # Parametri mancanti o incomprensibili non devono AGIRE.
+            # Misurato: "/show" senza nulla diventava slot=0 (il default di [int]
+            # su stringa vuota) e "how=pippo" finiva nel ramo restore, perche' era
+            # l'else. Due modi per toccare una finestra senza averlo chiesto.
+            if ($null -eq $req.QueryString['slot'] -or $how -notin @('min','restore')) {
+                $body = 'no'
+            } else {
             $hwnd = Get-Hwnd $slot
             $mon  = Get-Monitor $slot
             # IsWindow da solo basta a fermare il caso peggiore: un handle di una
@@ -199,6 +206,7 @@ while ($listener.IsListening) {
                 if ($how -eq 'min') { [void][A]::ShowWindow($hwnd, 7) }
                 else                { [void][A]::ShowWindow($hwnd, 9) }   # SW_RESTORE
                 $body = 'ok'
+            }
             }
         }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
