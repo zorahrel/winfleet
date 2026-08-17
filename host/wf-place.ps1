@@ -49,6 +49,7 @@ public class P {
   public delegate bool EnumProc(IntPtr h, IntPtr p);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr h);
@@ -231,6 +232,14 @@ while ($true) {
 
     # Si tocca la finestra solo quando serve davvero: rifare SetWindowPos dieci volte
     # al secondo su misure identiche fa sfarfallare le app che ridisegnano al resize.
+    #
+    # E non si tocca affatto se l'utente l'ha RIDOTTA A ICONA dal Mac: lo
+    # SW_RESTORE qui sotto la farebbe risalire entro un decimo di secondo, cioe'
+    # il pulsante giallo non funzionerebbe mai. Chi e' a icona resta a icona
+    # finche' non lo si chiede: al ripristino l'agente fa SW_RESTORE e da li' in
+    # poi questo ciclo riprende a occuparsi della geometria.
+    if ([P]::IsIconic($h)) { Start-Sleep -Milliseconds 100; continue }
+
     if ($tw -ne $lastW -or $th -ne $lastH -or $h -ne $lastH2) {
         [P]::ShowWindow($h, 9) | Out-Null              # SW_RESTORE
         [P]::SetWindowPos($h, [IntPtr]::Zero, $mon.x, $mon.y, $tw, $th, $SWP_SHOWWINDOW) | Out-Null
