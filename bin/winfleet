@@ -1339,6 +1339,13 @@ cmd_ready(){
     WF_READY_KEEP=1 cmd_open "$app" || true
   done
 
+  # Da qui in poi il lucchetto va LASCIATO: si resta in attesa solo per tenere
+  # viva la finestra, non per preparare altro. Senza questo, il preparatore
+  # continuava a occupare il posto anche quando le sue finestre erano gia' state
+  # usate, e nessun altro poteva rimpiazzarle - due aperture e non tornavano piu'.
+  rm -f "${WF_READY_LOCK:-}" 2>/dev/null || true
+  trap 'kill "${WF_MARKER_PID:-0}" 2>/dev/null || true' EXIT
+
   # Poi si resta ad aspettare: e' questo processo a tenere viva l'ultima finestra
   # preparata, e uscire vorrebbe dire portarsela via.
   #
