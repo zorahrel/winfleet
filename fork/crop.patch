@@ -242,3 +242,35 @@ index 2852d43..bd29655 100644
          };
  
          [m_VideoVertexBuffer release];
+diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
+index 85169d1..77527f7 100644
+--- a/app/streaming/input/mouse.cpp
++++ b/app/streaming/input/mouse.cpp
+@@ -136,7 +136,26 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+             }
+         }
+         if (mouseInVideoRegion || m_MouseWasInVideoRegion || m_PendingMouseButtonsAllUpOnVideoRegionLeave) {
+-            LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
++            // WinFleet: la finestra mostra solo un RITAGLIO dello schermo
++            // remoto, non tutto. Se si manda la posizione riferita alla finestra,
++            // l'host la riscala su tutta la larghezza dello schermo e il click
++            // cade piu' lontano di dove punti: con un ritaglio 1209x806 dentro uno
++            // schermo 1800x1200 l'errore e' 1.49 volte, cioe' mirando al centro
++            // della finestra si colpisce in basso a destra.
++            //
++            // Si porta quindi il punto nelle coordinate dello schermo intero
++            // (origine del ritaglio + posizione scalata dentro di esso) e si
++            // dichiara come riferimento lo schermo, non la finestra.
++            SDL_Rect wfCrop;
++            if (StreamUtils::getWinFleetCrop(&wfCrop) && dst.w > 0 && dst.h > 0) {
++                int rx = wfCrop.x + (int)((long long)x * wfCrop.w / dst.w);
++                int ry = wfCrop.y + (int)((long long)y * wfCrop.h / dst.h);
++                LiSendMousePositionEvent((short)rx, (short)ry,
++                                         (short)m_StreamWidth, (short)m_StreamHeight);
++            }
++            else {
++                LiSendMousePositionEvent((short)x, (short)y, dst.w, dst.h);
++            }
+         }
+ 
+         // Adjust the cursor visibility if applicable
