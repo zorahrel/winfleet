@@ -1422,7 +1422,23 @@ cmd_open(){
     # Il "|| true" non e' decorativo: ready_slot torna 1 quando nessuno slot e'
     # pronto, che e' il caso NORMALE, e con set -e quel valore chiudeva l'intero
     # comando senza aprire niente e senza dire perche'.
-    local ready; ready="$(ready_slot)" || true
+    # Una finestra calda preparata PRIMA dell'ultima ricompilazione porta dentro la
+  # libreria vecchia: l'app si apre veloce ma senza le correzioni appena fatte, e
+  # il sintomo e' subdolo perche' riguarda solo le app aperte per riuso. E'
+  # successo con Cmd+W: funzionava nei test e non nella finestra vera.
+  # Se la libreria e' piu' recente della finestra calda, quella finestra e' da
+  # buttare: meglio quindici secondi con il codice giusto che due con quello
+  # vecchio.
+  local ready; ready="$(ready_slot)" || true
+  if [ -n "$ready" ] && [ -f "$CHROME_LIB" ]; then
+    local sfile; sfile="$(slot_file "$ready")"
+    if [ -f "$sfile" ] && [ "$CHROME_LIB" -nt "$sfile" ]; then
+      trace "slot pronto $ready ha la libreria vecchia: lo scarto"
+      close_slot "$ready" >/dev/null 2>&1 || true
+      ready=""
+      launchctl kickstart "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1 || true
+    fi
+  fi
     if [ -n "$ready" ] && swap_app "$ready" "$app"; then
       trace "riusato slot pronto $ready"
       # Si chiede SUBITO all'agente di rifornire, invece di aspettare il suo giro.

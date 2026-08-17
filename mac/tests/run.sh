@@ -110,4 +110,21 @@ else
   fail=1
 fi
 
+# --- 5. Cmd+W ---------------------------------------------------------------
+# Cmd+W deve chiudere la finestra del MAC, non finire dentro Windows a chiudere
+# la scheda del browser remoto. E il resto della tastiera deve continuare ad
+# arrivare all'app: intercettare ogni Cmd romperebbe copia, incolla e nuova
+# scheda per far funzionare una scorciatoia.
+clang -framework Cocoa -o "$TMP/keys" mac/tests/close-shortcut.m 2>/dev/null || exit 1
+kw_without="$("$TMP/keys" 2>&1 | grep -o 'ESITO_CMDW: [A-Z]*' | awk '{print $2}')"
+kw_with="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 "$TMP/keys" 2>&1 | grep -o 'ESITO_CMDW: [A-Z]*' | awk '{print $2}')"
+kt="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 "$TMP/keys" 2>&1 | grep -o 'ESITO_CMDT: [A-Z]*' | awk '{print $2}')"
+ks="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 "$TMP/keys" 2>&1 | grep -o 'ESITO_CMDSHIFTW: [A-Z]*' | awk '{print $2}')"
+if [ "$kw_without" = FAIL ] && [ "$kw_with" = PASS ] && [ "$kt" = PASS ] && [ "$ks" = PASS ]; then
+  say "ok   Cmd+W: chiude la finestra del Mac, e Cmd+T/Cmd+Shift+W restano all'app"
+else
+  say "NO   Cmd+W: senza=$kw_without con=$kw_with  CmdT=$kt  CmdShiftW=$ks"
+  fail=1
+fi
+
 exit "$fail"

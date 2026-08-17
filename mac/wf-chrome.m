@@ -447,6 +447,34 @@ static void watchTitlebarClicks(void) {
         else                                                                [w zoom:nil];
         return nil;   // consumato: SDL non deve vederlo
     }];
+
+    // Le scorciatoie di finestra del Mac: Cmd+W chiude, Cmd+M riduce a icona.
+    //
+    // Senza, finivano dentro Windows come qualsiasi altro tasto - SDL prende la
+    // tastiera a livello di finestra - e chiudevano la SCHEDA del browser remoto
+    // invece della finestra, o non facevano niente. Su una finestra che si
+    // comporta in tutto come nativa, quelle due scorciatoie ci si aspetta che
+    // funzionino: sono le prime che le dita cercano.
+    //
+    // Si intercetta solo questa coppia. Tutto il resto - Cmd+C, Cmd+T, Cmd+L,
+    // le frecce - deve continuare ad arrivare all'app di la', altrimenti si
+    // romperebbe il lavoro vero per far funzionare due scorciatoie.
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                          handler:^NSEvent *(NSEvent *e) {
+        NSWindow *w = e.window;
+        if (!isStreamWindow(w)) return e;
+        if (!(e.modifierFlags & NSEventModifierFlagCommand)) return e;
+        // Solo Cmd nudo: Cmd+Shift+W o Cmd+Alt+W sono altre cose, e in un
+        // browser chiudono l'intera finestra o il profilo. Non si indovina.
+        NSEventModifierFlags other = e.modifierFlags &
+            (NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagControl);
+        if (other) return e;
+
+        NSString *k = e.charactersIgnoringModifiers.lowercaseString;
+        if ([k isEqualToString:@"w"]) { [w performClose:nil];  return nil; }
+        if ([k isEqualToString:@"m"]) { [w miniaturize:nil];   return nil; }
+        return e;
+    }];
 }
 
 __attribute__((constructor))
