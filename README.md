@@ -205,6 +205,21 @@ winfleet doctor            diagnostics
 | `bin/winfleet` | picks a free window, follows resizes, keeps the Mac window honest |
 | `mac/wf-chrome.m` | injected into the client: drops the macOS title bar, publishes the window rectangle, keeps the title bar's drag and the minimise button on the Mac side |
 | `mac/tests/run.sh` | proves the two claims above without Accessibility permissions or a running PC: `./mac/tests/run.sh` |
+
+The suite above runs against a stand-in window. To check the same thing on the **real**
+streaming window — the one SDL owns, where the title bar measured zero and silently
+broke dragging — open an app with `WF_SELFTEST=1` and read the verdict:
+
+```sh
+WF_SELFTEST=1 winfleet open "Calcolatrice"
+log show --last 2m --predicate 'eventMessage CONTAINS "[wf-selftest]"' | grep -o '\[wf-selftest\].*'
+#   [wf-selftest] barra=32 click_y=739 esito=PASS (trascina il Mac)
+#   [wf-selftest] video esito=PASS (va a Windows)
+```
+
+`WF_DEBUG=1` alone just prints the window geometry the library sees. Both are off unless
+asked for: a synthetic click is not something to fire under a user who did not ask.
+
 | `fork/crop.patch` | the one change Moonlight needs: draw a sub-rectangle of the stream |
 
 ### Things that had to be worked around

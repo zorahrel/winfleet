@@ -463,6 +463,11 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
       pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
             "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" \
             "WF_AGENT=$(agent_host):$AGENT_PORT" "WF_SLOT=$slot" )
+      # Diagnostica, spenta salvo richiesta: WF_DEBUG stampa la geometria della
+      # finestra vera, WF_SELFTEST prova da dentro chi si prende il click sulla
+      # barra. Dall'esterno non e' verificabile senza Accessibilita'.
+      [ -n "${WF_DEBUG:-}" ]    && pre+=( "WF_DEBUG=$WF_DEBUG" )
+      [ -n "${WF_SELFTEST:-}" ] && pre+=( "WF_SELFTEST=$WF_SELFTEST" )
     fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \

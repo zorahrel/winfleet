@@ -47,6 +47,10 @@ static const char *gSizeFile = NULL; // dove annotare la misura corrente
 static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
 static int    gSlot = -1;            // quale schermo virtuale e' il nostro
+// Alzata quando un click sulla barra viene trattato come trascinamento del Mac.
+// Serve solo all'autoverifica (WF_SELFTEST): e' la differenza fra "l'evento l'ho
+// preso io" e "e' passato a SDL", cioe' fra la finestra del Mac e quella di Windows.
+static BOOL   gLastTitlebarDrag = NO;
 
 // Dice all'app su Windows di ridursi a icona, o di tornare.
 //
@@ -149,6 +153,17 @@ static void adopt(NSWindow *w) {
     if (!isStreamWindow(w)) return;
     if (objc_getAssociatedObject(w, kSeen)) return;
     objc_setAssociatedObject(w, kSeen, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Con WF_DEBUG=1 si scrive quello che serve a sapere se il trascinamento puo'
+    // funzionare su QUESTA finestra: se la barra misurasse zero, la striscia da
+    // guardare sarebbe alta zero e il click finirebbe dentro Windows senza che
+    // nessun errore lo dica. E' successo, quindi la misura si controlla sulla
+    // finestra vera e non solo su una di prova.
+    if (getenv("WF_DEBUG")) {
+        NSLog(@"[wf] finestra %@ frame=%.0fx%.0f barra=%.0f agente=%s slot=%d",
+              NSStringFromClass([w class]), w.frame.size.width, w.frame.size.height,
+              titlebarHeight(w), gAgent ? gAgent : "(nessuno)", gSlot);
+    }
 
     if (!gKeepChrome) {
         // La barra resta (serve per trascinare e per i tre pulsanti) ma diventa
@@ -267,7 +282,6 @@ static void watchTitlebarClicks(void) {
                                           handler:^NSEvent *(NSEvent *e) {
         NSWindow *w = e.window;
         if (!isStreamWindow(w)) return e;
-
         // Coordinate della finestra: i pulsanti stanno nel theme frame, che ha
         // l'origine in basso a sinistra come tutto in Cocoa.
         NSPoint p = e.locationInWindow;
@@ -298,6 +312,7 @@ static void watchTitlebarClicks(void) {
             // (performWindowDragWithEvent: segue il mouse a 120 Hz e conosce snap,
             // Spaces e schermi) e l'evento non arriva a SDL.
             if (p.y > w.frame.size.height - titlebarHeight(w)) {
+                gLastTitlebarDrag = YES;   // per l'autoverifica: chi ha preso l'evento
                 [w performWindowDragWithEvent:e];
                 return nil;
             }
@@ -359,6 +374,60 @@ static void wf_chrome_init(void) {
         // conviene ripassare invece di fidarsi di un solo giro all'avvio.
         sweep();
         watchTitlebarClicks();
+
+        // Autoverifica sulla finestra VERA, non su una di prova.
+        //
+        // Un test esterno non puo' arrivare fin qui: sintetizzare un click sulla
+        // finestra di Moonlight richiede il permesso di Accessibilita', che sulla
+        // macchina di sviluppo non c'e'. Da dentro il processo invece si puo':
+        // si fabbrica un mouseDown alle coordinate della barra e lo si manda
+        // all'applicazione, esattamente come farebbe una mano. Se il monitor
+        // installato sopra lo consuma, il trascinamento e' della finestra del Mac;
+        // se lo lascia passare, finirebbe dentro Windows.
+        //
+        // Vale solo con WF_SELFTEST=1: a stream avviato costerebbe un click finto
+        // che l'utente non ha chiesto.
+        if (getenv("WF_SELFTEST")) {
+            // Si ASPETTA la finestra invece di sperare che sia gia' nata: lo
+            // stream ci mette qualche secondo e un timer a tempo fisso arrivava
+            // prima, riportando "nessuna finestra" come se fosse un esito.
+            __block int tries = 0;
+            [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+                NSWindow *win = nil;
+                for (NSWindow *w in [NSApp windows]) if (isAdopted(w)) { win = w; break; }
+                if (!win) {
+                    if (++tries > 30) { NSLog(@"[wf-selftest] nessuna finestra adottata"); [t invalidate]; }
+                    return;
+                }
+                [t invalidate];
+
+                CGFloat bar = titlebarHeight(win);
+                NSPoint inBar = NSMakePoint(win.frame.size.width / 2,
+                                            win.frame.size.height - bar / 2);
+                NSEvent *e = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                                location:inBar modifierFlags:0 timestamp:0
+                                            windowNumber:win.windowNumber context:nil
+                                             eventNumber:9001 clickCount:1 pressure:1];
+                // I monitor locali vedono l'evento prima di chiunque altro: se il
+                // nostro lo consuma, sendEvent non lo consegna alla vista di SDL.
+                gLastTitlebarDrag = NO;
+                [NSApp sendEvent:e];
+                NSLog(@"[wf-selftest] barra=%.0f click_y=%.0f esito=%@", bar, inBar.y,
+                      gLastTitlebarDrag ? @"PASS (trascina il Mac)" : @"FAIL (finirebbe in Windows)");
+
+                // Controprova: un click al centro del video NON deve essere preso
+                // per trascinamento, altrimenti avremmo rubato l'input all'app.
+                gLastTitlebarDrag = NO;
+                NSEvent *v = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                                location:NSMakePoint(win.frame.size.width / 2, 40)
+                                          modifierFlags:0 timestamp:0
+                                            windowNumber:win.windowNumber context:nil
+                                             eventNumber:9002 clickCount:1 pressure:1];
+                [NSApp sendEvent:v];
+                NSLog(@"[wf-selftest] video esito=%@",
+                      gLastTitlebarDrag ? @"FAIL (rubato all'app)" : @"PASS (va a Windows)");
+            }];
+        }
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             sweep();
             if (gLocalCursor) showLocalCursor();
