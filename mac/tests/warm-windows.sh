@@ -76,7 +76,21 @@ else
   fail=1
 fi
 
-# --- 3. il marchio richiede una finestra vera ------------------------------
+# --- 4. nessun «$var» senza graffe -----------------------------------------
+# I byte di » finiscono nel NOME della variabile, e con set -u il comando muore
+# con "unbound variable" a meta' lavoro. E' capitato tre volte in questo file,
+# l'ultima uccidendo il preparatore dopo la prima finestra calda: la scorta
+# restava a uno e ogni seconda apertura pagava la via lunga. Un errore che il
+# controllo di sintassi NON vede, perche' e' valido finche' non lo si esegue.
+if grep -n '«\$[a-zA-Z_]' bin/winfleet | grep -v '^\s*[0-9]*:\s*#' | grep -qv '#'; then
+  echo "  NO   c'e' un «\$var» senza graffe: con set -u muore a runtime"
+  grep -n '«\$[a-zA-Z_]' bin/winfleet | grep -v '#' | sed 's/^/       /'
+  fail=1
+else
+  echo "  ok   nessun «\$var» senza graffe fuori dai commenti"
+fi
+
+# --- 5. il marchio richiede una finestra vera ------------------------------
 # Marcare "pronto" uno slot senza finestra e' il modo in cui il guasto diventa
 # invisibile: l'apertura dopo ci finisce sopra e trova uno schermo vuoto.
 if grep -q 'slot_hwnd_live "\$s"' bin/winfleet; then

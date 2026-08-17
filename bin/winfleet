@@ -1386,8 +1386,21 @@ cmd_ready(){
       WARM_APPS+=("$cand")
     fi
   done
+  # Anche la PRIMA app va scelta fra quelle non gia' aperte, per lo stesso motivo:
+  # se una finestra calda con il Blocco note e' ancora li' da un giro precedente,
+  # ripartire dal Blocco note non apre niente e brucia uno slot per trenta
+  # secondi. Il primo candidato libero e' il primo che vale.
   if [ -z "$app" ]; then
-    app="${WARM_APPS[0]:-}"
+    local c0 s0 busy
+    for c0 in "${WARM_APPS[@]}"; do
+      busy=0
+      for s0 in $(seq 0 $(( SLOTS - 1 ))); do
+        slot_live "$s0" 2>/dev/null || continue
+        if [ "$(slot_get "$s0" app)" = "$c0" ]; then busy=1; fi
+      done
+      if [ "$busy" = 0 ]; then app="$c0"; break; fi
+    done
+    [ -n "$app" ] || app="${WARM_APPS[0]:-}"
   fi
   [ -n "$app" ] || app="$(awk -F'\t' 'NR==1{print $1}' "$HOST_APPS" 2>/dev/null)"
   [ -n "$app" ] || { bad "catalogo app vuoto: winfleet scan"; return 1; }
@@ -1460,7 +1473,11 @@ cmd_ready(){
   # Non si usa ready_count: una finestra impiega una ventina di secondi a
   # risultare pronta, quindi contando i soli risultati il ciclo ne lanciava una
   # in piu' a ogni giro. Contarle da avviate e' l'unico numero gia' vero adesso.
-  local widx=1 launched=1
+  # Da ZERO, non da uno: la prima app non e' piu' per forza WARM_APPS[0] (si
+  # sceglie la prima libera), quindi partire dall'indice 1 salterebbe un
+  # candidato buono e ne riproverebbe uno gia' in uso. Le occupate le scarta
+  # comunque il controllo dentro il ciclo.
+  local widx=0 launched=1
   while [ "$launched" -lt "$want" ]; do
     freeslots=0
     for i in $(seq 0 $(( SLOTS - 1 ))); do
@@ -1470,9 +1487,37 @@ cmd_ready(){
     # Un'app DIVERSA da quelle gia' usate: sono quasi tutte a istanza singola, e
     # lanciare di nuovo la stessa chiude la finestra calda appena preparata per
     # aprirne una identica altrove. Si guadagnava uno slot e se ne perdeva uno.
-    local nxt="${WARM_APPS[$widx]:-}"
-    [ -n "$nxt" ] || { trace "ready: finite le app per scaldare (ne servirebbe un'altra diversa)"; break; }
-    widx=$(( widx + 1 ))
+    #
+    # "Gia' usate" non vuol dire solo "in questo giro": una finestra calda
+    # preparata dieci minuti fa e' ancora li' con la sua app sopra, e un giro
+    # nuovo ripartiva dalla stessa lista scegliendo di nuovo la Calcolatrice.
+    # Risultato visto nei log: "nessuna finestra comparsa" dopo trenta secondi,
+    # perche' la Calcolatrice era gia' aperta su un altro slot e non ne ha
+    # aperta una seconda. Si guarda quindi lo stato reale, non solo il contatore.
+    local nxt="" cand2 s2 usata
+    while [ "$widx" -lt "${#WARM_APPS[@]}" ]; do
+      cand2="${WARM_APPS[$widx]}"
+      widx=$(( widx + 1 ))
+      usata=0
+      # L'app della PRIMA finestra e' occupata anche se il suo slot non risulta
+      # ancora vivo: lo stream ci mette una decina di secondi ad arrivare, e in
+      # quella finestra di tempo il controllo sullo stato la dava per libera - il
+      # ciclo sceglieva di nuovo il Blocco note, che essendo a istanza singola
+      # non apriva nulla e bruciava uno slot per trenta secondi. Misurato: due
+      # "avvio: app=Blocco note" a tredici secondi di distanza.
+      if [ "$cand2" = "$app" ]; then usata=1; fi
+      for s2 in $(seq 0 $(( SLOTS - 1 ))); do
+        slot_live "$s2" 2>/dev/null || continue
+        if [ "$(slot_get "$s2" app)" = "$cand2" ]; then usata=1; fi
+      done
+      if [ "$usata" = 0 ]; then nxt="$cand2"; break; fi
+      # «${cand2}» e non «$cand2»: i byte di » finiscono nel NOME della variabile
+      # e con set -u il comando muore con "unbound variable" - qui uccideva il
+      # preparatore a meta' lavoro, lasciando una sola finestra calda su due.
+      # E' la stessa trappola gia' annotata due volte in questo file.
+      trace "ready: «${cand2}» e' gia' aperta da qualche parte, ne provo un'altra"
+    done
+    [ -n "$nxt" ] || { trace "ready: finite le app libere per scaldare"; break; }
     trace "ready: altra finestra con $nxt"
     WF_READY_KEEP=1 cmd_open "$nxt" &
     # Si contano anche quelle LANCIATE, non solo quelle gia' pronte: preparare
@@ -1483,26 +1528,68 @@ cmd_ready(){
     launched=$(( launched + 1 ))
     sleep 3   # respiro: due stream avviati nello stesso istante litigano sul monitor
   done
-  wait
+
+  # NIENTE "wait" qui.
+  #
+  # cmd_open, quando prepara una finestra calda, non torna: resta appeso perche'
+  # storicamente era lui a doverla tenere viva. Aspettarlo vuol dire aspettare
+  # per sempre - misurato, il preparatore restava bloccato e non arrivava mai a
+  # marcare le finestre come pronte: quella aperta c'era, funzionava, ma nessuno
+  # la riconosceva come calda e ogni apertura pagava la via lunga.
+  #
+  # Non serve aspettarlo: le finestre vivono nella loro sessione (setsid), e il
+  # ciclo qui sotto controlla lo stato vero invece della fine di un processo.
 
   # Da qui in poi il lucchetto va LASCIATO: si resta in attesa solo per tenere
   # viva la finestra, non per preparare altro. Senza questo, il preparatore
   # continuava a occupare il posto anche quando le sue finestre erano gia' state
   # usate, e nessun altro poteva rimpiazzarle - due aperture e non tornavano piu'.
   rm -f "${WF_READY_LOCK:-}" 2>/dev/null || true
-  trap 'kill "${WF_MARKER_PID:-0}" 2>/dev/null || true' EXIT
 
-  # Poi si resta ad aspettare: e' questo processo a tenere viva l'ultima finestra
-  # preparata, e uscire vorrebbe dire portarsela via.
+  # Il guardiano muore quando questo processo esce, e adesso questo processo esce
+  # subito: la marcatura va quindi COMPLETATA qui, guardando lo stato invece di
+  # sperare che il guardiano faccia in tempo. Senza, le finestre restavano vive
+  # ma con il nome dell'app usata per scaldarle, cioe' invisibili a chi cerca una
+  # finestra calda - preparate e mai usate.
+  local s deadline
+  deadline=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    local mancano=0
+    for s in $(seq 0 $(( SLOTS - 1 ))); do
+      [ "$(slot_get "$s" warm)" = "1" ] || continue
+      if [ "$(slot_get "$s" app)" = "$READY_MARK" ]; then continue; fi
+      # Uno slot il cui stream e' MORTO non diventera' mai pronto: aspettarlo
+      # vuol dire tenere occupato il preparatore mezzo minuto per niente, a ogni
+      # giro, mentre le finestre da rimpiazzare restano da rimpiazzare. Si
+      # dimentica e si va avanti - lo slot torna libero per il prossimo.
+      if ! slot_live "$s" 2>/dev/null; then
+        trace "ready: slot $s non e' arrivato a una finestra, lo lascio"
+        continue
+      fi
+      if [ -n "$(slot_get "$s" pid)" ] && [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ]; then
+        sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
+      else
+        mancano=$(( mancano + 1 ))
+      fi
+    done
+    if [ "$mancano" = 0 ]; then break; fi
+    sleep 1
+  done
+  kill "${WF_MARKER_PID:-0}" 2>/dev/null || true
+  trap - EXIT
+
+  # E qui si ESCE, invece di restare ad aspettare.
   #
-  # Attenzione a cosa comporta: le finestre nate da qui muoiono con questo
-  # processo. Chi lo ferma - un pkill, un launchctl - si porta via anche le app
-  # che nel frattempo l'utente ha aperto su quelle finestre. Per questo
-  # l'ATTESA e' l'ultima cosa che si fa e il lucchetto e' rigoroso: un secondo
-  # preparatore ucciso a meta' spegnerebbe roba viva.
-  if [ -n "$sup" ]; then
-    while kill -0 "$sup" 2>/dev/null; do sleep 5; done
-  fi
+  # Prima si restava perche' le finestre erano figlie di questo processo e
+  # morivano con lui. Ora vivono in una sessione propria (vedi setsid piu'
+  # sopra), quindi restare non le protegge: le tiene solo in ostaggio. E costava
+  # caro - finche' questo servizio e' in esecuzione launchd non lo riavvia, e
+  # "kickstart" su un servizio gia' vivo non fa niente: dopo aver consumato le
+  # due finestre calde non se ne preparavano piu', e ogni apertura tornava a
+  # pagare i quindici secondi. Uscendo, fra due minuti si riparte e si rimpiazza
+  # cio' che e' stato usato.
+  trace "ready: finestre preparate, esco (le tiene in vita la loro sessione)"
+  return 0
 }
 
 # Quante finestre calde mancano rispetto a quante se ne vogliono. Serve
@@ -1630,14 +1717,18 @@ cmd_open(){
     trace "eseguibile risolto"
     [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
     build_chrome || true
+    trace "libreria pronta"
     ensure_runner "$app" "$exe" || info "senza bundle per «${app}»: niente ritaglio"
+    trace "runner pronto"
     # Senza barra del titolo la finestra E' il video: niente punti da scalare, e va
     # deciso prima di ogni calcolo di geometria.
     chrome_hidden "$(runner_bin "$app")" && TITLEBAR=0
+    trace "barra decisa"
 
     key="$(slug "$app")"
     want="$(sed -n "s/^size_$key=\"\{0,1\}\([0-9]*x[0-9]*\).*/\1/p" "$CONFIG" 2>/dev/null | tail -1)"
     local cap; cap="$(usable_screen "$(stream_pid)")"
+    trace "schermo utile misurato: $cap"
     if [ -z "$want" ]; then
       # Prima apertura: una finestra che sta comoda su questo schermo, non la
       # risoluzione con cui il monitor virtuale si e' acceso.
@@ -1657,11 +1748,13 @@ cmd_open(){
     # n'e', la piu' grande disponibile): il margine per ingrandire c'e' sempre, e
     # la banda non ne soffre perche' si trasmette comunque solo il ritaglio.
     mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
+    trace "modalita' scelta: $mode"
     [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
     local ww="${want%x*}"
     [ "$ww" -gt "${mode%x*}" ] && ww="${mode%x*}"
     want="${ww}x$(( ww * ${mode#*x} / ${mode%x*} ))"
+    trace "misura decisa: $want"
 
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
@@ -1680,7 +1773,23 @@ cmd_open(){
     # finestra che non esiste ancora. Il supervisore la ricancella per conto suo, ma
     # qualche decimo di secondo dopo - e in quei decimi l'attesa e' gia' finita.
     rm -f "$CONFIG_DIR/slot$slot.size" 2>/dev/null || true
-    ( WF_SUP=1 supervise_window "$slot" "$app" "$mode" "$key" "$exe" "$want" ) >/dev/null 2>&1 &
+    # In una SESSIONE propria, non solo in secondo piano.
+    #
+    # launchd, quando riavvia un servizio, non uccide solo il processo: uccide
+    # tutto il suo process group. Il preparatore lasciava li' le finestre calde
+    # come figli, quindi non poteva uscire senza portarsele via - e restando vivo
+    # bloccava il proprio riavvio (kickstart su un servizio gia' in esecuzione
+    # non fa niente). Il risultato: dopo aver usato le due finestre calde non se
+    # ne preparavano piu', e ogni apertura tornava a pagare la via lunga.
+    #
+    # Con setsid la finestra esce dal gruppo: sopravvive a chi l'ha creata, e il
+    # preparatore puo' finire il suo lavoro e uscire, pronto a ripartire fra due
+    # minuti per rimpiazzare quelle consumate. macOS non ha il comando setsid,
+    # ma la chiamata di sistema c'e' - la si raggiunge da python.
+    ( WF_SUP=1 exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+        /opt/homebrew/bin/bash -c \
+        "$(printf 'WF_SUP=1 %q ready-supervise %q %q %q %q %q %q' \
+             "$0" "$slot" "$app" "$mode" "$key" "$exe" "$want")" ) >/dev/null 2>&1 &
     WF_SUP_PID=$!
     # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
     # ad arrivare allo stream, e nel frattempo un secondo "open" la sceglierebbe.
@@ -2564,6 +2673,11 @@ CFG
 
 # ---------------------------------------------------------------------------
 case "${1:-}" in
+  # Interno, non da riga di comando: e' il supervisore di una finestra, lanciato
+  # in una sessione separata perche' sopravviva a chi l'ha creato. Chiamarlo a
+  # mano non ha senso, ma non fa danni: sorveglia una finestra che non c'e' e
+  # torna subito.
+  ready-supervise) shift; WF_SUP=1 supervise_window "$@";;
   open)     shift; cmd_open "$@";;
   ready)    shift; cmd_ready "$@";;
   ready-missing) shift; cmd_ready_missing;;
