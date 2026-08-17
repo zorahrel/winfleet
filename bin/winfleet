@@ -1288,6 +1288,28 @@ cmd_ready(){
     trace "ready: ce n'e' gia' uno al lavoro"
     return 0
   fi
+
+  # Il lucchetto NON basta da solo, e il perche' e' sottile.
+  #
+  # Il preparatore lo rilascia appena ha finito di preparare, e poi resta vivo
+  # solo per tenere in piedi la finestra (le finestre muoiono con lui). Al giro
+  # successivo l'agente launchd ne lancia un altro: il lucchetto e' libero,
+  # quindi entra. Dovrebbe accorgersi che le finestre calde ci sono gia' - ma il
+  # conteggio si faceva una volta sola, prima di arrivare qui, e nel frattempo la
+  # situazione e' cambiata.
+  #
+  # Visto dal vivo: tre preparatori insieme, otto stream aperti in pochi minuti,
+  # cinque istanze Sunshine occupate e nessuna finestra calda alla fine - ognuno
+  # buttava giu' quella dell'altro, e le aperture tornavano a 31 secondi.
+  #
+  # Si ricontrolla quindi DOPO aver preso il lucchetto, che e' l'unico momento in
+  # cui la risposta non puo' piu' cambiare sotto i piedi.
+  local now_have; now_have="$(ready_count)"
+  if [ "$now_have" -ge "${WF_WARM:-2}" ]; then
+    trace "ready: nel frattempo le finestre calde ci sono gia' ($now_have)"
+    return 0
+  fi
+
   printf '%s\n' "$$" >"$WF_READY_LOCK"
   # La trap si valuta all'USCITA, quando le variabili 'local' della funzione non
   # esistono piu': con set -u lo script moriva li' con "lock: unbound variable",
@@ -1474,6 +1496,17 @@ cmd_open(){
   # buttare: meglio quindici secondi con il codice giusto che due con quello
   # vecchio.
   local ready; ready="$(ready_slot)" || true
+
+  # Chi sta RIFORNENDO non deve riusare una finestra calda: la consumerebbe per
+  # produrne una, cioe' non produrrebbe niente. Ed e' un ciclo, non un errore
+  # isolato - visto dal vivo: quattro preparatori che si passavano la stessa
+  # finestra avanti e indietro, un "cmd_open" ogni quattro secondi per un minuto
+  # e mezzo, e alla fine zero finestre pronte.
+  # (Un "[ test ] && x=" qui NON va: con set -e, quando il test e' falso - cioe'
+  # nel caso normale, un'apertura vera - l'intera riga vale 1 e il comando muore
+  # senza aprire niente e senza dire perche'. Serve un if.)
+  if [ "${WF_READY_KEEP:-0}" = "1" ]; then ready=""; fi
+
   if [ -n "$ready" ] && [ -f "$CHROME_LIB" ]; then
     local sfile; sfile="$(slot_file "$ready")"
     if [ -f "$sfile" ] && [ "$CHROME_LIB" -nt "$sfile" ]; then
