@@ -170,6 +170,88 @@ while ($listener.IsListening) {
             $got  = Set-AppSize $slot $w $h
             $body = if ($got) { "ok $got" } else { 'no' }
         }
+        elseif ($req.Url.AbsolutePath -eq '/place') {
+            # Metti QUESTA app sul monitor di QUESTO slot.
+            #
+            # Lo faceva un giro ssh che avviava powershell.exe sull'host, e il
+            # lavoro vero - scrivere una riga, riavviare un'attivita' - dura
+            # pochi millisecondi: erano 1.2 secondi di AVVIO dell'interprete,
+            # misurati, pagati a ogni apertura. L'agente e' gia' acceso e gia'
+            # nella sessione giusta, quindi qui la stessa cosa costa quanto una
+            # richiesta HTTP (128 ms misurati).
+            #
+            # L'eseguibile arriva in base64: fra URL, query string e percorsi di
+            # Windows ci sono troppi caratteri che vogliono dire altro.
+            $slot = $req.QueryString['slot']
+            $b64  = "$($req.QueryString['exe'])"
+            if ($null -eq $slot -or -not $b64) {
+                $body = 'no'
+            } else {
+                $slot = [int]$slot
+                try {
+                    $exe = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+                    # Prima si SCRIVE, poi si ferma il task e lo si rilancia: se
+                    # il task riparte da solo trova gia' il valore nuovo, e non
+                    # serve nessuna pausa di sicurezza in mezzo.
+                    #
+                    # NON "Set-Content -Encoding UTF8": quello scrive il BOM, e
+                    # wf-place leggerebbe un percorso che comincia con tre byte
+                    # invisibili - l'app non parte e non si capisce perche'.
+                    [IO.File]::WriteAllText("C:\winfleet\app$slot.txt", $exe,
+                                            (New-Object Text.UTF8Encoding $false))
+
+                    # L'app la si CHIUDE e la si RILANCIA da qui, subito, invece
+                    # di lasciar fare tutto al task.
+                    #
+                    # Il task ci mette 1.5 secondi solo a partire - e' powershell
+                    # che si avvia, misurato tre volte: 1480, 1600, 1441 ms - e
+                    # in quel tempo non succede niente di utile. L'agente e' gia'
+                    # in esecuzione nella sessione interattiva, quindi puo' fare
+                    # le due cose che contano mentre il task sta ancora nascendo.
+                    # Al task resta il suo lavoro vero: trovare la finestra,
+                    # toglierle la cornice e seguirne la geometria per sempre.
+                    #
+                    # wf-place NON rilancia l'app se la trova gia' avviata da
+                    # qui: il file "launched<slot>.txt" e' il messaggio fra i due.
+                    $packaged = $exe -like 'shell:AppsFolder\*'
+                    $isShell  = $exe -match '(^|\\)explorer\.exe$'
+                    if (-not $isShell) {
+                        try {
+                            if ($packaged) {
+                                $fam = ($exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
+                                $ap = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $fam } | Select-Object -First 1
+                                if ($ap -and $ap.InstallLocation) {
+                                    $rootp = $ap.InstallLocation
+                                    Get-Process -EA SilentlyContinue | Where-Object {
+                                        $pp = $null; try { $pp = $_.Path } catch { }
+                                        $pp -and $pp.StartsWith($rootp, [StringComparison]::OrdinalIgnoreCase)
+                                    } | Stop-Process -Force -EA SilentlyContinue
+                                }
+                            } else {
+                                $pn = [IO.Path]::GetFileNameWithoutExtension($exe)
+                                Get-Process $pn -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+                            }
+                        } catch { }
+                    }
+
+                    & schtasks /end /tn "winfleet-place$slot" 2>&1 | Out-Null
+                    & schtasks /run /tn "winfleet-place$slot" 2>&1 | Out-Null
+
+                    if (-not $isShell) {
+                        try {
+                            if ($packaged) { Start-Process 'explorer.exe' -ArgumentList $exe | Out-Null }
+                            else           { Start-Process -FilePath $exe | Out-Null }
+                            [IO.File]::WriteAllText("C:\winfleet\launched$slot.txt", $exe,
+                                                    (New-Object Text.UTF8Encoding $false))
+                        } catch { Note "avvio app slot $slot fallito: $_" }
+                    }
+                    $body = 'ok'
+                } catch {
+                    Note "place slot $slot fallita: $_"
+                    $body = 'no'
+                }
+            }
+        }
         elseif ($req.Url.AbsolutePath -eq '/show') {
             # Riduci a icona sul Mac deve ridurre a icona anche su Windows.
             #

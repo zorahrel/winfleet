@@ -39,7 +39,10 @@ if (Test-Path $req) { $Exe = (Get-Content $req -Raw).Trim() }
 if (-not $Exe) { return }
 
 $LOG = "C:\winfleet\place$Slot.log"
-function Note($m) { "$(Get-Date -f 'HH:mm:ss')  $m" | Add-Content $LOG }
+# Con i soli secondi non si misura niente: un passo da 300 ms e uno da 1200
+# sembrano uguali, e i millisecondi sono esattamente cio' che si sta cercando
+# quando si vuole capire dove va il tempo di un'apertura.
+function Note($m) { "$(Get-Date -f 'HH:mm:ss.fff')  $m" | Add-Content $LOG }
 trap { Note "ERRORE: $_"; break }
 Set-Content $LOG ''
 
@@ -132,7 +135,44 @@ $packaged = $Exe -like 'shell:AppsFolder\*'
 # finestra di Esplora file, che tra l'altro si apre benissimo senza.
 $isShell = $Exe -match '(^|\\)explorer\.exe$'
 
-if (-not $isShell) {
+# L'agente puo' aver gia' chiuso e rilanciato l'app: lui e' gia' in esecuzione,
+# mentre questo script paga un secondo e mezzo solo per avviare powershell. In
+# quel caso lascia un biglietto, e qui si salta il lavoro gia' fatto per andare
+# dritti a quello che solo questo script fa: trovare la finestra, toglierle la
+# cornice, e seguirne la geometria finche' vive.
+#
+# Il biglietto vale solo se e' per QUESTA app e se e' fresco: un file vecchio di
+# un minuto e' di un'apertura precedente, e fidarsene vorrebbe dire non lanciare
+# affatto l'app chiesta adesso.
+$preLaunched = $false
+$flag = "C:\winfleet\launched$Slot.txt"
+if (Test-Path $flag) {
+    try {
+        $f = Get-Item $flag
+        $same = ((Get-Content $flag -Raw).Trim() -eq $Exe.Trim())
+        $fresh = ((Get-Date) - $f.LastWriteTime).TotalSeconds -lt 20
+        if ($same -and $fresh) { $preLaunched = $true }
+    } catch { }
+    Remove-Item $flag -Force -EA SilentlyContinue
+}
+
+# La cartella del pacchetto si ricava SEMPRE, anche quando la chiusura la salta:
+# serve piu' avanti per riconoscere quali finestre sono di questa app. Calcolarla
+# solo dentro il ramo che chiude i processi la lasciava vuota proprio nel caso in
+# cui l'app l'ha lanciata l'agente - e allora nessuna finestra veniva riconosciuta.
+$root = $null
+if ($packaged) {
+    $fam = ($Exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
+    try {
+        $ap = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $fam } | Select-Object -First 1
+        if ($ap) { $root = $ap.InstallLocation }
+    } catch { }
+} else {
+    $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
+}
+
+
+if (-not $isShell -and -not $preLaunched) {
     # Un'app a istanza singola non aprirebbe una finestra qui: riporterebbe in primo
     # piano quella che ha gia', su un altro schermo. Vale anche per le app dello
     # Store — anzi soprattutto per quelle, che sono quasi tutte a istanza singola:
@@ -157,12 +197,6 @@ if (-not $isShell) {
         #
         # Il percorso invece non si presta a equivoci - o l'eseguibile sta nella
         # cartella di quel pacchetto o no - e non ha bisogno di nessuna soglia.
-        $fam = ($Exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
-        $root = $null
-        try {
-            $ap = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $fam } | Select-Object -First 1
-            if ($ap) { $root = $ap.InstallLocation }
-        } catch { }
         if ($root) {
             Note "chiudo i processi sotto $root"
             Get-Process -EA SilentlyContinue | Where-Object {
@@ -181,10 +215,29 @@ if (-not $isShell) {
                 Stop-Process -Force -EA SilentlyContinue
         }
     } else {
-        $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
         Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
     }
-    Start-Sleep 1
+    # Si aspetta che i processi siano DAVVERO finiti, invece di dormire un
+    # secondo a occhio. Il secondo fisso si pagava a ogni apertura anche quando
+    # non c'era niente da chiudere - misurato, era un quarto del tempo di uno
+    # scambio su finestra calda - e nei casi lenti non bastava comunque.
+    #
+    # Si guarda la stessa cosa che si e' chiusa: la lista dei processi da
+    # terminare viene ricalcolata, e appena e' vuota si prosegue.
+    $deadline = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $deadline) {
+        $vivi = 0
+        if ($packaged -and $root) {
+            $vivi = @(Get-Process -EA SilentlyContinue | Where-Object {
+                $p = $null; try { $p = $_.Path } catch { }
+                $p -and $p.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+            }).Count
+        } elseif (-not $packaged) {
+            $vivi = @(Get-Process $name -EA SilentlyContinue).Count
+        }
+        if ($vivi -eq 0) { break }
+        Start-Sleep -Milliseconds 50
+    }
 }
 
 # L'handle della finestra PRECEDENTE si cancella PRIMA di lanciare la nuova app.
@@ -216,9 +269,35 @@ function Get-TakenHwnds {
     return $taken.ToArray()
 }
 
-if ($packaged) { Start-Process 'explorer.exe' -ArgumentList $Exe | Out-Null }
-else           { Start-Process -FilePath $Exe | Out-Null }
-Note "avviata $Exe"
+if ($preLaunched) {
+    Note "app gia' avviata dall'agente: non la rilancio"
+    # ATTENZIONE all'ordine: $before e' stato preso ADESSO, cioe' dopo che
+    # l'agente ha lanciato l'app. Se la finestra e' gia' comparsa sta gia' in
+    # quell'elenco, e "la finestra comparsa dopo" non la troverebbe MAI - lo
+    # script aspetterebbe trenta secondi una finestra che e' li' da un pezzo.
+    #
+    # Si toglie quindi da $before tutto cio' che appartiene ai processi di
+    # QUESTA app: sono nate ora, per noi, e vanno considerate nuove.
+    $mine = New-Object 'System.Collections.Generic.List[IntPtr]'
+    foreach ($w in $before) {
+        $wp = 0; [P]::GetWindowThreadProcessId($w, [ref]$wp) | Out-Null
+        $keep = $true
+        try {
+            $pr = Get-Process -Id $wp -EA Stop
+            $pth = $null; try { $pth = $pr.Path } catch { }
+            if ($packaged -and $root -and $pth -and $pth.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $keep = $false }
+            elseif (-not $packaged -and $pth -and $pth.Equals($Exe, [StringComparison]::OrdinalIgnoreCase)) { $keep = $false }
+        } catch { }
+        if ($keep) { $mine.Add($w) }
+    }
+    $before = $mine
+} elseif ($packaged) {
+    Start-Process 'explorer.exe' -ArgumentList $Exe | Out-Null
+    Note "avviata $Exe"
+} else {
+    Start-Process -FilePath $Exe | Out-Null
+    Note "avviata $Exe"
+}
 
 $h = [IntPtr]::Zero
 for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) {

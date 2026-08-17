@@ -882,12 +882,25 @@ usable_screen(){ # [pid con cui misurare, se ancora non si sa]
 # duplicherebbe il token della console, privilegio riservato a LocalSystem. La apre
 # quindi un task nostro, e Sunshine si limita a trasmettere lo schermo.
 place_app(){ # slot percorso-exe
-  need_ssh
   # L'ordine conta: si SCRIVE il file prima di fermare il task, e si rilancia
   # subito dopo. Prima si fermava, si scriveva e si aspettava un secondo pieno
   # perche' il task non ripartisse leggendo il valore vecchio; scrivendo per
   # primo quella corsa non esiste piu' e il secondo si risparmia su ogni
   # apertura. Il file e' una riga sola: la scrittura e' atomica abbastanza.
+  #
+  # Si passa dall'AGENTE, non da ssh: il lavoro vero dura millisecondi, ma
+  # avviare powershell.exe sull'host ne costa 1200 - misurati - e si pagavano a
+  # ogni apertura. L'agente e' gia' acceso e gia' nella sessione utente, quindi
+  # la stessa cosa costa quanto una richiesta HTTP.
+  local b64; b64="$(printf '%s' "$2" | base64 | tr -d '\n')"
+  local r; r="$(curl -s --max-time 5 --connect-timeout 2 \
+    "http://$(agent_host):$AGENT_PORT/place?slot=$1&exe=$b64" 2>/dev/null)"
+  if [ "$r" = ok ]; then return 0; fi   # (con set -e un "&&" qui ucciderebbe il ramo di riserva)
+
+  # ssh resta la riserva: se l'agente non risponde (aggiornamento in corso, task
+  # riavviato) l'apertura deve comunque funzionare, anche se lenta.
+  trace "place: agente non ha risposto ($r), passo da ssh"
+  need_ssh
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"Set-Content 'C:\\winfleet\\app$1.txt' '$2'; schtasks /end /tn winfleet-place$1 | Out-Null; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1 || true
 }
