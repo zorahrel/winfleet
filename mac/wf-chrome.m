@@ -364,6 +364,29 @@ static void showLocalCursor(void) {
 // cade su uno dei pulsanti lo si esegue e si toglie l'evento di mezzo (ritornando
 // nil), cosi' SDL non lo vede nemmeno; tutto il resto passa intatto e lo stream
 // continua a ricevere il mouse come prima.
+// Il mouse si e' MOSSO (trascinamento) o e' rimasto fermo (click)?
+//
+// Sta in una funzione sua perche' e' l'unico pezzo che un test non puo'
+// esercitare: sintetizzare un NSEvent si puo', muovere il mouse fisico no. Con
+// WF_FORCE_DRAG=1 la si forza a rispondere "mosso", e cosi' la suite puo'
+// verificare tutto il resto della catena.
+static BOOL (*gDragProbe)(void) = NULL;
+
+static BOOL waitForDragOrClick(void) {
+    if (gDragProbe) return gDragProbe();
+    NSPoint start = NSEvent.mouseLocation;
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.25];
+    while ([until timeIntervalSinceNow] > 0) {
+        if (!(NSEvent.pressedMouseButtons & 1)) return NO;   // rilasciato: era un click
+        NSPoint now = NSEvent.mouseLocation;
+        if (fabs(now.x - start.x) > 3 || fabs(now.y - start.y) > 3) return YES;
+        [NSThread sleepForTimeInterval:0.008];
+    }
+    return NO;
+}
+
+static BOOL alwaysDrag(void) { return YES; }
+
 static void watchTitlebarClicks(void) {
     [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
                                           handler:^NSEvent *(NSEvent *e) {
@@ -409,16 +432,7 @@ static void watchTitlebarClicks(void) {
             // trascinamento e lo prende Cocoa; se resta fermo era un click, e lo
             // si lascia proseguire verso l'app come qualsiasi altro.
             if (p.y > w.frame.size.height - titlebarHeight(w)) {
-                NSPoint start = NSEvent.mouseLocation;
-                NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.25];
-                BOOL moved = NO;
-                while ([until timeIntervalSinceNow] > 0) {
-                    if (!(NSEvent.pressedMouseButtons & 1)) break;   // rilasciato: era un click
-                    NSPoint now = NSEvent.mouseLocation;
-                    if (fabs(now.x - start.x) > 3 || fabs(now.y - start.y) > 3) { moved = YES; break; }
-                    [NSThread sleepForTimeInterval:0.008];
-                }
-                if (moved) {
+                if (waitForDragOrClick()) {
                     gLastTitlebarDrag = YES;   // per l'autoverifica: chi ha preso l'evento
                     [w performWindowDragWithEvent:e];
                     return nil;
@@ -451,6 +465,7 @@ static void wf_chrome_init(void) {
     const char *keep = getenv("WF_CHROME");
     gKeepChrome = (keep && strcmp(keep, "native") == 0);
     // WF_CURSOR=remote torna alla freccia sola (quella di Windows, in ritardo).
+    if (getenv("WF_FORCE_DRAG")) gDragProbe = alwaysDrag;
     const char *cur = getenv("WF_CURSOR");
     if (cur && strcmp(cur, "remote") == 0) gLocalCursor = NO;
 

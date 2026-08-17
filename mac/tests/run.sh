@@ -33,8 +33,13 @@ clang -dynamiclib -framework Cocoa -framework Foundation -o "$TMP/wf-chrome.dyli
 clang -framework Cocoa -o "$TMP/drag" mac/tests/drag-titlebar.m 2>/dev/null || exit 1
 
 without="$("$TMP/drag" 2>&1 | grep -o 'ESITO_BARRA: [A-Z]*' | awk '{print $2}')"
-with="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 "$TMP/drag" 2>&1 | grep -o 'ESITO_BARRA: [A-Z]*' | awk '{print $2}')"
-video="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 "$TMP/drag" 2>&1 | grep -o 'ESITO_VIDEO: [A-Z]*' | awk '{print $2}')"
+# WF_FORCE_DRAG: il test sintetizza un click ma non puo' muovere il mouse fisico,
+# e la libreria - giustamente - tratta un premi-e-rilascia fermo come un click
+# sull'app, non come un trascinamento (senza, la barra degli indirizzi di certe
+# app diventa incliccabile). Si forza quindi la sola parte non simulabile, e si
+# verifica tutto il resto della catena.
+with="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 WF_FORCE_DRAG=1 "$TMP/drag" 2>&1 | grep -o 'ESITO_BARRA: [A-Z]*' | awk '{print $2}')"
+video="$(DYLD_INSERT_LIBRARIES="$LIB" WF_WIN=600x400 WF_FORCE_DRAG=1 "$TMP/drag" 2>&1 | grep -o 'ESITO_VIDEO: [A-Z]*' | awk '{print $2}')"
 
 if [ "$without" = FAIL ] && [ "$with" = PASS ]; then
   say "ok   barra: senza libreria finisce in Windows, con libreria trascina il Mac"
