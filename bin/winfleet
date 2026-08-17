@@ -635,6 +635,16 @@ ready_slot(){
   return 1
 }
 
+# Quante finestre calde ci sono adesso.
+ready_count(){
+  local i n=0
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" || continue
+    [ "$(slot_get "$i" app)" = "$READY_MARK" ] && n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+
 # Mette un'app su uno slot gia' acceso, senza toccare lo stream.
 #
 # Lo stream mostra un MONITOR, non un'app: cambiare l'app che ci sta sopra non
@@ -1009,6 +1019,18 @@ RUNNERS="$CONFIG_DIR/runners"
 
 runner_bin(){ # nome app -> binario da usare per lo stream
   local b="$RUNNERS/$1.app/Contents/MacOS/Moonlight"
+  # Un runner piu' VECCHIO del Moonlight interno e' un runner senza le correzioni
+  # appena compilate, e nessuno se ne accorge: l'app si apre, si comporta come
+  # prima, e i sintomi gia' risolti tornano solo su quell'app. E' successo dopo
+  # una ricompilazione - le schermate "Starting/Quitting Desktop" erano sparite
+  # sulla Calcolatrice (rigenerata a mano) e restavano su Arc.
+  #
+  # Qui il bundle si rifa' da solo. Costa un paio di secondi e solo la prima volta
+  # dopo un aggiornamento.
+  if [ -x "$b" ] && [ -x "$MOONLIGHT" ] && [ "$MOONLIGHT" -nt "$b" ]; then
+    trace "runner $1 obsoleto: lo rifaccio"
+    cmd_dock "$1" >/dev/null 2>&1 || true
+  fi
   [ -x "$b" ] && echo "$b" || echo "$MOONLIGHT"
 }
 
@@ -1178,8 +1200,27 @@ cmd_endpoint(){
 # ospitare processi lunghi - l'agente launchd in mac/com.winfleet.ready.plist -
 # oppure a mano in un terminale che si lascia aperto.
 cmd_ready(){
-  local existing; existing="$(ready_slot)" || true
-  [ -n "$existing" ] && { info "finestra $(( existing + 1 )) già pronta"; return 0; }
+  # Un solo preparatore per volta.
+  #
+  # Questo comando resta vivo finche' vive la finestra che tiene calda, e
+  # l'agente launchd lo rilancia a intervalli: senza lucchetto se ne accumulavano
+  # tre o quattro, ognuno in attesa di una finestra che un altro aveva gia'
+  # preparato. Il file col pid dentro dice se c'e' gia' qualcuno al lavoro.
+  local lock="$CONFIG_DIR/ready.lock"
+  if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
+    trace "ready: ce n'e' gia' uno al lavoro"
+    return 0
+  fi
+  printf '%s\n' "$$" >"$lock"
+  trap 'rm -f "$lock" 2>/dev/null || true' EXIT
+
+  # Quante tenerne calde. Una sola basta finche' si apre un'app per volta, ma
+  # aprendone due di fila la seconda paga i quindici secondi pieni - ed e'
+  # esattamente quando si nota. Due coprono il caso normale e lasciano comunque
+  # slot liberi; si cambia con WF_WARM.
+  local want="${WF_WARM:-2}"
+  local have; have="$(ready_count)"
+  [ "$have" -ge "$want" ] && { info "$have finestre già pronte"; return 0; }
 
   # Serve uno slot davvero libero: tenere una finestra calda non deve mai rubare
   # l'ultimo posto a un'app che si vuole aprire adesso.
@@ -1187,6 +1228,8 @@ cmd_ready(){
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
   done
+  # Se ne prepara una solo se resta comunque uno slot libero per l'utente: una
+  # finestra calda non deve mai essere il motivo per cui "sono tutte occupate".
   [ "$freeslots" -ge 2 ] || { trace "ready: solo $freeslots slot liberi, non ne occupo uno"; return 1; }
 
   # L'app con cui si scalda la finestra deve APRIRSI SEMPRE, e in fretta.
@@ -1215,16 +1258,56 @@ cmd_ready(){
   # considera lo slot morto e lo CANCELLA - un controllo che distrugge cio' che
   # sta guardando. Qui basta vedere che il file di stato nomini la nostra app e
   # abbia gia' un pid: da quel momento la finestra e' nata.
-  ( for _ in $(seq 1 120); do
+  # Il guardiano marca OGNI finestra che nasce con questo nome, non solo la
+  # prima: se ne servono due, la seconda restava col nome dell'app e nessuno la
+  # riconosceva come calda. Gira per tutta la durata della preparazione.
+  ( for _ in $(seq 1 400); do
       sleep 0.5
       for s in $(seq 0 $(( SLOTS - 1 ))); do
         if [ "$(slot_get "$s" app)" = "$app" ] && [ -n "$(slot_get "$s" pid)" ]; then
           sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
-          exit 0
         fi
       done
     done ) &
-  WF_READY_KEEP=1 cmd_open "$app"
+  WF_MARKER_PID=$!
+  trap 'kill "${WF_MARKER_PID:-0}" 2>/dev/null; rm -f "$lock" 2>/dev/null || true' EXIT
+  # Se cmd_open esce con 1 non vuol dire che la finestra non c'e': significa che
+  # non e' comparsa entro 45 secondi, e il sorvegliante "ci sta ancora provando".
+  # Uscire qui ucciderebbe proprio quel sorvegliante, e con lui la finestra calda
+  # appena nata - e' il motivo per cui l'agente lasciava lo slot vuoto ogni volta.
+  # Si resta quindi in attesa del sorvegliante, che e' chi tiene viva la finestra.
+  # Se cmd_open esce con 1 non vuol dire che la finestra non c'e': significa che
+  # non e' comparsa entro 45 secondi, e il sorvegliante "ci sta ancora provando".
+  # Uscire qui ucciderebbe proprio quel sorvegliante, e con lui la finestra calda
+  # appena nata - era il motivo per cui l'agente lasciava lo slot vuoto ogni giro.
+  WF_READY_KEEP=1 cmd_open "$app" || true
+  local sup="${WF_SUP_PID:-}"
+
+  # Se ne servono altre, le prepara QUESTO processo: ogni cmd_open lascia dietro
+  # un sorvegliante da tenere in vita, e restare qui e' l'unico modo di non
+  # ucciderlo. Si continua finche' non se ne hanno abbastanza o non restano slot.
+  while [ "$(ready_count)" -lt "$want" ]; do
+    freeslots=0
+    for i in $(seq 0 $(( SLOTS - 1 ))); do
+      slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
+    done
+    [ "$freeslots" -ge 2 ] || break
+    WF_READY_KEEP=1 cmd_open "$app" || true
+  done
+
+  # Poi si resta ad aspettare: e' questo processo a tenere viva l'ultima finestra
+  # preparata, e uscire vorrebbe dire portarsela via.
+  if [ -n "$sup" ]; then
+    while kill -0 "$sup" 2>/dev/null; do sleep 5; done
+  fi
+}
+
+# Quante finestre calde mancano rispetto a quante se ne vogliono. Serve
+# all'agente per sapere se ha ancora lavoro da fare in questo giro.
+cmd_ready_missing(){
+  local want="${WF_WARM:-2}" have
+  have="$(ready_count)"
+  echo $(( want > have ? want - have : 0 ))
 }
 
 cmd_open(){
@@ -2200,6 +2283,7 @@ CFG
 case "${1:-}" in
   open)     shift; cmd_open "$@";;
   ready)    shift; cmd_ready "$@";;
+  ready-missing) shift; cmd_ready_missing;;
   windows)  cmd_windows;;
   search)   shift; cmd_search "$@";;
   scan)     cmd_scan;;
