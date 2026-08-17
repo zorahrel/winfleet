@@ -127,4 +127,27 @@ else
   fail=1
 fi
 
+# --- 6. proporzioni dell'icona ---------------------------------------------
+# Un'icona non quadrata non deve uscire stirata, e il badge di Windows deve
+# esserci su tutte: sono le due cose che si notano nel Dock a colpo d'occhio.
+if python3 mac/tests/icon-aspect.py > "$TMP/icon.out" 2>&1; then
+  say "ok   icone: nessuna deformazione, badge presente in tutte le forme"
+else
+  say "NO   icone:"
+  sed 's/^/       /' "$TMP/icon.out"
+  fail=1
+fi
+
+# --- 7. scambio dell'app su una finestra calda ------------------------------
+# Aprire un'app deve mostrare QUELLA app: se la finestra sul monitor e' rimasta
+# quella di prima lo scambio non e' avvenuto, e dichiararlo riuscito significa
+# mostrare il Blocco note con l'icona di Arc.
+if /opt/homebrew/bin/bash mac/tests/swap-window.sh > "$TMP/swap.out" 2>&1; then
+  say "ok   scambio app: riuscito solo se la finestra e' davvero cambiata"
+else
+  say "NO   scambio app:"
+  sed 's/^/       /' "$TMP/swap.out"
+  fail=1
+fi
+
 exit "$fail"

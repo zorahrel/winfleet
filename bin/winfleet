@@ -28,7 +28,7 @@ fi
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
 #   winfleet panel             pannello in barra dei menu (finestre, app, strumenti)
 #   winfleet dockpanel         pannello nel Dock: click sull'icona, con la ricerca
-#   winfleet icons             scarica le icone di tutte le app dell'host
+#   winfleet icons [--tutte]   scarica le icone delle app dell'host (--tutte: rifa' anche quelle gia' prese)
 #   winfleet apps              lanciatori creati
 #   winfleet list              app pubblicate dall'host
 #   winfleet clean             toglie da Moonlight gli host che non rispondono più
@@ -347,7 +347,13 @@ WF_T0="${WF_T0:-$(python3 -c 'import time; print(int(time.time()*1000))')}"
 # si presentava affatto. Il file si tiene corto da solo.
 trace(){
   local now; now="$(python3 -c 'import time; print(int(time.time()*1000))')"
-  printf '+%sms %s\n' "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
+  # Ora del giorno E scarto dall'inizio di QUESTO comando. Il solo scarto non
+  # basta: ogni processo riparte da zero, e mettendo in fila le righe di due
+  # aperture diverse i numeri sembrano tornare indietro nel tempo. Senza l'ora
+  # vera non si puo' dire chi ha scritto prima - ed e' esattamente quello che
+  # serve quando due processi si contendono lo stesso slot.
+  printf '%s [%s] +%sms %s\n' \
+    "$(date '+%H:%M:%S')" "$$" "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
   # Corto: interessano le ultime aperture, non la storia. Un file che cresce per
   # sempre prima o poi si cancella a mano, e non c'e' quando serve.
   if [ "$(wc -l <"$CONFIG_DIR/trace.log" 2>/dev/null || echo 0)" -gt 400 ]; then
@@ -700,17 +706,42 @@ swap_app(){ # slot app
   [ -n "$exe" ] || { trace "swap: eseguibile vuoto per $app"; return 1; }
   trace "swap: slot=$slot exe=$exe"
 
+  # L'handle di PRIMA: la finestra nuova deve essere un'altra. Senza questo
+  # confronto bastava che sul monitor ci fosse una finestra qualsiasi - e su una
+  # finestra calda ce n'e' sempre una - per dichiarare riuscito uno scambio che
+  # non era mai avvenuto: sul Mac compariva l'app di prima con il nome e l'icona
+  # di quella chiesta.
+  local before_hwnd; before_hwnd="$(slot_hwnd_live "$slot" || true)"
+
   place_app "$slot" "$exe"
   # La finestra dell'app deve comparire sul monitor: se non arriva, lo slot resta
   # pronto per il prossimo tentativo e si torna alla via lunga.
-  local i
+  local i now
   for i in $(seq 1 40); do
     sleep 0.25
-    [ -n "$(slot_hwnd_live "$slot")" ] && break
+    now="$(slot_hwnd_live "$slot" || true)"
+    [ -n "$now" ] && [ "$now" != "$before_hwnd" ] && break
   done
-  [ -n "$(slot_hwnd_live "$slot")" ] || { trace "swap: nessuna finestra sul monitor dopo l attesa"; return 1; }
+  now="$(slot_hwnd_live "$slot" || true)"
+  [ -n "$now" ] || { trace "swap: nessuna finestra sul monitor dopo l attesa"; return 1; }
+  [ "$now" != "$before_hwnd" ] || { trace "swap: la finestra e ancora quella di prima ($now)"; return 1; }
+
+  # Due slot non possono mostrare la STESSA finestra: se succede, uno dei due sta
+  # guardando lo schermo di un altro e il Mac mostrerebbe l'app sbagliata. Visto
+  # dal vivo con hwnd1 e hwnd2 identici.
+  local other
+  for other in $(seq 0 $(( SLOTS - 1 ))); do
+    [ "$other" = "$slot" ] && continue
+    [ "$(slot_hwnd_live "$other" 2>/dev/null || true)" = "$now" ] || continue
+    trace "swap: la finestra $now e gia dello slot $other"
+    return 1
+  done
 
   sed -i '' "s/^app=.*/app=$app/" "$(slot_file "$slot")" 2>/dev/null || true
+  # Non e' piu' una finestra di scorta: da adesso c'e' sopra l'app dell'utente, e
+  # il guardiano del rifornitore non deve poterla rimarcare come pronta mentre lui
+  # la sta usando.
+  sed -i '' "s/^warm=.*/warm=0/" "$(slot_file "$slot")" 2>/dev/null || true
   # NIENTE rename qui. Il nome dell'istanza serve al client per TROVARE l'host
   # quando apre lo stream, e qui lo stream e' gia' connesso: rinominare adesso
   # costerebbe il riavvio dell'istanza - 24 secondi misurati - per cambiare
@@ -1005,7 +1036,14 @@ slot_file(){ echo "$CONFIG_DIR/slot$1.state"; }
 self_pid(){ echo "${BASHPID:-$$}"; }
 
 slot_save(){ # slot app modalita pid-stream pid-supervisore
-  printf 'app=%s\nmode=%s\npid=%s\nsup=%s\n' "$2" "$3" "$4" "$5" >"$(slot_file "$1")"
+  # warm=1 quando la finestra la sta preparando il rifornitore, e non l'utente.
+  # Senza questa riga le due cose sono indistinguibili - stesso nome dell'app,
+  # stesso file - e il guardiano che marca le finestre pronte prendeva anche
+  # quella che l'utente aveva appena aperto: si apriva il Blocco note, veniva
+  # marcato come "pronto", e l'app successiva ci finiva sopra rubandogli la
+  # finestra. Da fuori sembrava che Arc aprisse il Blocco note.
+  printf 'app=%s\nmode=%s\npid=%s\nsup=%s\nwarm=%s\n' \
+    "$2" "$3" "$4" "$5" "${WF_READY_KEEP:-0}" >"$(slot_file "$1")"
 }
 
 slot_get(){ # slot campo
@@ -1319,6 +1357,12 @@ cmd_ready(){
   ( for _ in $(seq 1 400); do
       sleep 0.5
       for s in $(seq 0 $(( SLOTS - 1 ))); do
+        # SOLO le finestre nate dal rifornitore (warm=1). L'utente puo' aprire
+        # per conto suo la stessa app usata per scaldare - il Blocco note e'
+        # proprio la piu' probabile - e marcare quella significa regalarla alla
+        # prossima apertura: l'utente vedeva la sua finestra trasformarsi
+        # nell'app di qualcun altro.
+        [ "$(slot_get "$s" warm)" = "1" ] || continue
         if [ "$(slot_get "$s" app)" = "$app" ] && [ -n "$(slot_get "$s" pid)" ]; then
           sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
         fi
@@ -2010,10 +2054,16 @@ PLIST
 # Le icone di tutte le app, in un colpo solo. Estrarle una alla volta al momento del
 # bisogno vuol dire un pannello che si riempie di icone mancanti, e ognuna costa un
 # giro di SSH: con settanta app sono settanta connessioni. Qui si paga una volta.
-cmd_icons(){
+cmd_icons(){ # [--tutte]
   need_ssh
   [ -s "$HOST_APPS" ] || cmd_scan
   mkdir -p "$CONFIG_DIR/icons"
+  # Con --tutte si rifanno anche quelle gia' scaricate. Serve quando a cambiare
+  # non e' l'icona su Windows ma il MODO in cui la si estrae: le icone prese
+  # prima restano com'erano - sfocate - e nessun comando le toccherebbe piu',
+  # perche' il criterio normale e' "il file c'e', vado avanti".
+  local force=0
+  [ "${1:-}" = "--tutte" ] && force=1
   local name exe icns n=0 skip=0 fail=0 tot
   tot=$(wc -l < "$HOST_APPS" | tr -d ' ')
   info "estraggo le icone di $tot app dall'host…"
@@ -2022,7 +2072,7 @@ cmd_icons(){
     icns="$CONFIG_DIR/icons/$name.icns"
     # Gia' presente: non si rifa'. Le icone di Windows non cambiano da sole, e
     # rifarle tutte a ogni giro trasformerebbe un comando da usare in uno da evitare.
-    [ -f "$icns" ] && { skip=$(( skip + 1 )); continue; }
+    [ "$force" = 0 ] && [ -f "$icns" ] && { skip=$(( skip + 1 )); continue; }
     # </dev/null: ssh legge dallo standard input e si mangerebbe il resto del file
     # letto dal while, fermando il ciclo dopo la prima app. Sintomo: "1 icona nuova"
     # e nessun errore.
@@ -2034,7 +2084,36 @@ cmd_icons(){
     fi
   done < "$HOST_APPS"
   printf "\r"
+
+  # I lanciatori gia' creati portano una COPIA dell'icona: rifare le icone senza
+  # aggiornarli non cambia niente nel Dock, che e' l'unico posto dove si guardano.
+  # Prima toccava farlo a mano, e quindi non si faceva.
+  refresh_launcher_icons
+
   ok "$n icone nuove  ${c_dim}($skip gia' c'erano, $fail senza icona estraibile)${c_off}"
+}
+
+# Riporta le icone aggiornate dentro i lanciatori del Dock.
+#
+# Il "touch" sul bundle non e' un vezzo: il Finder tiene in cache l'icona e senza
+# una data nuova continua a mostrare quella vecchia anche dopo che il file e'
+# cambiato. Se il Dock e' in esecuzione lo si riavvia, che e' istantaneo e non
+# perde niente.
+refresh_launcher_icons(){
+  local a n ic changed=0
+  for a in "$LAUNCHERS"/*.app; do
+    [ -d "$a" ] || continue
+    n="$(basename "$a" .app)"
+    ic="$CONFIG_DIR/icons/$n.icns"
+    [ -f "$ic" ] || continue
+    cmp -s "$ic" "$a/Contents/Resources/icon.icns" && continue
+    cp -f "$ic" "$a/Contents/Resources/icon.icns" 2>/dev/null || continue
+    touch "$a"
+    changed=$(( changed + 1 ))
+  done
+  [ "$changed" = 0 ] && return 0
+  killall Dock 2>/dev/null || true
+  info "aggiornate le icone di $changed lanciatori"
 }
 
 cmd_dockpanel(){
@@ -2401,7 +2480,7 @@ case "${1:-}" in
   endpoint) cmd_endpoint;;
   setup)    cmd_setup;;
   fixnet)   cmd_fixnet;;
-  icons)    cmd_icons;;
+  icons)    shift; cmd_icons "$@";;
   unlock)   cmd_unlock;;
   doctor|"") cmd_doctor;;
   -h|--help|help)

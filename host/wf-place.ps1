@@ -129,21 +129,60 @@ if (-not $isShell) {
     # 'shell:AppsFolder\Microsoft.WindowsNotepad_...!App' non contiene 'Notepad.exe'.
     # Si prende dall'identificativo del pacchetto, che e' la parte prima del punto.
     if ($packaged) {
-        $pkg = ($Exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
-        $leaf = ($pkg -split '_')[0]              # Microsoft.WindowsNotepad
-        $name = ($leaf -split '\.')[-1]           # WindowsNotepad
-        # 'WindowsNotepad' come processo si chiama 'Notepad': si cerca per prefisso
-        # e si accetta qualunque processo il cui nome sia contenuto in quello del
-        # pacchetto, che copre sia Notepad sia Calculator sia Photos.
-        Get-Process -EA SilentlyContinue |
-            Where-Object { $_.ProcessName.Length -gt 3 -and $leaf -match [regex]::Escape($_.ProcessName) } |
-            Stop-Process -Force -EA SilentlyContinue
+        # I processi dell'app si trovano dalla CARTELLA del pacchetto, non
+        # indovinando il nome dall'identificativo.
+        #
+        # Prima si confrontavano i nomi, con la regola "almeno quattro lettere"
+        # messa li' per evitare che un processo dal nome cortissimo facesse
+        # coppia con mezzo mondo. Quella soglia pero' esclude le app che si
+        # chiamano davvero con tre lettere: Arc non veniva mai chiusa, quindi non
+        # apriva nessuna finestra nuova (e' a istanza singola), quindi il monitor
+        # continuava a mostrare la finestra di prima. Sul Mac si apriva Arc e si
+        # vedeva il Blocco note con l'icona di Arc: il sintomo era lontanissimo
+        # dalla causa.
+        #
+        # Il percorso invece non si presta a equivoci - o l'eseguibile sta nella
+        # cartella di quel pacchetto o no - e non ha bisogno di nessuna soglia.
+        $fam = ($Exe -replace '^shell:AppsFolder\\', '') -replace '!.*$', ''
+        $root = $null
+        try {
+            $ap = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $fam } | Select-Object -First 1
+            if ($ap) { $root = $ap.InstallLocation }
+        } catch { }
+        if ($root) {
+            Note "chiudo i processi sotto $root"
+            Get-Process -EA SilentlyContinue | Where-Object {
+                $exePath = $null
+                try { $exePath = $_.Path } catch { }
+                $exePath -and $exePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+            } | Stop-Process -Force -EA SilentlyContinue
+        } else {
+            # Senza il pacchetto si torna al confronto sui nomi, che e' impreciso
+            # ma meglio di niente: qui la soglia resta, perche' senza percorso un
+            # nome di due lettere aggancerebbe processi che non c'entrano.
+            $leaf = ($fam -split '_')[0]
+            Note "pacchetto $fam non trovato: ripiego sul nome"
+            Get-Process -EA SilentlyContinue |
+                Where-Object { $_.ProcessName.Length -gt 2 -and $leaf -match [regex]::Escape($_.ProcessName) } |
+                Stop-Process -Force -EA SilentlyContinue
+        }
     } else {
         $name = [IO.Path]::GetFileNameWithoutExtension($Exe)
         Get-Process $name -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
     }
     Start-Sleep 1
 }
+
+# L'handle della finestra PRECEDENTE si cancella PRIMA di lanciare la nuova app.
+#
+# Senza questo, hwnd<slot>.txt continua a indicare la finestra di prima finche'
+# quella nuova non compare - e se non compare mai (app che non parte, che chiede
+# un aggiornamento, che apre solo un dialogo) resta li' per sempre. Il Mac chiede
+# "c'e' una finestra su questo slot?", gli si risponde di si' mostrando la
+# vecchia, e l'utente vede il Blocco note con sopra il nome e l'icona dell'app che
+# ha appena aperto. Meglio un file vuoto per qualche secondo, che e' una risposta
+# onesta, di un handle che mente.
+Remove-Item "C:\winfleet\hwnd$Slot.txt" -Force -EA SilentlyContinue
 
 $before = [P]::Candidates()
 if ($packaged) { Start-Process 'explorer.exe' -ArgumentList $Exe | Out-Null }
