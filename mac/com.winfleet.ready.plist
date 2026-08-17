@@ -10,11 +10,16 @@
         <string>ready</string>
     </array>
     <!-- Non al login: al login il PC di la' puo' essere spento e la rete non
-         ancora su, e si otterrebbe solo un errore. Ogni 10 minuti invece si
-         riprova finche' non riesce, e quando c'e' gia' una finestra calda il
-         comando esce subito senza fare nulla. -->
+         ancora su, e si otterrebbe solo un errore. Si riprova invece a
+         intervalli finche' non riesce, e quando una finestra calda c'e' gia' il
+         comando esce subito senza fare nulla.
+
+         Due minuti e non dieci: la finestra calda si consuma appena la si usa,
+         e con dieci minuti si restava scoperti proprio dopo aver aperto
+         qualcosa, cioe' quando e' piu' probabile che si apra dell'altro. Un
+         controllo a vuoto costa una manciata di millisecondi. -->
     <key>StartInterval</key>
-    <integer>600</integer>
+    <integer>120</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>

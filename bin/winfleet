@@ -1185,13 +1185,24 @@ cmd_ready(){
   done
   [ "$freeslots" -ge 2 ] || { trace "ready: solo $freeslots slot liberi, non ne occupo uno"; return 1; }
 
-  # L'app con cui si scalda la finestra: si prende dal catalogo dell'host invece
-  # di indovinare un nome. "Esplora file" sembrava sicuro e non c'era: l'agente
-  # falliva a ogni giro con "non so quale eseguibile sia", senza che nessuno lo
-  # leggesse.
-  local app="${1:-}"
+  # L'app con cui si scalda la finestra deve APRIRSI SEMPRE, e in fretta.
+  #
+  # Prima si prendeva la prima voce del catalogo, in ordine alfabetico: qui e'
+  # "7-Zip File Manager", che non apre nessuna finestra da solo - l'agente
+  # falliva a ogni giro e la finestra calda non c'era mai. Si prova quindi una
+  # lista di app di sistema, in ordine, e ci si ferma alla prima presente nel
+  # catalogo; solo se nessuna c'e' si ripiega sulla prima voce.
+  local app="${1:-}" cand
+  if [ -z "$app" ]; then
+    for cand in "Blocco note" "Notepad" "Calcolatrice" "Calculator" "Esplora file" "File Explorer"; do
+      if awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null; then
+        app="$cand"; break
+      fi
+    done
+  fi
   [ -n "$app" ] || app="$(awk -F'\t' 'NR==1{print $1}' "$HOST_APPS" 2>/dev/null)"
   [ -n "$app" ] || { bad "catalogo app vuoto: winfleet scan"; return 1; }
+  trace "ready: scaldo con $app"
   info "preparo una finestra…  ${c_dim}(resta aperta: la prossima app userà questa)${c_off}"
 
   # Il marchio lo mette un guardiano che gira in parallelo: da qui in poi
