@@ -275,18 +275,38 @@ static void showLocalCursor(void) {
     }
     if (!inside) return;
 
-    // Due leve, perche' SDL puo' usare entrambe le strade per farlo sparire.
+    // Tre leve, perche' le prime due non bastano: provate, il puntatore restava
+    // invisibile dentro il video.
     //
-    // setHiddenUntilMouseMoves e' idempotente: rimetterlo a NO a ogni giro non
-    // sbilancia niente.
+    // 1) setHiddenUntilMouseMoves: idempotente, si puo' rimettere a ogni giro.
     [NSCursor setHiddenUntilMouseMoves:NO];
 
-    // [NSCursor hide] invece e' CONTATO, e SDL lo chiama di continuo: un solo
-    // unhide - com'era prima - pareggia il primo hide e perde tutti i successivi,
-    // percio' dentro la finestra non si vedeva piu' nessun puntatore. Qui si
-    // pareggia a ogni giro: unhide di troppo non fa danno (il contatore non
-    // scende sotto zero), unhide di meno lascerebbe il cursore invisibile.
+    // 2) il contatore di [NSCursor hide], che SDL incrementa di continuo. Un solo
+    //    unhide pareggia il primo e perde tutti quelli dopo, quindi si pareggia a
+    //    ogni giro (un unhide di troppo non fa danno: non scende sotto zero).
     [NSCursor unhide];
+
+    // 3) e soprattutto: si RIDISEGNA il cursore. hide/unhide agiscono su un
+    //    contatore che SDL manovra a modo suo e possiamo solo inseguire; `set`
+    //    invece impone qui e ora quale cursore mostrare, e non passa da nessun
+    //    contatore. E' la leva che vince davvero, e costa una assegnazione.
+    [[NSCursor arrowCursor] set];
+
+    // 4) l'ultima parola ce l'ha CoreGraphics. NSCursor vive dentro
+    //    l'applicazione, e se SDL ha nascosto il cursore a livello di sistema
+    //    (CGDisplayHideCursor, che e' quello che fa quando cattura il mouse)
+    //    nessuna chiamata AppKit lo riporta indietro. CGDisplayShowCursor annulla
+    //    proprio quella, ed e' anch'essa contata: si chiama a ogni giro come
+    //    l'unhide, per pareggiare quante volte serve.
+    CGDisplayShowCursor(kCGDirectMainDisplay);
+
+    // Con WF_DEBUG si dice, una volta ogni due secondi, che il giro sta girando e
+    // se il sistema considera il cursore visibile: senza, l'unico modo di sapere
+    // perche' non si vede e' indovinare.
+    if (getenv("WF_DEBUG")) {
+        static int n = 0;
+        if (++n % 120 == 0) NSLog(@"[wf] cursore: giro attivo, CGCursorIsVisible=%d", CGCursorIsVisible());
+    }
 }
 
 // I tre pulsanti si vedono ma non rispondono al mouse: con il contenuto a tutta
@@ -462,9 +482,21 @@ static void wf_chrome_init(void) {
         // movimento, quindi rimetterlo due volte al secondo lo fa lampeggiare.
         // A 60 Hz il contrasto e' invisibile e resta sempre visibile.
         if (gLocalCursor) {
-            [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0) repeats:YES block:^(NSTimer *t) {
-                showLocalCursor();
-            }];
+            // Non un NSTimer: quando SDL prende in mano il run loop per lo stream,
+            // i timer di AppKit smettono di scattare - misurato, il giro del
+            // cursore non partiva nemmeno una volta e nessuna delle leve poteva
+            // funzionare. Un timer GCD ha una coda sua e continua a girare
+            // qualunque cosa faccia il run loop; le chiamate a NSCursor le si
+            // rimanda al thread principale, che e' dove devono avvenire.
+            static dispatch_source_t tick;
+            tick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                          dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+            dispatch_source_set_timer(tick, dispatch_time(DISPATCH_TIME_NOW, 0),
+                                      (uint64_t)(NSEC_PER_SEC / 60), NSEC_PER_SEC / 120);
+            dispatch_source_set_event_handler(tick, ^{
+                dispatch_async(dispatch_get_main_queue(), ^{ showLocalCursor(); });
+            });
+            dispatch_resume(tick);
         }
     });
 }
