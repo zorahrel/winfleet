@@ -606,9 +606,16 @@ pick_slot(){
 }
 
 refresh_vdd(){
-  need_ssh
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \
+  # Prima l'agente: una GET su LAN costa millisecondi, un giro ssh un paio di
+  # decimi - e questo veniva fatto a ogni apertura, prima ancora di lanciare
+  # qualcosa. ssh resta come riserva, per quando l'agente non risponde.
+  curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
     | tr -d '\r' >"$VDD_CACHE.tmp"
+  if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
+    need_ssh
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \
+      | tr -d '\r' >"$VDD_CACHE.tmp"
+  fi
   if [ -s "$VDD_CACHE.tmp" ]; then mv "$VDD_CACHE.tmp" "$VDD_CACHE"; else rm -f "$VDD_CACHE.tmp"; fi
 }
 
@@ -705,8 +712,13 @@ usable_screen(){ # [pid con cui misurare, se ancora non si sa]
 # quindi un task nostro, e Sunshine si limita a trasmettere lo schermo.
 place_app(){ # slot percorso-exe
   need_ssh
+  # L'ordine conta: si SCRIVE il file prima di fermare il task, e si rilancia
+  # subito dopo. Prima si fermava, si scriveva e si aspettava un secondo pieno
+  # perche' il task non ripartisse leggendo il valore vecchio; scrivendo per
+  # primo quella corsa non esiste piu' e il secondo si risparmia su ogni
+  # apertura. Il file e' una riga sola: la scrittura e' atomica abbastanza.
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
-    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; Set-Content 'C:\\winfleet\\app$1.txt' '$2'; Start-Sleep 1; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1 || true
+    "powershell -NoProfile -Command \"Set-Content 'C:\\winfleet\\app$1.txt' '$2'; schtasks /end /tn winfleet-place$1 | Out-Null; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1 || true
 }
 
 # Il puntatore di Windows dentro il video: si spegne mentre trasmettiamo.
@@ -1057,6 +1069,7 @@ cmd_endpoint(){
 }
 
 cmd_open(){
+  trace "cmd_open: inizio"
   need_config
   local app="${1:-Desktop}"
 
@@ -1087,8 +1100,10 @@ cmd_open(){
       die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
     }
     refresh_vdd
+    trace "scelta modalita' fatta"
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
+    trace "eseguibile risolto"
     [ -n "$exe" ] || die "Non so quale eseguibile sia «${app}» sull'host.  winfleet scan"
     build_chrome || true
     ensure_runner "$app" "$exe" || info "senza bundle per «${app}»: niente ritaglio"

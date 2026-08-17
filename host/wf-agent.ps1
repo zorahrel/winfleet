@@ -24,6 +24,7 @@
 
   Endpoint (solo LAN, nessun dato personale, nessuna scrittura fuori da C:\winfleet):
     GET /rect?slot=0&w=1200&h=800   ->  "ok 1200 800"   (misura davvero applicata)
+    GET /vdd                        ->  il vdd.json (monitor virtuali)
     GET /mode?slot=0                ->  "1800x1200"  misura attuale del monitor
     GET /show?slot=0&how=min        ->  "ok"  riduce a icona l'app su Windows
     GET /show?slot=0&how=restore    ->  "ok"  la rimette com'era
@@ -212,6 +213,12 @@ while ($listener.IsListening) {
                 $body = 'ok'
             }
             }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/vdd') {
+            # Il vdd.json cosi' com'e': stessa informazione che si prendeva con un
+            # "type" via ssh, ma su HTTP costa millisecondi invece di due decimi.
+            # Su un'apertura si legge piu' volte, e li' la differenza si sente.
+            try { $body = Get-Content 'C:\winfleet\vdd.json' -Raw -EA Stop } catch { $body = 'no' }
         }
         elseif ($req.Url.AbsolutePath -eq '/mode') {
             # La misura ATTUALE del monitor virtuale di uno slot, per chi deve
