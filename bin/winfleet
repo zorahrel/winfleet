@@ -603,11 +603,16 @@ pick_slot(){ # [nome-app]
     case "$(slot_state "$i")" in *FREE*) ;; *) continue;; esac
     [ -n "$free" ] || free="$i"
     # Uno slot che si chiama GIA' come l'app che stiamo aprendo vale molto piu'
-    # di uno qualsiasi: rinominare un'istanza significa riscrivere la sua config
-    # e RIAVVIARLA, e quel riavvio costa 24 secondi misurati - piu' di tutto il
+    # di uno qualsiasi: rinominare un'istanza significa riscriverne la config e
+    # RIAVVIARLA, e quel riavvio costa 24 secondi misurati - piu' di tutto il
     # resto dell'apertura messo insieme. Riusando quello giusto il rename esce
     # subito ("gia' <nome>") e quei 24 secondi non si pagano affatto.
-    if [ -n "${1:-}" ] && [ "$(slot_name "$i")" = "$1" ]; then named="$i"; fi
+    #
+    # Si prende il PRIMO che corrisponde e ci si ferma: due istanze con lo stesso
+    # nome confondono il client, che tiene gli host per nome e finisce per
+    # chiedere il pairing di un host che credeva di conoscere - visto succedere,
+    # con "has not been paired" su un PC accoppiato da giorni.
+    if [ -z "$named" ] && [ -n "${1:-}" ] && [ "$(slot_name "$i")" = "$1" ]; then named="$i"; fi
   done
   if [ -n "$named" ]; then echo "$named"; return 0; fi
   [ -n "$free" ] && { echo "$free"; return 0; }
@@ -642,8 +647,9 @@ ready_slot(){
 swap_app(){ # slot app
   local slot="$1" app="$2" exe
   exe="${PICKED_EXE:-}"
-  [ -n "$exe" ] || exe="$(app_exe "$app")" || return 1
-  [ -n "$exe" ] || return 1
+  [ -n "$exe" ] || exe="$(app_exe "$app")" || { trace "swap: app_exe fallita per $app"; return 1; }
+  [ -n "$exe" ] || { trace "swap: eseguibile vuoto per $app"; return 1; }
+  trace "swap: slot=$slot exe=$exe"
 
   place_app "$slot" "$exe"
   # La finestra dell'app deve comparire sul monitor: se non arriva, lo slot resta
@@ -653,7 +659,7 @@ swap_app(){ # slot app
     sleep 0.25
     [ -n "$(slot_hwnd_live "$slot")" ] && break
   done
-  [ -n "$(slot_hwnd_live "$slot")" ] || return 1
+  [ -n "$(slot_hwnd_live "$slot")" ] || { trace "swap: nessuna finestra sul monitor dopo l attesa"; return 1; }
 
   sed -i '' "s/^app=.*/app=$app/" "$(slot_file "$slot")" 2>/dev/null || true
   # NIENTE rename qui. Il nome dell'istanza serve al client per TROVARE l'host
@@ -667,9 +673,13 @@ swap_app(){ # slot app
 
 # C'e' una finestra viva sul monitor di questo slot? Lo sa l'agente, che sta nella
 # sessione giusta per vederlo.
+#
+# NON si usa /rect per chiederlo: quell'endpoint RIDIMENSIONA la finestra, e
+# chiamarlo con 0x0 la schiacciava a 200x150 (il minimo che l'agente impone).
+# Un controllo non deve cambiare cio' che osserva.
 slot_hwnd_live(){ # slot
-  curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/rect?slot=$1&w=0&h=0" 2>/dev/null \
-    | grep -q '^ok' && echo yes
+  local hw; hw="$(curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/hwnd?slot=$1" 2>/dev/null)"
+  case "$hw" in ''|no|0) return 1;; *) echo "$hw";; esac
 }
 
 # Come si chiama l'istanza Sunshine di uno slot, cioe' il nome che il client vede
@@ -1152,22 +1162,54 @@ cmd_endpoint(){
 # Si apre una finestra vera (serve un'app perche' Windows disegni qualcosa) ma la
 # si segna come pronta: winfleet la vede occupata - non la offre a nessun altro -
 # e la riusa alla prima richiesta cambiando l'app che ci sta sopra.
+# Tiene una finestra ACCESA e vuota, cosi' la prossima app si apre subito.
+#
+# Il grosso dell'attesa e' lo stream: decoder e primo frame, undici secondi
+# misurati nel log di Moonlight. Pagarli una volta invece che a ogni apertura e'
+# la differenza fra "aspetto" e "e' li'".
+#
+# Questo comando NON torna: il sorvegliante della finestra vive dentro di lui, e
+# staccarlo non funziona (provati "&", subshell, nohup e launchctl submit: la
+# finestra nasceva e spariva subito). Va quindi lanciato da qualcosa fatto per
+# ospitare processi lunghi - l'agente launchd in mac/com.winfleet.ready.plist -
+# oppure a mano in un terminale che si lascia aperto.
 cmd_ready(){
   local existing; existing="$(ready_slot)" || true
   [ -n "$existing" ] && { info "finestra $(( existing + 1 )) già pronta"; return 0; }
-  local app="${1:-Esplora file}"
-  info "preparo una finestra (una volta sola, poi le app si aprono subito)…"
-  PICKED_EXE="${PICKED_EXE:-}" cmd_open "$app" >/dev/null 2>&1 || true
-  local j
-  for j in $(seq 0 $(( SLOTS - 1 ))); do
-    if slot_live "$j" && [ "$(slot_get "$j" app)" = "$app" ]; then
-      sed -i '' "s/^app=.*/app=$READY_MARK/" "$(slot_file "$j")" 2>/dev/null || true
-      ok "finestra $(( j + 1 )) pronta: la prossima app si apre subito"
-      return 0
-    fi
+
+  # Serve uno slot davvero libero: tenere una finestra calda non deve mai rubare
+  # l'ultimo posto a un'app che si vuole aprire adesso.
+  local freeslots=0 i
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
   done
-  bad "non sono riuscito a preparare una finestra"
-  return 1
+  [ "$freeslots" -ge 2 ] || { trace "ready: solo $freeslots slot liberi, non ne occupo uno"; return 1; }
+
+  # L'app con cui si scalda la finestra: si prende dal catalogo dell'host invece
+  # di indovinare un nome. "Esplora file" sembrava sicuro e non c'era: l'agente
+  # falliva a ogni giro con "non so quale eseguibile sia", senza che nessuno lo
+  # leggesse.
+  local app="${1:-}"
+  [ -n "$app" ] || app="$(awk -F'\t' 'NR==1{print $1}' "$HOST_APPS" 2>/dev/null)"
+  [ -n "$app" ] || { bad "catalogo app vuoto: winfleet scan"; return 1; }
+  info "preparo una finestra…  ${c_dim}(resta aperta: la prossima app userà questa)${c_off}"
+
+  # Il marchio lo mette un guardiano che gira in parallelo: da qui in poi
+  # cmd_open non torna piu', perche' e' lui a tenere viva la finestra.
+  # Il guardiano NON usa slot_live: quella funzione, se il pid non c'e' ancora,
+  # considera lo slot morto e lo CANCELLA - un controllo che distrugge cio' che
+  # sta guardando. Qui basta vedere che il file di stato nomini la nostra app e
+  # abbia gia' un pid: da quel momento la finestra e' nata.
+  ( for _ in $(seq 1 120); do
+      sleep 0.5
+      for s in $(seq 0 $(( SLOTS - 1 ))); do
+        if [ "$(slot_get "$s" app)" = "$app" ] && [ -n "$(slot_get "$s" pid)" ]; then
+          sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
+          exit 0
+        fi
+      done
+    done ) &
+  WF_READY_KEEP=1 cmd_open "$app"
 }
 
 cmd_open(){
@@ -1203,9 +1245,27 @@ cmd_open(){
     #
     # Costo di tenerne uno pronto: 5.8% di CPU e 161MB sul Mac, misurati su uno
     # stream fermo. Per questo se ne tiene UNO, non uno per slot.
-    local ready; ready="$(ready_slot)"
+    # Il "|| true" non e' decorativo: ready_slot torna 1 quando nessuno slot e'
+    # pronto, che e' il caso NORMALE, e con set -e quel valore chiudeva l'intero
+    # comando senza aprire niente e senza dire perche'.
+    local ready; ready="$(ready_slot)" || true
     if [ -n "$ready" ] && swap_app "$ready" "$app"; then
       trace "riusato slot pronto $ready"
+      # Se ne prepara subito un'altra, in secondo piano: la finestra calda si
+      # consuma appena la si usa, e senza rigenerarla il vantaggio varrebbe una
+      # volta sola. L'utente intanto ha gia' la sua finestra e non aspetta.
+      #
+      # La finestra calda NON si rigenera da qui.
+      #
+      # Provato in tre modi - "&", subshell con nohup, launchctl submit - e in
+      # tutti la finestra nuova nasceva e spariva subito: il suo sorvegliante deve
+      # vivere quanto la finestra, e qualunque cosa lanciata da questo comando
+      # muore quando il comando finisce. Insistere qui vuol dire consumare uno
+      # slot per lasciarlo vuoto.
+      #
+      # A rigenerarla e' l'agente launchd (mac/com.winfleet.ready.plist), che gira
+      # ogni dieci minuti, esce subito se una finestra calda c'e' gia', e ne
+      # prepara una se manca. Piu' lento a reagire, ma e' l'unico modo che regge.
       return
     fi
 

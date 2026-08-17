@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.winfleet.ready</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/zorahrel/Projects/winfleet/bin/winfleet</string>
+        <string>ready</string>
+    </array>
+    <!-- Non al login: al login il PC di la' puo' essere spento e la rete non
+         ancora su, e si otterrebbe solo un errore. Ogni 10 minuti invece si
+         riprova finche' non riesce, e quando c'e' gia' una finestra calda il
+         comando esce subito senza fare nulla. -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/zorahrel/.config/winfleet/ready.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zorahrel/.config/winfleet/ready.log</string>
+</dict>
+</plist>

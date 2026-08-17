@@ -24,6 +24,7 @@
 
   Endpoint (solo LAN, nessun dato personale, nessuna scrittura fuori da C:\winfleet):
     GET /rect?slot=0&w=1200&h=800   ->  "ok 1200 800"   (misura davvero applicata)
+    GET /hwnd?slot=0                ->  handle della finestra, o "no"
     GET /vdd                        ->  il vdd.json (monitor virtuali)
     GET /mode?slot=0                ->  "1800x1200"  misura attuale del monitor
     GET /show?slot=0&how=min        ->  "ok"  riduce a icona l'app su Windows
@@ -213,6 +214,15 @@ while ($listener.IsListening) {
                 $body = 'ok'
             }
             }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/hwnd') {
+            # L'handle della finestra di questo slot, se ne ha una viva. Serve a
+            # sapere se c'e' qualcosa da mostrare SENZA toccarla: /rect lo direbbe
+            # anche lui, ma ridimensiona, e un controllo non deve cambiare cio'
+            # che osserva.
+            $slot = [int]$req.QueryString['slot']
+            $h = Get-Hwnd $slot
+            if ([A]::IsWindow($h)) { $body = "$($h.ToInt64())" }
         }
         elseif ($req.Url.AbsolutePath -eq '/vdd') {
             # Il vdd.json cosi' com'e': stessa informazione che si prendeva con un
