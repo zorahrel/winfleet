@@ -596,13 +596,30 @@ slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
 # L'host dichiara la finestra occupata solo quando lo stream e' partito, e fra
 # l'apertura e quel momento passano secondi: senza la prenotazione locale due app
 # aperte di fila finiscono sulla stessa finestra.
-pick_slot(){
-  local i
+pick_slot(){ # [nome-app]
+  local i free="" named=""
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
-    case "$(slot_state "$i")" in *FREE*) echo "$i"; return 0;; esac
+    case "$(slot_state "$i")" in *FREE*) ;; *) continue;; esac
+    [ -n "$free" ] || free="$i"
+    # Uno slot che si chiama GIA' come l'app che stiamo aprendo vale molto piu'
+    # di uno qualsiasi: rinominare un'istanza significa riscrivere la sua config
+    # e RIAVVIARLA, e quel riavvio costa 24 secondi misurati - piu' di tutto il
+    # resto dell'apertura messo insieme. Riusando quello giusto il rename esce
+    # subito ("gia' <nome>") e quei 24 secondi non si pagano affatto.
+    if [ -n "${1:-}" ] && [ "$(slot_name "$i")" = "$1" ]; then named="$i"; fi
   done
+  if [ -n "$named" ]; then echo "$named"; return 0; fi
+  [ -n "$free" ] && { echo "$free"; return 0; }
   return 1
+}
+
+# Come si chiama l'istanza Sunshine di uno slot, cioe' il nome che il client vede
+# e con cui la cerca. Lo si chiede all'agente: una GET, non un giro ssh.
+slot_name(){ # slot
+  curl -s --max-time 2 --connect-timeout 1 \
+    "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+    | tr '<' '\n' | awk -F'>' '/^hostname/{print $2; exit}'
 }
 
 refresh_vdd(){
@@ -1094,7 +1111,7 @@ cmd_open(){
     # Un'istanza che non risponde non e' un'istanza occupata: a PC spento il
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
     # esistono.
-    slot="$(pick_slot)" || {
+    slot="$(pick_slot "$app")" || {
       read -r addr _ <<<"$(resolve_endpoint)"
       [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso?  winfleet doctor"
       die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
