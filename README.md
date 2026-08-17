@@ -36,6 +36,7 @@ winfleet search telegram      # find it on the PC and open it
 winfleet open "Microsoft Edge"
 winfleet windows              # what's open, and what's free
 winfleet stop 2               # close window 2 (or `stop` for all)
+winfleet ready                # keep one window warm, so the next app opens at once
 ```
 
 Not a desktop with the app in it, and not a scaled picture of one. The window **is** the

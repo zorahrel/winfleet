@@ -614,6 +614,64 @@ pick_slot(){ # [nome-app]
   return 1
 }
 
+# Lo slot tenuto pronto: uno stream gia' negoziato, in attesa di un'app.
+#
+# Si riconosce dal suo file di stato: e' vivo come gli altri, ma l'app che porta
+# e' la parola "pronto" invece di un nome vero. Cosi' "winfleet windows" continua
+# a vederlo (e a non offrirlo come libero) senza bisogno di un registro a parte.
+READY_MARK="::pronto::"
+
+ready_slot(){
+  local i
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" || continue
+    [ "$(slot_get "$i" app)" = "$READY_MARK" ] && { echo "$i"; return 0; }
+  done
+  return 1
+}
+
+# Mette un'app su uno slot gia' acceso, senza toccare lo stream.
+#
+# Lo stream mostra un MONITOR, non un'app: cambiare l'app che ci sta sopra non
+# richiede di rinegoziare niente, e infatti la finestra nuova compare in pochi
+# secondi invece dei quindici di un'apertura da zero. Misurato prima di scrivere
+# questa funzione.
+#
+# Torna non-zero se qualcosa non torna, e allora si apre nel modo normale: meglio
+# quindici secondi che una finestra che non arriva.
+swap_app(){ # slot app
+  local slot="$1" app="$2" exe
+  exe="${PICKED_EXE:-}"
+  [ -n "$exe" ] || exe="$(app_exe "$app")" || return 1
+  [ -n "$exe" ] || return 1
+
+  place_app "$slot" "$exe"
+  # La finestra dell'app deve comparire sul monitor: se non arriva, lo slot resta
+  # pronto per il prossimo tentativo e si torna alla via lunga.
+  local i
+  for i in $(seq 1 40); do
+    sleep 0.25
+    [ -n "$(slot_hwnd_live "$slot")" ] && break
+  done
+  [ -n "$(slot_hwnd_live "$slot")" ] || return 1
+
+  sed -i '' "s/^app=.*/app=$app/" "$(slot_file "$slot")" 2>/dev/null || true
+  # NIENTE rename qui. Il nome dell'istanza serve al client per TROVARE l'host
+  # quando apre lo stream, e qui lo stream e' gia' connesso: rinominare adesso
+  # costerebbe il riavvio dell'istanza - 24 secondi misurati - per cambiare
+  # un'etichetta che nessuno andra' piu' a leggere finche' questa finestra vive.
+  # Il titolo della finestra sul Mac lo mette comunque il runner dell'app.
+  printf '%s → finestra %d sul Mac  %s(pronta)%s\n' "$app" "$(( slot + 1 ))" "$c_dim" "$c_off"
+  return 0
+}
+
+# C'e' una finestra viva sul monitor di questo slot? Lo sa l'agente, che sta nella
+# sessione giusta per vederlo.
+slot_hwnd_live(){ # slot
+  curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/rect?slot=$1&w=0&h=0" 2>/dev/null \
+    | grep -q '^ok' && echo yes
+}
+
 # Come si chiama l'istanza Sunshine di uno slot, cioe' il nome che il client vede
 # e con cui la cerca. Lo si chiede all'agente: una GET, non un giro ssh.
 slot_name(){ # slot
@@ -1085,6 +1143,33 @@ cmd_endpoint(){
   printf "%s  ${c_dim}(%s)${c_off}\n" "$addr" "$kind"
 }
 
+# Tiene uno slot ACCESO e vuoto, cosi' la prossima app si apre subito.
+#
+# Il grosso dell'attesa e' lo stream: decoder e primo frame, undici secondi
+# misurati. Pagarli una volta all'accensione del Mac, invece che a ogni apertura,
+# e' la differenza fra "aspetto" e "e' li'".
+#
+# Si apre una finestra vera (serve un'app perche' Windows disegni qualcosa) ma la
+# si segna come pronta: winfleet la vede occupata - non la offre a nessun altro -
+# e la riusa alla prima richiesta cambiando l'app che ci sta sopra.
+cmd_ready(){
+  local existing; existing="$(ready_slot)" || true
+  [ -n "$existing" ] && { info "finestra $(( existing + 1 )) già pronta"; return 0; }
+  local app="${1:-Esplora file}"
+  info "preparo una finestra (una volta sola, poi le app si aprono subito)…"
+  PICKED_EXE="${PICKED_EXE:-}" cmd_open "$app" >/dev/null 2>&1 || true
+  local j
+  for j in $(seq 0 $(( SLOTS - 1 ))); do
+    if slot_live "$j" && [ "$(slot_get "$j" app)" = "$app" ]; then
+      sed -i '' "s/^app=.*/app=$READY_MARK/" "$(slot_file "$j")" 2>/dev/null || true
+      ok "finestra $(( j + 1 )) pronta: la prossima app si apre subito"
+      return 0
+    fi
+  done
+  bad "non sono riuscito a preparare una finestra"
+  return 1
+}
+
 cmd_open(){
   trace "cmd_open: inizio"
   need_config
@@ -1107,6 +1192,22 @@ cmd_open(){
         return
       fi
     done
+
+    # Uno slot TENUTO PRONTO: stream gia' negoziato, in attesa di un'app.
+    #
+    # Il grosso dei secondi di un'apertura non e' l'app, e' lo stream: scelta del
+    # decoder e primo frame, misurati 11s nel log di Moonlight. Quel tempo si paga
+    # una volta sola se lo stream resta acceso, e cambiare l'app che sta sul suo
+    # monitor non lo tocca affatto: la finestra nuova compare in pochi secondi
+    # senza rinegoziare niente. Verificato prima di scrivere questo codice.
+    #
+    # Costo di tenerne uno pronto: 5.8% di CPU e 161MB sul Mac, misurati su uno
+    # stream fermo. Per questo se ne tiene UNO, non uno per slot.
+    local ready; ready="$(ready_slot)"
+    if [ -n "$ready" ] && swap_app "$ready" "$app"; then
+      trace "riusato slot pronto $ready"
+      return
+    fi
 
     # Un'istanza che non risponde non e' un'istanza occupata: a PC spento il
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
@@ -2013,6 +2114,7 @@ CFG
 # ---------------------------------------------------------------------------
 case "${1:-}" in
   open)     shift; cmd_open "$@";;
+  ready)    shift; cmd_ready "$@";;
   windows)  cmd_windows;;
   search)   shift; cmd_search "$@";;
   scan)     cmd_scan;;
