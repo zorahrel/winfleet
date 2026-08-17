@@ -98,4 +98,16 @@ else
   fail=1
 fi
 
+# --- 4. slot bloccati -----------------------------------------------------
+# Una sessione Sunshine appesa lascia lo slot "occupato" senza che ci sia una
+# finestra: da li' in poi niente finestra calda e le aperture tornano lente.
+# Qui si verifica che vengano liberati SOLO gli slot bloccati che non sono
+# nostri: chiudere una sessione viva spegnerebbe l'app di qualcuno.
+if /opt/homebrew/bin/bash mac/tests/reap-stuck-slots.sh 2>/dev/null | grep -q PASS; then
+  say "ok   slot bloccati: libera quelli appesi, non tocca quelli in uso"
+else
+  say "NO   slot bloccati: la selezione non e' corretta"
+  fail=1
+fi
+
 exit "$fail"

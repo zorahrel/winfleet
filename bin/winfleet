@@ -619,6 +619,34 @@ pick_slot(){ # [nome-app]
   return 1
 }
 
+# Slot che l'host dichiara occupati ma che nessuno sta usando davvero.
+#
+# Sunshine considera un'istanza "in uso" finche' un client e' agganciato: se
+# quel client muore male la sessione resta appesa, e da qui in poi quello slot
+# e' perso - niente finestre nuove, niente finestra calda, e le aperture tornano
+# a costare quindici secondi senza che nulla lo spieghi.
+#
+# Si chiude la sessione lato host solo per gli slot che NOI non stiamo usando:
+# se un nostro sorvegliante e' vivo su quello slot, la finestra e' di qualcuno e
+# non si tocca.
+reap_stuck_slots(){
+  local i freed=0
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" && continue
+    case "$(slot_state "$i")" in
+      *BUSY*)
+        trace "slot $i occupato ma non nostro: chiudo la sessione appesa"
+        ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+          "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-inst-ctl.ps1 -Slot $i -Action restart" \
+          >/dev/null 2>&1 || true
+        freed=$(( freed + 1 ))
+        ;;
+    esac
+  done
+  [ "$freed" -gt 0 ] && sleep 6
+  return 0
+}
+
 # Lo slot tenuto pronto: uno stream gia' negoziato, in attesa di un'app.
 #
 # Si riconosce dal suo file di stato: e' vivo come gli altri, ma l'app che porta
@@ -1234,6 +1262,18 @@ cmd_ready(){
   done
   # Se ne prepara una solo se resta comunque uno slot libero per l'utente: una
   # finestra calda non deve mai essere il motivo per cui "sono tutte occupate".
+  # Uno slot puo' risultare OCCUPATO senza che ci sia nessuna finestra: succede
+  # quando una sessione Sunshine resta appesa (client ucciso male, rete caduta
+  # a meta'). Da fuori il sintomo e' subdolo - le aperture tornano lente perche'
+  # non c'e' piu' posto per una finestra calda - e nessuno collega la cosa.
+  # Prima di rinunciare si prova a liberarli.
+  if [ "$freeslots" -lt 2 ]; then
+    reap_stuck_slots
+    freeslots=0
+    for i in $(seq 0 $(( SLOTS - 1 ))); do
+      slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
+    done
+  fi
   [ "$freeslots" -ge 2 ] || { trace "ready: solo $freeslots slot liberi, non ne occupo uno"; return 1; }
 
   # L'app con cui si scalda la finestra deve APRIRSI SEMPRE, e in fretta.
