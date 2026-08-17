@@ -243,10 +243,10 @@ index 2852d43..bd29655 100644
  
          [m_VideoVertexBuffer release];
 diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
-index 85169d1..77527f7 100644
+index 85169d1..3c7d7e7 100644
 --- a/app/streaming/input/mouse.cpp
 +++ b/app/streaming/input/mouse.cpp
-@@ -136,7 +136,26 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+@@ -136,11 +136,42 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
              }
          }
          if (mouseInVideoRegion || m_MouseWasInVideoRegion || m_PendingMouseButtonsAllUpOnVideoRegionLeave) {
@@ -274,3 +274,19 @@ index 85169d1..77527f7 100644
          }
  
          // Adjust the cursor visibility if applicable
+         if (mouseInVideoRegion ^ m_MouseWasInVideoRegion) {
++            // WinFleet: dentro il video il puntatore deve restare quello del MAC.
++            //
++            // Il cursore remoto lo si spegne gia' su Windows (cursori di sistema
++            // vuoti), quindi nascondere anche quello locale lascia la finestra
++            // senza nessun puntatore. Rimetterlo da fuori, a 60 Hz, funziona ma si
++            // vede: e' una gara con questa riga, e la gara si legge come flicker.
++            // Qui la gara non nasce proprio.
++            SDL_Rect wfDummy;
++            if (StreamUtils::getWinFleetCrop(&wfDummy)) {
++                SDL_ShowCursor(SDL_ENABLE);
++            }
++            else
+             SDL_ShowCursor((mouseInVideoRegion && m_MouseCursorCapturedVisibilityState == SDL_DISABLE) ? SDL_DISABLE : SDL_ENABLE);
+             if (!mouseInVideoRegion && buttonState != 0) {
+                 // If we still have a button pressed on leave, wait for that to come up

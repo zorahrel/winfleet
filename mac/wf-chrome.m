@@ -488,11 +488,16 @@ static void wf_chrome_init(void) {
             // funzionare. Un timer GCD ha una coda sua e continua a girare
             // qualunque cosa faccia il run loop; le chiamate a NSCursor le si
             // rimanda al thread principale, che e' dove devono avvenire.
+            //
+            // 10 volte al secondo, non 60: da quando il fork non nasconde piu' il
+            // cursore dentro il video (fork/crop.patch), questo giro non deve piu'
+            // vincere una gara - fa solo da rete se qualcosa lo nasconde
+            // comunque. A 60 Hz la gara si vedeva, ed era il flicker.
             static dispatch_source_t tick;
             tick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                           dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
             dispatch_source_set_timer(tick, dispatch_time(DISPATCH_TIME_NOW, 0),
-                                      (uint64_t)(NSEC_PER_SEC / 60), NSEC_PER_SEC / 120);
+                                      (uint64_t)(NSEC_PER_SEC / 10), NSEC_PER_SEC / 20);
             dispatch_source_set_event_handler(tick, ^{
                 dispatch_async(dispatch_get_main_queue(), ^{ showLocalCursor(); });
             });
