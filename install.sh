@@ -30,6 +30,25 @@ case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "  ! Aggiungi al PATH:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
+# L'agente che tiene una finestra sempre calda. Senza, la prima app di ogni
+# sessione paga i quindici secondi di negoziazione dello stream; con, ne paga
+# due. Sta qui e non nelle istruzioni perche' e' parte del prodotto: una cosa
+# che va ricordata a mano, prima o poi non viene fatta.
+if [ -f mac/com.winfleet.ready.plist ]; then
+  mkdir -p "$HOME/Library/LaunchAgents"
+  AGENT="$HOME/Library/LaunchAgents/com.winfleet.ready.plist"
+  # Il plist nel repo porta i percorsi di chi l'ha scritto: qui si riscrivono
+  # con quelli di questa macchina, altrimenti l'agente punta a una cartella che
+  # non esiste e fallisce in silenzio a ogni giro.
+  sed -e "s|<string>/Users/[^<]*/bin/winfleet</string>|<string>$BIN_DIR/winfleet</string>|" \
+      -e "s|/Users/[^/]*/.config/winfleet|$HOME/.config/winfleet|g" \
+      mac/com.winfleet.ready.plist > "$AGENT.tmp" && mv "$AGENT.tmp" "$AGENT"
+  launchctl unload "$AGENT" 2>/dev/null || true
+  if launchctl load "$AGENT" 2>/dev/null; then
+    echo "  ✓ finestra sempre pronta (le app si aprono in ~2s invece di 15)"
+  fi
+fi
+
 echo
 echo "Prossimi passi:"
 echo "  1) Sul Mac:                 winfleet setup   (indirizzi, nome mDNS, SSH)"
