@@ -495,6 +495,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     # puo' fare macOS davvero. Da qui in poi il dato e' in config.
     usable_screen "$pid" >/dev/null
     hide_gui "$pid"
+    cursor_hide
     if [ -z "$owned" ]; then
       # Senza libreria non c'e' modo di sapere chi ha ridimensionato, quindi si tiene
       # la misura per qualche secondo: tanto basta ad annullare la correzione all'80%
@@ -526,6 +527,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     refresh_vdd
   done
   place_stop "$slot"
+  cursor_restore
   slot_forget "$slot"
 }
 
@@ -680,6 +682,38 @@ place_app(){ # slot percorso-exe
   need_ssh
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"schtasks /end /tn winfleet-place$1 | Out-Null; Set-Content 'C:\\winfleet\\app$1.txt' '$2'; Start-Sleep 1; schtasks /run /tn winfleet-place$1 | Out-Null\"" >/dev/null 2>&1 || true
+}
+
+# Il puntatore di Windows dentro il video: si spegne mentre trasmettiamo.
+#
+# Sunshine lo disegna nel frame, quindi arriva sempre un viaggio di rete dopo la
+# mano; sul Mac ne comparirebbero due che si rincorrono. Spegnerlo da Sunshine non
+# si puo' (questa build non ha capture_cursor), ma si puo' rendere invisibile alla
+# fonte: cursori di sistema vuoti su Windows, e sul Mac resta solo il suo, a zero
+# ritardo.
+#
+# Passa da un'attivita' pianificata e non da ssh: SetSystemCursor vuole un desktop
+# interattivo e da ssh (sessione 0) fallisce con l'errore 1459 - misurato.
+#
+# Mai fatale: se non funziona si vede una freccia di troppo, non si perde una
+# finestra.
+# "C'e' almeno una finestra aperta?" in una parola, per chi deve solo decidere.
+slot_any_live(){
+  local i
+  for i in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do slot_live "$i" && { echo yes; return; }; done
+  echo no
+}
+
+cursor_hide(){
+  [ "${CURSOR:-hidden}" = "native" ] && return 0
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+    "schtasks /run /tn winfleet-cursor-hide" >/dev/null 2>&1 || true
+}
+
+cursor_restore(){
+  [ -n "${HOST_SSH:-}" ] || return 0
+  ( ssh -o BatchMode=yes -o ConnectTimeout=5 "$HOST_SSH" \
+      "schtasks /run /tn winfleet-cursor-restore" >/dev/null 2>&1 || true ) &
 }
 
 place_stop(){ # slot
@@ -1223,6 +1257,10 @@ close_slot(){ # slot
   kill_if_sane "$sup"
   kill_if_sane "$pid"
   place_stop "$1"
+  # Il cursore di Windows torna visibile quando non trasmettiamo piu'. Qui e non
+  # solo in fondo al supervisore: "stop" uccide il supervisore, quindi quel ramo
+  # non lo raggiunge - misurato, il cursore restava invisibile sul PC.
+  cursor_restore
   slot_forget "$1"
   ok "finestra $(( $1 + 1 )) chiusa${app:+  ${c_dim}($app)${c_off}}"
 }
@@ -1810,6 +1848,13 @@ cmd_doctor(){
         ok "Moonlight raggiunge l'host in LAN"
       fi
     fi
+  fi
+  # Se nessuna finestra e' aperta, il cursore su Windows deve essere visibile: un
+  # winfleet ucciso male (o un PC riavviato a meta') lo lascerebbe invisibile, e
+  # da li' e' difficile risalire alla causa. Il doctor lo rimette e basta.
+  if [ "$(slot_any_live)" = no ] && [ -n "${HOST_SSH:-}" ]; then
+    cursor_restore
+    info "cursore di Windows: rimesso visibile (nessuna finestra aperta)"
   fi
   if [ "$CHROME" = native ]; then
     info "barra del titolo di macOS: mostrata (CHROME=native)"

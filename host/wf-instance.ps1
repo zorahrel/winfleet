@@ -122,6 +122,19 @@ Register-ScheduledTask -TaskName "winfleet-sun$Slot" -Action $action -Principal 
 
 # Sunshine names screens with a device id of its own making, printed at startup:
 # run it once to read ours off the log.
+# I due task del cursore: uno solo per tutta la flotta, non uno per slot.
+#
+# Vivono qui perche' qui c'e' gia' il principal giusto: SetSystemCursor vuole un
+# desktop interattivo, e lanciata da ssh (sessione 0) fallisce con l'errore 1459.
+# Un'attivita' pianificata "Interactive" gira invece nella sessione dello schermo,
+# che e' l'unica in cui quel cambiamento ha senso.
+foreach ($c in @('hide','restore')) {
+    $ca = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action $c"
+    Register-ScheduledTask -TaskName "winfleet-cursor-$c" -Action $ca -Principal $principal `
+        -Settings $settings -Force -EA SilentlyContinue | Out-Null
+}
+
 schtasks /run /tn "winfleet-sun$Slot" | Out-Null
 Start-Sleep 14
 & 'C:\winfleet\wf-inst-ctl.ps1' -Slot $Slot -Action stop | Out-Null
