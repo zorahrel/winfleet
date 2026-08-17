@@ -60,12 +60,22 @@ if (-not $seen) { $out += "sunshine_name = $clean" }
 
 # The client only picks up the new name from a serverinfo reply, so hand back a
 # started instance and not just a rewritten file.
+# .Content di Invoke-WebRequest con -UseBasicParsing e' un Byte[], non una
+# stringa: confrontarlo con una espressione regolare NON solleva un errore, non
+# corrisponde mai e basta. Il ciclo quindi esauriva sempre tutti i tentativi, e
+# ogni rinomina pagava quattordici secondi di attesa inutile - misurati - su una
+# istanza che rispondeva gia' dopo un secondo. Era il costo dominante di ogni
+# apertura a freddo, ed e' il genere di guasto che non lascia traccia: nessun
+# errore, solo lentezza.
 $port = 48089 + ($Slot * 100)
-for ($i = 0; $i -lt 40; $i++) {
+$ok = $false
+for ($i = 0; $i -lt 60; $i++) {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/serverinfo?uniqueid=winfleet" -UseBasicParsing -TimeoutSec 2
-        if ($r.Content -match '<hostname>([^<]*)</hostname>' -and $Matches[1] -eq $clean) { break }
+        $txt = if ($r.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($r.Content) } else { [string]$r.Content }
+        if ($txt -match '<hostname>([^<]*)</hostname>' -and $Matches[1] -eq $clean) { $ok = $true; break }
     } catch { }
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 200
 }
+if (-not $ok) { Write-Host "slot $Slot : il nome non risulta ancora applicato" }
 Write-Host "slot $Slot : '$clean'"

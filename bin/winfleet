@@ -714,17 +714,23 @@ swap_app(){ # slot app
   local before_hwnd; before_hwnd="$(slot_hwnd_live "$slot" || true)"
 
   place_app "$slot" "$exe"
+  trace "swap: comando place inviato"
   # La finestra dell'app deve comparire sul monitor: se non arriva, lo slot resta
   # pronto per il prossimo tentativo e si torna alla via lunga.
+  # Si guarda spesso: la domanda all'agente costa 128 ms misurati, e con una
+  # pausa di un quarto di secondo in mezzo si controllava ogni 0.4s - cioe' fino
+  # a quattro decimi buttati dopo che la finestra era gia' li'. Su un'apertura
+  # che ne dura quattro, e' un decimo del totale regalato all'attesa.
   local i now
-  for i in $(seq 1 40); do
-    sleep 0.25
+  for i in $(seq 1 120); do
     now="$(slot_hwnd_live "$slot" || true)"
     [ -n "$now" ] && [ "$now" != "$before_hwnd" ] && break
+    sleep 0.08
   done
   now="$(slot_hwnd_live "$slot" || true)"
   [ -n "$now" ] || { trace "swap: nessuna finestra sul monitor dopo l attesa"; return 1; }
   [ "$now" != "$before_hwnd" ] || { trace "swap: la finestra e ancora quella di prima ($now)"; return 1; }
+  trace "swap: finestra nuova vista"
 
   # Due slot non possono mostrare la STESSA finestra: se succede, uno dei due sta
   # guardando lo schermo di un altro e il Mac mostrerebbe l'app sbagliata. Visto
@@ -1354,17 +1360,26 @@ cmd_ready(){
   # falliva a ogni giro e la finestra calda non c'era mai. Si prova quindi una
   # lista di app di sistema, in ordine, e ci si ferma alla prima presente nel
   # catalogo; solo se nessuna c'e' si ripiega sulla prima voce.
+  #
+  # Ma di app ne serve una DIVERSA per ogni finestra calda, e questo non e' un
+  # dettaglio: le app di sistema sono quasi tutte a istanza singola, quindi il
+  # secondo slot che lancia il Blocco note chiude quello del primo per aprire il
+  # proprio. Il risultato, misurato, e' che i preparatori si distruggono a
+  # vicenda: tre slot marcati "pronto" e una sola finestra viva.
   local app="${1:-}" cand
+  WARM_APPS=()
+  for cand in "Blocco note" "Notepad" "Calcolatrice" "Calculator" "Memo" "Sticky Notes" "Fotocamera" "Camera"; do
+    if awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null; then
+      WARM_APPS+=("$cand")
+    fi
+  done
   if [ -z "$app" ]; then
-    for cand in "Blocco note" "Notepad" "Calcolatrice" "Calculator" "Esplora file" "File Explorer"; do
-      if awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null; then
-        app="$cand"; break
-      fi
-    done
+    app="${WARM_APPS[0]:-}"
   fi
   [ -n "$app" ] || app="$(awk -F'\t' 'NR==1{print $1}' "$HOST_APPS" 2>/dev/null)"
   [ -n "$app" ] || { bad "catalogo app vuoto: winfleet scan"; return 1; }
-  trace "ready: scaldo con $app"
+  [ "${#WARM_APPS[@]}" -gt 0 ] || WARM_APPS=("$app")
+  trace "ready: scaldo con $app  (disponibili: ${WARM_APPS[*]})"
   info "preparo una finestra…  ${c_dim}(resta aperta: la prossima app userà questa)${c_off}"
 
   # Il marchio lo mette un guardiano che gira in parallelo: da qui in poi
@@ -1384,10 +1399,23 @@ cmd_ready(){
         # proprio la piu' probabile - e marcare quella significa regalarla alla
         # prossima apertura: l'utente vedeva la sua finestra trasformarsi
         # nell'app di qualcun altro.
+        #
+        # Il NOME dell'app non si guarda piu': ogni finestra calda ne usa una
+        # diversa (sono a istanza singola, due slot con la stessa app si
+        # chiuderebbero a vicenda), quindi confrontare con una sola avrebbe
+        # lasciato le altre non marcate - vive ma invisibili a chi le cerca.
+        # warm=1 dice gia' tutto: quella finestra l'ho aperta io per questo.
         [ "$(slot_get "$s" warm)" = "1" ] || continue
-        if [ "$(slot_get "$s" app)" = "$app" ] && [ -n "$(slot_get "$s" pid)" ]; then
-          sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
-        fi
+        [ -n "$(slot_get "$s" pid)" ] || continue
+        [ "$(slot_get "$s" app)" != "$READY_MARK" ] || continue
+        # E soprattutto: la finestra deve ESISTERE su Windows. Il pid dice solo
+        # che lo stream e' partito; se l'app non ha aperto niente (succede alle
+        # app a istanza singola quando un altro slot le ha appena chiuse) si
+        # marcherebbe "pronto" uno schermo vuoto, e la prossima apertura ci
+        # finirebbe sopra credendo di risparmiare tempo. E' successo: tre slot
+        # marcati pronti, una sola finestra viva.
+        [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ] || continue
+        sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
       done
     done ) &
   WF_MARKER_PID=$!
@@ -1413,13 +1441,33 @@ cmd_ready(){
   # terzo click la trovasse ancora vuota. In parallelo il tempo e' quello di una
   # sola. Gli slot sono gia' prenotati uno per uno da slot_save, quindi due
   # aperture insieme non si contendono lo stesso posto.
-  while [ "$(ready_count)" -lt "$want" ]; do
+  # launched conta le finestre gia' AVVIATE, compresa la prima (preparata sopra,
+  # fuori da questo ciclo). Ci si ferma quando sono tante quante ne servono.
+  #
+  # Non si usa ready_count: una finestra impiega una ventina di secondi a
+  # risultare pronta, quindi contando i soli risultati il ciclo ne lanciava una
+  # in piu' a ogni giro. Contarle da avviate e' l'unico numero gia' vero adesso.
+  local widx=1 launched=1
+  while [ "$launched" -lt "$want" ]; do
     freeslots=0
     for i in $(seq 0 $(( SLOTS - 1 ))); do
       slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
     done
     [ "$freeslots" -ge 2 ] || break
-    WF_READY_KEEP=1 cmd_open "$app" &
+    # Un'app DIVERSA da quelle gia' usate: sono quasi tutte a istanza singola, e
+    # lanciare di nuovo la stessa chiude la finestra calda appena preparata per
+    # aprirne una identica altrove. Si guadagnava uno slot e se ne perdeva uno.
+    local nxt="${WARM_APPS[$widx]:-}"
+    [ -n "$nxt" ] || { trace "ready: finite le app per scaldare (ne servirebbe un'altra diversa)"; break; }
+    widx=$(( widx + 1 ))
+    trace "ready: altra finestra con $nxt"
+    WF_READY_KEEP=1 cmd_open "$nxt" &
+    # Si contano anche quelle LANCIATE, non solo quelle gia' pronte: preparare
+    # una finestra richiede una ventina di secondi, e ready_count le vede solo
+    # alla fine. Contando i soli risultati il ciclo ne lanciava una in piu' a
+    # ogni giro - tre finestre calde invece di due, cioe' uno slot in meno per
+    # l'utente e uno stream di troppo acceso.
+    launched=$(( launched + 1 ))
     sleep 3   # respiro: due stream avviati nello stesso istante litigano sul monitor
   done
   wait
@@ -1465,7 +1513,15 @@ cmd_open(){
     # click sull'icona nel Dock lascia un secondo sorvegliante che si contende lo
     # stesso schermo: le due sessioni si buttano giu' a vicenda e da fuori sembra che
     # la finestra crashi in continuazione.
+    # Non vale per chi sta RIFORNENDO: lui usa il Blocco note solo come pretesto
+    # per accendere uno stream, e se l'utente ne ha uno aperto davvero questo
+    # ramo gli faceva dire "e' gia' aperta" e tornare senza preparare niente.
+    # Nel log: dieci giri di fila cosi', e la scorta restava a zero proprio
+    # mentre serviva. Lui una finestra la deve creare, non trovarne una.
+    # (Un "[ test ] && break" dentro il ciclo NON va: con set -e, quando il test
+    # e' falso l'intera riga vale 1 e il comando muore in silenzio.)
     local j
+    if [ "${WF_READY_KEEP:-0}" != "1" ]; then
     for j in $(seq 0 $(( SLOTS - 1 ))); do
       if slot_live "$j" && [ "$(slot_get "$j" app)" = "$app" ]; then
         raise_window "$(slot_get "$j" pid)"
@@ -1474,6 +1530,7 @@ cmd_open(){
         return
       fi
     done
+    fi
 
     # Uno slot TENUTO PRONTO: stream gia' negoziato, in attesa di un'app.
     #

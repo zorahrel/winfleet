@@ -150,4 +150,16 @@ else
   fail=1
 fi
 
+# --- 8. finestre calde ------------------------------------------------------
+# Due finestre calde non possono usare la stessa app: sono a istanza singola e
+# la seconda chiuderebbe la prima. E si contano da AVVIATE, non da pronte, o se
+# ne prepara una di troppo a ogni giro.
+if /opt/homebrew/bin/bash mac/tests/warm-windows.sh > "$TMP/warm.out" 2>&1; then
+  say "ok   finestre calde: app diverse, quantita' giusta, nessuna marcata a vuoto"
+else
+  say "NO   finestre calde:"
+  sed 's/^/       /' "$TMP/warm.out"
+  fail=1
+fi
+
 exit "$fail"
