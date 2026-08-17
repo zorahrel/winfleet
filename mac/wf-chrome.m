@@ -398,10 +398,32 @@ static void watchTitlebarClicks(void) {
             // La striscia in cima e' del Mac, punto. Qui il drag lo fa Cocoa
             // (performWindowDragWithEvent: segue il mouse a 120 Hz e conosce snap,
             // Spaces e schermi) e l'evento non arriva a SDL.
+            // La striscia in cima e' del Mac, ma non a scapito dell'app.
+            //
+            // Prendersi ogni click su quei 32 punti costava caro: in Arc lassu'
+            // c'e' la barra degli indirizzi, e diventava impossibile cliccarla -
+            // il click spariva dentro un trascinamento che non avevi chiesto.
+            //
+            // Si decide invece dal MOVIMENTO: si guarda se il mouse si sposta
+            // davvero entro un quarto di secondo. Se si muove e' un
+            // trascinamento e lo prende Cocoa; se resta fermo era un click, e lo
+            // si lascia proseguire verso l'app come qualsiasi altro.
             if (p.y > w.frame.size.height - titlebarHeight(w)) {
-                gLastTitlebarDrag = YES;   // per l'autoverifica: chi ha preso l'evento
-                [w performWindowDragWithEvent:e];
-                return nil;
+                NSPoint start = NSEvent.mouseLocation;
+                NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.25];
+                BOOL moved = NO;
+                while ([until timeIntervalSinceNow] > 0) {
+                    if (!(NSEvent.pressedMouseButtons & 1)) break;   // rilasciato: era un click
+                    NSPoint now = NSEvent.mouseLocation;
+                    if (fabs(now.x - start.x) > 3 || fabs(now.y - start.y) > 3) { moved = YES; break; }
+                    [NSThread sleepForTimeInterval:0.008];
+                }
+                if (moved) {
+                    gLastTitlebarDrag = YES;   // per l'autoverifica: chi ha preso l'evento
+                    [w performWindowDragWithEvent:e];
+                    return nil;
+                }
+                // Fermo: era un click dell'utente sull'app. Passa.
             }
             return e;
         }

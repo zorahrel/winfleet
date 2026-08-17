@@ -1040,6 +1040,10 @@ ensure_runner(){ # nome exe
 # e l'iniezione verrebbe (giustamente) rifiutata.
 CHROME="${CHROME:-hidden}"   # "native" per riavere la barra del Mac
 CHROME_LIB="$CONFIG_DIR/wf-chrome.dylib"
+# Lo script che disegna il distintivo di Windows sulle icone. Si cerca accanto al
+# comando (uso dal repo) e poi in ~/.config (installazione via install.sh).
+WF_BADGE="${WF_BADGE:-$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/mac/wf-badge.py}"
+[ -f "$WF_BADGE" ] || WF_BADGE="$CONFIG_DIR/wf-badge.py"
 
 # Si compila di lato e si sposta a posto solo alla fine: dyld ammazza il processo
 # senza appello se la libreria da iniettare non e' caricabile, e compilare sul posto
@@ -1593,6 +1597,16 @@ build_icns(){ # nome exe destinazione.icns
     "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-icon.ps1 -PathB64 $b64" \
     2>/dev/null | tr -d '\r\n' | base64 -d >"$tmp/src.png" 2>/dev/null || true
   [ -s "$tmp/src.png" ] || { rm -rf "$tmp"; return 1; }
+
+  # Il distintivo di Windows in basso a destra: nel Dock queste finestre sono
+  # indistinguibili dalle app native del Mac - ed e' il punto del progetto - ma
+  # quando il PC e' spento o la rete cade la differenza conta, e senza un segno
+  # non c'e' modo di capirlo guardando l'icona. Se lo script non c'e' o Pillow
+  # manca si prosegue con l'icona nuda: un badge mancante e' un peccato, un'app
+  # senza icona no.
+  if [ -f "$WF_BADGE" ] && python3 "$WF_BADGE" "$tmp/src.png" "$tmp/badged.png" 2>/dev/null; then
+    mv "$tmp/badged.png" "$tmp/src.png"
+  fi
 
   mkdir -p "$tmp/i.iconset"
   local s

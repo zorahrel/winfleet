@@ -21,6 +21,32 @@ index 377b533..0b44cf2 100644
          // Avoid the push transition animation
          var component = Qt.createComponent("QuitSegue.qml")
          stackView.replace(stackView.currentItem, component.createObject(stackView, {"appName": appName}), StackView.Immediate)
+diff --git a/app/gui/main.qml b/app/gui/main.qml
+index 84e7d9d..a34af6a 100644
+--- a/app/gui/main.qml
++++ b/app/gui/main.qml
+@@ -35,8 +35,19 @@ ApplicationWindow {
+     }
+ 
+     Component.onCompleted: {
+-        // Show the window according to the user's preferences
+-        if (SystemProperties.hasDesktopEnvironment) {
++        // WinFleet: la finestra Qt non si mostra MAI.
++        //
++        // In un client normale questa finestra e' l'interfaccia: ci vedi l'elenco
++        // dei PC, e durante l'avvio compare "Starting Desktop...". In WinFleet
++        // l'interfaccia non serve - la finestra dello stream E' l'app - e quella
++        // schermata e' solo un rettangolo grigio che appare per cinque secondi al
++        // posto dell'app che hai chiesto, e ricompare come "Quitting Desktop..."
++        // quando la chiudi. Nascondere solo la seconda non bastava: la prima
++        // resta, ed e' quella che si vede piu' a lungo.
++        if (winFleetQuietQuit) {
++            // niente: lo stream aprira' la sua finestra da solo
++        }
++        else if (SystemProperties.hasDesktopEnvironment) {
+             if (StreamingPreferences.uiDisplayMode == StreamingPreferences.UI_MAXIMIZED) {
+                 window.showMaximized()
+             }
 diff --git a/app/main.cpp b/app/main.cpp
 index c0be000..4cf6662 100644
 --- a/app/main.cpp

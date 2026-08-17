@@ -27,7 +27,11 @@ command -v pkg-config >/dev/null || { echo "Serve pkg-config:  brew install pkgc
 
 echo "==> sorgenti in $SRC"
 if [ -d "$SRC/.git" ]; then
-  git -C "$SRC" checkout -- app/streaming 2>/dev/null || true
+  # Si ripuliscono TUTTI i file toccati dalla patch, non solo app/streaming: da
+  # quando la patch tocca anche app/gui e app/main.cpp, lasciarli modificati
+  # faceva fallire il secondo build con "la patch non si applica piu'", e il
+  # messaggio mandava a cercare un cambiamento a monte che non c'era.
+  git -C "$SRC" checkout -- app 2>/dev/null || true
   git -C "$SRC" pull --ff-only >/dev/null 2>&1 || true
 else
   mkdir -p "$(dirname "$SRC")"
