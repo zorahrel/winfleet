@@ -63,11 +63,48 @@ prova(){ # descrizione atteso slot prima dopo [altro_slot altro_handle]
   fi
 }
 
+# L'app chiesta e' gia' quella sulla finestra: niente da scambiare, si accetta
+# subito. Prima falliva - Windows non apre una seconda istanza di un'app a
+# istanza singola, quindi nessuna finestra nuova, quindi "scambio non riuscito" -
+# e dal Dock il click sull'icona non faceva proprio nulla. Capita con l'app usata
+# per scaldare le finestre, che e' anche fra le piu' aperte (il Blocco note).
+gia_sopra(){ # simula il ramo "e' gia' li'": real == app chiesta e finestra viva
+  local real="$1" chiesta="$2" hwnd="$3"
+  [ "$real" = "$chiesta" ] && [ -n "$hwnd" ]
+}
+if gia_sopra "Blocco note" "Blocco note" 555; then
+  echo "  ok   stessa app gia' sulla finestra: accettata senza scambiare"
+else
+  echo "  NO   stessa app gia' sulla finestra: non riconosciuta"
+  fail=1
+fi
+if gia_sopra "Blocco note" "Arc" 555; then
+  echo "  NO   app diversa: non doveva essere accettata senza scambio"
+  fail=1
+else
+  echo "  ok   app diversa: si passa dallo scambio vero"
+fi
+if gia_sopra "Blocco note" "Blocco note" ""; then
+  echo "  NO   senza finestra viva non si puo' accettare"
+  fail=1
+else
+  echo "  ok   stessa app ma nessuna finestra: non si accetta"
+fi
+
 prova "finestra nuova: lo scambio vale"            riuscito 2 111 222
 prova "finestra invariata: si torna alla via lunga" fallito  2 111 111
 prova "nessuna finestra: fallisce"                  fallito  2 111 ""
 prova "finestra di un altro slot: fallisce"         fallito  2 111 999 3 999
 prova "da slot vuoto una finestra nuova va bene"    riuscito 1 ""  555
+
+# I due controlli sopra provano la LOGICA; questo prova che sia davvero nel
+# codice - una logica giusta che nessuno chiama non serve a niente.
+if grep -q 'slot_get "\$slot" real' bin/winfleet && grep -q 'real=%s' bin/winfleet; then
+  echo "  ok   il codice ricorda l'app sulla finestra e la controlla"
+else
+  echo "  NO   manca il campo real o il suo controllo in swap_app"
+  fail=1
+fi
 
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"

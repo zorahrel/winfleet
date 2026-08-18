@@ -808,6 +808,21 @@ swap_app(){ # slot app
   [ -n "$exe" ] || { trace "swap: eseguibile vuoto per $app"; return 1; }
   trace "swap: slot=$slot exe=$exe"
 
+  # L'app chiesta e' GIA' quella che sta sulla finestra calda? Allora non c'e'
+  # niente da scambiare: la finestra giusta e' gia' davanti, basta intestarle lo
+  # slot. Succede quando si apre l'app usata per scaldare - il Blocco note, che
+  # e' anche fra le piu' aperte - e prima falliva: si chiedeva a Windows di
+  # aprire un'app a istanza singola gia' aperta, non nasceva nessuna finestra
+  # nuova, e il controllo "la finestra deve essere diversa" faceva fallire
+  # l'apertura in silenzio. Dal Dock: click, e non succede niente.
+  if [ "$(slot_get "$slot" real)" = "$app" ] && [ -n "$(slot_hwnd_live "$slot" 2>/dev/null || true)" ]; then
+    trace "swap: «${app}» e' gia' sulla finestra, niente da scambiare"
+    sed -i '' "s/^app=.*/app=$app/" "$(slot_file "$slot")" 2>/dev/null || true
+    sed -i '' "s/^warm=.*/warm=0/" "$(slot_file "$slot")" 2>/dev/null || true
+    printf '%s → finestra %d sul Mac  %s(pronta)%s\n' "$app" "$(( slot + 1 ))" "$c_dim" "$c_off"
+    return 0
+  fi
+
   # L'handle di PRIMA: la finestra nuova deve essere un'altra. Senza questo
   # confronto bastava che sul monitor ci fosse una finestra qualsiasi - e su una
   # finestra calda ce n'e' sempre una - per dichiarare riuscito uno scambio che
@@ -850,6 +865,13 @@ swap_app(){ # slot app
   # il guardiano del rifornitore non deve poterla rimarcare come pronta mentre lui
   # la sta usando.
   sed -i '' "s/^warm=.*/warm=0/" "$(slot_file "$slot")" 2>/dev/null || true
+  # E cambia anche l'app che sta DAVVERO sulla finestra: se restasse quella di
+  # prima, riaprire la vecchia app verrebbe scambiata per "e' gia' li'".
+  if grep -q '^real=' "$(slot_file "$slot")" 2>/dev/null; then
+    sed -i '' "s/^real=.*/real=$app/" "$(slot_file "$slot")" 2>/dev/null || true
+  else
+    printf 'real=%s\n' "$app" >>"$(slot_file "$slot")" 2>/dev/null || true
+  fi
   # NIENTE rename qui. Il nome dell'istanza serve al client per TROVARE l'host
   # quando apre lo stream, e qui lo stream e' gia' connesso: rinominare adesso
   # costerebbe il riavvio dell'istanza - 24 secondi misurati - per cambiare
@@ -1182,8 +1204,15 @@ slot_save(){ # slot app modalita pid-stream pid-supervisore
   # quella che l'utente aveva appena aperto: si apriva il Blocco note, veniva
   # marcato come "pronto", e l'app successiva ci finiva sopra rubandogli la
   # finestra. Da fuori sembrava che Arc aprisse il Blocco note.
-  printf 'app=%s\nmode=%s\npid=%s\nsup=%s\nwarm=%s\n' \
-    "$2" "$3" "$4" "$5" "${WF_READY_KEEP:-0}" >"$(slot_file "$1")"
+  # E "real": l'app che sta DAVVERO sulla finestra. Quando lo slot viene marcato
+  # pronto il campo "app" diventa "::pronto::" e il nome vero si perde - ma serve:
+  # se l'utente apre proprio l'app usata per scaldare (il Blocco note e' anche
+  # quella che apre piu' spesso), la finestra giusta e' gia' li' e non c'e' niente
+  # da scambiare. Senza questo, lo scambio chiedeva a Windows di aprire un'app a
+  # istanza singola gia' aperta, non nasceva nessuna finestra nuova, e l'apertura
+  # falliva in silenzio: il click sull'icona non faceva nulla.
+  printf 'app=%s\nmode=%s\npid=%s\nsup=%s\nwarm=%s\nreal=%s\n' \
+    "$2" "$3" "$4" "$5" "${WF_READY_KEEP:-0}" "$2" >"$(slot_file "$1")"
 }
 
 slot_get(){ # slot campo
