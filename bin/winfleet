@@ -518,14 +518,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   # aperto, e con l'etichetta sbagliata. "WinFleet" e' vero qualunque app ci
   # finisca sopra.
   if [ "${WF_READY_KEEP:-0}" = "1" ]; then
-    ensure_runner "WinFleet" "$exe" >/dev/null 2>&1 || true
-    # E l'icona di winfleet, non quella di Moonlight: se una finestra di scorta
-    # per un istante si vede, deve essere riconoscibile come roba nostra.
-    if [ -f "$WF_ROOT/mac/assets/wf-icon.icns" ]; then
-      cp -f "$WF_ROOT/mac/assets/wf-icon.icns" \
-        "$RUNNERS/WinFleet.app/Contents/Resources/moonlight.icns" 2>/dev/null || true
-    fi
-    bin="$(runner_bin "WinFleet")"
+    bin="$(warm_runner)"
   else
     bin="$(runner_bin "$app")"
   fi
@@ -1319,6 +1312,44 @@ raise_window(){ # pid
 # stesso binario, identita' diversa. Su APFS la copia e' un clone, cioe' istantanea
 # e senza occupare spazio.
 RUNNERS="$CONFIG_DIR/runners"
+
+# Il bundle da cui parte una finestra di SCORTA.
+#
+# Non quello dell'app usata per scaldarla: il nome che si legge nel Dock lo decide
+# il bundle al lancio e non si corregge dopo, quindi una finestra nata dal Blocco
+# note restava "Blocco note" anche con dentro Telegram.
+#
+# E non "WinFleet" nudo: quello e' gia' il pannello nella barra dei menu, e due
+# voci con lo stesso nome sono peggio di una sbagliata - non si capisce quale sia
+# quale. "Finestra WinFleet" dice cos'e' davvero: una finestra tenuta pronta.
+#
+# L'icona e' la nostra, presa dagli assets: mai quella dell'app di riscaldamento,
+# che e' l'errore che si sta correggendo. Il bundle si costruisce una volta e
+# resta; si rifa' solo se manca o se il binario di Moonlight e' piu' recente.
+WARM_RUNNER_NAME="Finestra WinFleet"
+
+warm_runner(){
+  local b="$RUNNERS/$WARM_RUNNER_NAME.app/Contents/MacOS/Moonlight"
+  if [ ! -x "$b" ] || { [ -x "$MOONLIGHT" ] && [ "$MOONLIGHT" -nt "$b" ]; }; then
+    # L'icona: la nostra, e senza passare da build_icns - quello interroga
+    # l'host per l'icona di un'APP, e qui non c'e' nessuna app.
+    # L'icona si cerca in piu' posti: WF_ROOT e' giusto quando il comando parte
+    # normalmente, ma non quando il file viene incluso da un'altra shell (i test
+    # lo fanno, e li' punta all'installazione di bash). Una copia sotto la
+    # configurazione rende il bundle indipendente dal repo.
+    local ic="" cand
+    for cand in "$CONFIG_DIR/wf-icon.icns" "$WF_ROOT/mac/assets/wf-icon.icns" \
+                "$HOME/Projects/winfleet/mac/assets/wf-icon.icns"; do
+      if [ -f "$cand" ]; then ic="$cand"; break; fi
+    done
+    # E si tiene da parte, cosi' il giro dopo non dipende da dove sta il repo.
+    if [ -n "$ic" ] && [ "$ic" != "$CONFIG_DIR/wf-icon.icns" ]; then
+      cp -f "$ic" "$CONFIG_DIR/wf-icon.icns" 2>/dev/null || true
+    fi
+    build_runner "$WARM_RUNNER_NAME" "$ic" >/dev/null 2>&1 || true
+  fi
+  [ -x "$b" ] && echo "$b" || echo "$MOONLIGHT"
+}
 
 runner_bin(){ # nome app -> binario da usare per lo stream
   local b="$RUNNERS/$1.app/Contents/MacOS/Moonlight"
