@@ -18,6 +18,17 @@
          e con dieci minuti si restava scoperti proprio dopo aver aperto
          qualcosa, cioe' quando e' piu' probabile che si apra dell'altro. Un
          controllo a vuoto costa una manciata di millisecondi. -->
+    <!-- DISATTIVATO per impostazione predefinita: le finestre di scorta non
+         servono piu'. Aprire un'app da zero costa due secondi (misurato), quindi
+         tenerne di pronte costerebbe due slot e due stream accesi per guadagnare
+         mezzo secondo - e portava con se' una fila di guasti tutti suoi.
+
+         Il meccanismo resta intero. Per riaccenderlo:
+             WF_WARM=2 nell'ambiente, e
+             launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.winfleet.ready.plist
+
+         Con WF_WARM=0 questo agente parte, vede che non c'e' niente da fare e
+         esce: qualche millisecondo ogni due minuti, ma zero lavoro utile. -->
     <key>StartInterval</key>
     <integer>120</integer>
     <key>RunAtLoad</key>

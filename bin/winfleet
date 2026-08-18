@@ -1987,6 +1987,7 @@ cmd_open(){
     # Un'istanza che non risponde non e' un'istanza occupata: a PC spento il
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
     # esistono.
+    trace "cerco uno slot"
     slot="$(pick_slot "$app")" || {
       # Prima di dire "sono tutte occupate", si guarda se qualcuna e' occupata
       # per FINTA: una finestra di scorta che non e' mai arrivata ad aprire una
@@ -2005,6 +2006,7 @@ cmd_open(){
         die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
       }
     }
+    trace "slot scelto: $slot"
     refresh_vdd
     trace "scelta modalita' fatta"
     local exe="${PICKED_EXE:-}"
