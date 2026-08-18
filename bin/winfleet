@@ -338,7 +338,21 @@ screen_guess(){
 # Il tempo si annota in millisecondi dall'inizio del comando, non come ora del
 # giorno: quando si cerca dove se ne vanno i secondi, "12:42:07" costringe a fare
 # le sottrazioni a mano, "+1840ms" si legge da solo.
-WF_T0="${WF_T0:-$(python3 -c 'import time; print(int(time.time()*1000))')}"
+# Il fuso in ORE, calcolato una volta sola. Il valore si esporta gia' convertito
+# (un numero, non "+0200"): riconvertirlo a ogni processo figlio lo mandava fuori
+# strada - nel trace comparivano orari di quattro ore avanti.
+if ! [ "${WF_TZOFF:-}" -eq "${WF_TZOFF:-}" ] 2>/dev/null; then
+  __tz="$(date +%z)"
+  WF_TZOFF=$(( 10#${__tz:1:2} * (${__tz:0:1}1) ))
+  export WF_TZOFF
+fi
+# WF_T0 non si eredita: e' l'inizio di QUESTO comando, e prenderlo dal padre
+# darebbe scarti di ore ("+459533000ms" invece di "+120ms" - visto).
+if ! [ "${WF_T0:-}" -eq "${WF_T0:-}" ] 2>/dev/null || [ "${WF_T0:-0}" -lt 1000000000000 ]; then
+  __t0f=000
+  case "$EPOCHREALTIME" in *[.,]*) __t0f="${EPOCHREALTIME#*[.,]}"; __t0f="${__t0f:0:3}";; esac
+  WF_T0=$(( EPOCHSECONDS * 1000 + 10#$__t0f ))
+fi
 # La traccia e' SEMPRE accesa, non solo con WINFLEET_TRACE.
 #
 # Le aperture che contano sono quelle dal Dock, e li' non si puo' passare una
@@ -346,19 +360,51 @@ WF_T0="${WF_T0:-$(python3 -c 'import time; print(int(time.time()*1000))')}"
 # restavo cieco, e il problema andava riprodotto da terminale - dove magari non
 # si presentava affatto. Il file si tiene corto da solo.
 trace(){
-  local now; now="$(python3 -c 'import time; print(int(time.time()*1000))')"
+  # L'ora si legge da bash, non chiamando python.
+  #
+  # Ogni "python3 -c" costa 40 ms misurati, e questa funzione viene chiamata una
+  # quindicina di volte per apertura: erano SEI DECIMI di secondo buttati in ogni
+  # apertura, dalla traccia messa li' per capire dove andava il tempo. La misura
+  # che si paga piu' del lavoro che misura.
+  #
+  # EPOCHREALTIME e' una variabile di bash (5.0+): "1755499200.123456". I
+  # millisecondi sono i primi tre decimali, e si prendono senza aritmetica in
+  # virgola mobile - che bash non ha.
+  # EPOCHSECONDS e non EPOCHREALTIME: il secondo usa il separatore decimale del
+  # LOCALE, che qui e' la virgola ("1787042266,046379"), quindi tagliare al punto
+  # non taglia niente e il numero esce moltiplicato per un milione - nel trace
+  # comparivano scarti di "+459533000ms". I millisecondi si prendono a parte, e
+  # solo se il separatore c'e' davvero, qualunque esso sia.
+  local now sec frac=000
+  sec="$EPOCHSECONDS"
+  case "$EPOCHREALTIME" in
+    *[.,]*) frac="${EPOCHREALTIME#*[.,]}"; frac="${frac:0:3}";;
+  esac
+  now=$(( sec * 1000 + 10#$frac ))
   # Ora del giorno E scarto dall'inizio di QUESTO comando. Il solo scarto non
   # basta: ogni processo riparte da zero, e mettendo in fila le righe di due
   # aperture diverse i numeri sembrano tornare indietro nel tempo. Senza l'ora
   # vera non si puo' dire chi ha scritto prima - ed e' esattamente quello che
   # serve quando due processi si contendono lo stesso slot.
-  printf '%s [%s] +%sms %s\n' \
-    "$(date '+%H:%M:%S')" "$$" "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
+  # Anche l'ora del giorno senza chiamare "date": un altro processo per riga.
+  local h=$(( (sec / 3600 + WF_TZOFF) % 24 )) m=$(( sec / 60 % 60 )) s=$(( sec % 60 ))
+  printf '%02d:%02d:%02d [%s] +%sms %s\n' \
+    "$h" "$m" "$s" "$$" "$(( now - WF_T0 ))" "$*" >>"$CONFIG_DIR/trace.log"
   # Corto: interessano le ultime aperture, non la storia. Un file che cresce per
   # sempre prima o poi si cancella a mano, e non c'e' quando serve.
-  if [ "$(wc -l <"$CONFIG_DIR/trace.log" 2>/dev/null || echo 0)" -gt 400 ]; then
-    tail -200 "$CONFIG_DIR/trace.log" >"$CONFIG_DIR/trace.new" 2>/dev/null &&
-      mv "$CONFIG_DIR/trace.new" "$CONFIG_DIR/trace.log"
+  #
+  # Il controllo si fa una volta ogni cinquanta righe, e sulla DIMENSIONE invece
+  # che sul numero di righe: "wc -l" e' un processo in piu' a ogni riga, e con
+  # una quindicina di tracce per apertura si pagava piu' della rotazione che
+  # evita. Un contatore in memoria basta: se il processo muore prima di
+  # cinquanta, la rotazione la fara' il prossimo.
+  WF_TRACE_N=$(( ${WF_TRACE_N:-0} + 1 ))
+  if [ $(( WF_TRACE_N % 50 )) = 0 ]; then
+    local sz; sz=$(stat -f %z "$CONFIG_DIR/trace.log" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 60000 ]; then
+      tail -200 "$CONFIG_DIR/trace.log" >"$CONFIG_DIR/trace.new" 2>/dev/null &&
+        mv "$CONFIG_DIR/trace.new" "$CONFIG_DIR/trace.log"
+    fi
   fi
 }
 
@@ -605,9 +651,39 @@ slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
   # in fila fanno l'attesa per quattro, e "winfleet windows" e' un comando a cui si
   # guarda la risposta, non uno che si lancia e si aspetta. Se un'istanza e' giu' lo
   # si scopre in due secondi invece che in sedici.
+  #
+  # Per INDIRIZZO e non per nome mDNS: risolvere "WindowsAtti.local" costa 300 ms
+  # contro i 30 dell'indirizzo (misurati), e questa domanda si fa per ogni slot,
+  # a ogni giro del rifornitore e a ogni apertura. agent_host lo risolve una volta
+  # sola e se lo ricorda.
   curl -s --max-time 2 --connect-timeout 1 \
-    "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+    "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
     | tr '<' '\n' | awk -F'>' '/^state/{print $2}'
+}
+
+# Lo slot e' disponibile per metterci qualcosa?
+#
+# "Occupato" e "non ha risposto" NON sono la stessa cosa, e trattarli uguale ha
+# tenuto il rifornitore fermo per quaranta minuti con tutti e quattro gli slot
+# vuoti: "nessuno slot libero, non preparo" ogni due minuti, mentre non c'era
+# aperto niente. slot_state torna una stringa vuota quando l'istanza Sunshine non
+# risponde entro due secondi - succede se e' appena stata riavviata, se la rete
+# ha un singhiozzo, o se il PC e' sotto carico - e una stringa vuota non contiene
+# "FREE", quindi lo slot veniva contato come occupato. Da fuori: le aperture
+# tornano lente e non si capisce perche', perche' non c'e' nessun errore.
+#
+# Un'istanza muta e' un'istanza di cui non sappiamo niente. Per DECIDERE DI
+# OCCUPARE uno slot si e' prudenti e la si evita; per decidere se vale la pena
+# preparare una finestra calda no: li' il costo di sbagliare e' zero (al massimo
+# la preparazione fallisce e si riprova fra due minuti), mentre il costo di
+# arrendersi e' che tutto resta lento per sempre.
+slot_free_ish(){ # slot -> 0 se e' libero o se non risponde
+  slot_live "$1" 2>/dev/null && return 1
+  case "$(slot_state "$1")" in
+    *FREE*) return 0;;
+    '')     return 0;;   # muta: non sappiamo, e non e' un buon motivo per fermarsi
+    *)      return 1;;   # BUSY dichiarato: e' occupata davvero
+  esac
 }
 
 # L'host dichiara la finestra occupata solo quando lo stream e' partito, e fra
@@ -1016,6 +1092,24 @@ rename_instance(){ # slot nome
 # latenza che si sentiva addosso al ridimensionamento.
 agent_host(){
   if [ -n "${AGENT_HOST:-}" ]; then echo "$AGENT_HOST"; return; fi
+
+  # La cache in memoria non basta: agent_host viene quasi sempre chiamata dentro
+  # $(...), cioe' in una subshell, e la variabile muore con lei. Ogni chiamata
+  # rifaceva quindi il test di raggiungibilita' con nc - e quattro slot_state di
+  # fila sono passati da 1.5 a 19 secondi appena ho iniziato a usarla li'.
+  #
+  # Un file con dentro l'indirizzo, valido cinque minuti, sopravvive alle
+  # subshell. Se l'indirizzo cambia (rete diversa) si aspettano al massimo cinque
+  # minuti; e chi non risponde viene comunque ricontrollato dal chiamante.
+  local cache="$CONFIG_DIR/agent-host"
+  if [ -f "$cache" ]; then
+    local age; age=$(( $(date +%s) - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt 300 ]; then
+      AGENT_HOST="$(cat "$cache" 2>/dev/null)"
+      if [ -n "$AGENT_HOST" ]; then echo "$AGENT_HOST"; return; fi
+    fi
+  fi
+
   local h=""
   if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$AGENT_PORT" 1; then
     h="$HOST_LAN"
@@ -1025,6 +1119,7 @@ agent_host(){
   fi
   [ -n "$h" ] || h="$HOST_TS"
   AGENT_HOST="$h"
+  printf '%s' "$h" >"$CONFIG_DIR/agent-host" 2>/dev/null || true
   echo "$h"
 }
 
@@ -1374,7 +1469,7 @@ cmd_ready(){
   # l'ultimo posto a un'app che si vuole aprire adesso.
   local freeslots=0 i
   for i in $(seq 0 $(( SLOTS - 1 ))); do
-    slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
+    if slot_free_ish "$i"; then freeslots=$(( freeslots + 1 )); fi
   done
   # Se ne prepara una solo se resta comunque uno slot libero per l'utente: una
   # finestra calda non deve mai essere il motivo per cui "sono tutte occupate".
@@ -1387,7 +1482,7 @@ cmd_ready(){
     reap_stuck_slots
     freeslots=0
     for i in $(seq 0 $(( SLOTS - 1 ))); do
-      slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
+      if slot_free_ish "$i"; then freeslots=$(( freeslots + 1 )); fi
     done
   fi
   # Basta UNO slot libero, non due.
@@ -1519,7 +1614,7 @@ cmd_ready(){
   while [ "$launched" -lt "$want" ]; do
     freeslots=0
     for i in $(seq 0 $(( SLOTS - 1 ))); do
-      slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
+      if slot_free_ish "$i"; then freeslots=$(( freeslots + 1 )); fi
     done
     # Qui invece servono DUE slot liberi, e non e' un'incoerenza: siamo dentro il
     # ciclo che prepara le finestre OLTRE la prima, e una in piu' e' un lusso.

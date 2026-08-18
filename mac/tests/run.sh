@@ -162,4 +162,16 @@ else
   fail=1
 fi
 
+# --- 9. istanze mute -------------------------------------------------------
+# Un'istanza Sunshine che non risponde non e' un'istanza occupata: contarla come
+# tale ha tenuto il rifornitore fermo quaranta minuti con tutti gli slot vuoti,
+# e ogni apertura tornava a costare quindici secondi senza un errore visibile.
+if /opt/homebrew/bin/bash mac/tests/slot-free.sh > "$TMP/slotfree.out" 2>&1; then
+  say "ok   slot muti: contano come disponibili, gli occupati no"
+else
+  say "NO   slot muti:"
+  sed 's/^/       /' "$TMP/slotfree.out"
+  fail=1
+fi
+
 exit "$fail"
