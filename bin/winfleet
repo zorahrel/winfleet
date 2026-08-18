@@ -531,7 +531,21 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   # Prima dello stream, cosi' il client legge il nome nuovo al primo poll e la
   # finestra nasce gia' intitolata all'app.
   trace "avvio: slot=$slot app=$app stream=$smode finestra=$wsize bin=$bin"
-  rename_instance "$slot" "$app"
+  # L'istanza si chiama come lo SLOT, non come l'app: "WinFleet 1", "WinFleet 2".
+  #
+  # Il nome serviva a far comparire il nome dell'app sulla finestra del Mac, ma
+  # quel lavoro ora lo fa la libreria dentro il processo (WF_NAME), che lo cambia
+  # a caldo e senza riavviare niente.
+  #
+  # Continuare a rinominare l'istanza costava carissimo: Moonlight distingue gli
+  # host per NOME e il PAIRING e' legato a quello, quindi ogni cambio d'app
+  # creava un host nuovo da accoppiare da capo. Da qui le finestre che si aprono
+  # vuote - "has not been paired" - e due istanze chiamate entrambe "Arc", una
+  # accoppiata e una no, indistinguibili dal client.
+  #
+  # Con un nome fisso per slot il pairing si fa UNA volta e vale per sempre,
+  # qualunque app ci finisca sopra.
+  rename_instance "$slot" "WinFleet $(( slot + 1 ))"
   trace "rinominata"
   local first=1
   while true; do
@@ -2437,23 +2451,32 @@ pair_slot(){ # slot
 
 # L'istanza ci conosce? E' l'unica cosa che dice se lo stream partira'.
 #
-# Non si chiede a Sunshine (risponde PairStatus=0 a chi non presenta un
-# certificato client, quindi direbbe sempre 0 da curl): si guarda se MOONLIGHT ha
-# il certificato di quell'host nelle sue preferenze. E' il dato che decide.
+# Si guarda per UUID, non per nome.
+#
+# Il nome cambia (e per un periodo due istanze si sono chiamate entrambe "Arc",
+# una accoppiata e una no); l'uuid e' l'identita' vera dell'istanza, quella che
+# Moonlight usa per ritrovare un host che gia' conosce. Cercare per nome dava
+# risposte sbagliate in entrambi i versi: "accoppiata" per un nome vecchio
+# rimasto nel plist, "da accoppiare" per un'istanza appena rinominata.
+#
+# E non si chiede a Sunshine: a chi non presenta un certificato client risponde
+# PairStatus=0 sempre, anche per le istanze che funzionano.
 slot_paired(){ # slot
-  local nm; nm="$(slot_name "$1")"
-  [ -n "$nm" ] || return 1
-  WF_NAME_CHK="$nm" python3 -c '
+  local uid
+  uid="$(curl -s --max-time 3 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+         | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
+  [ -n "$uid" ] || return 1
+  WF_UID_CHK="$uid" python3 -c '
 import os, plistlib, sys
 p = os.path.expanduser("~/Library/Preferences/com.moonlight-stream.Moonlight.plist")
 try:
     d = plistlib.load(open(p, "rb"))
 except Exception:
     sys.exit(1)
-want = os.environ["WF_NAME_CHK"]
+want = os.environ["WF_UID_CHK"].lower()
 n = int(d.get("hosts.size", 0) or 0)
 for i in range(1, n + 1):
-    if d.get("hosts.%d.hostname" % i, "") == want:
+    if str(d.get("hosts.%d.uuid" % i, "")).lower() == want:
         sys.exit(0 if d.get("hosts.%d.srvcert" % i, "") else 1)
 sys.exit(1)
 ' 2>/dev/null
