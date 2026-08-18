@@ -33,6 +33,7 @@ fi
 #   winfleet list              app pubblicate dall'host
 #   winfleet clean             toglie da Moonlight gli host che non rispondono più
 #   winfleet pair              accoppia Moonlight con l'host (una tantum)
+#   winfleet pair-slots        accoppia le singole finestre (senza, restano vuote)
 #   winfleet doctor            diagnostica
 #   winfleet endpoint          mostra quale indirizzo verrebbe usato (LAN/Tailscale)
 set -euo pipefail
@@ -721,6 +722,10 @@ pick_slot(){ # [nome-app]
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
     case "$(slot_state "$i")" in *FREE*) ;; *) continue;; esac
+    # Una finestra non accoppiata e' inutilizzabile: lo stream non parte e resta
+    # vuota. Si scarta subito, cosi' le altre - che funzionano - vengono usate
+    # per prime invece di far fallire l'apertura su quella rotta.
+    slot_paired "$i" || continue
     [ -n "$free" ] || free="$i"
     # Uno slot che si chiama GIA' come l'app che stiamo aprendo vale molto piu'
     # di uno qualsiasi: rinominare un'istanza significa riscriverne la config e
@@ -2009,6 +2014,21 @@ cmd_open(){
     trace "slot scelto: $slot"
     refresh_vdd
     trace "scelta modalita' fatta"
+
+    # L'istanza di questa finestra e' accoppiata? Senza pairing lo stream NON
+    # PARTE: Moonlight scrive "has not been paired" in un log che nessuno legge,
+    # la finestra si apre lo stesso e resta VUOTA. E' il guasto che sembra "l'app
+    # e' rotta" e invece non lo e' - due finestre identiche, una viva e una morta,
+    # e nessuna differenza visibile.
+    #
+    # Si dice PRIMA di aprire, con il comando per rimediare: aspettare che
+    # l'utente veda un rettangolo grigio e' il modo peggiore di comunicarlo.
+    if ! slot_paired "$slot"; then
+      bad "la finestra $(( slot + 1 )) non e' accoppiata: lo stream non partirebbe e la vedresti vuota"
+      info "  rimedio:  winfleet pair-slots     ${c_dim}(chiede un PIN per finestra, una volta sola)${c_off}"
+      slot_forget "$slot" 2>/dev/null || true
+      return 1
+    fi
     local exe="${PICKED_EXE:-}"
     [ -n "$exe" ] || exe="$(app_exe "$app")" || true
     trace "eseguibile risolto"
@@ -2352,6 +2372,107 @@ cmd_pair(){
   echo "Moonlight mostrerà un PIN: inseriscilo nella web UI di Sunshine"
   echo "  https://$addr:$SUN_PORT   →   PIN"
   "$MOONLIGHT" pair "$addr"
+}
+
+# Ogni istanza per-finestra ha un pairing SUO, e senza quello lo stream non parte:
+# Moonlight scrive "has not been paired" nel suo log e la finestra resta VUOTA.
+#
+# E' il guasto piu' brutto di tutti, perche' da fuori non si distingue da un'app
+# che non va: la finestra c'e', ha il nome giusto, l'icona giusta, e dentro non
+# succede niente. Trovato con Arc e Telegram, mentre Blocco note e Paint - gia'
+# accoppiate - funzionavano: quattro finestre identiche, due vive e due morte.
+#
+# Il pairing e' una stretta di mano a due: Moonlight genera un PIN e lo mostra,
+# Sunshine lo accetta dalla sua interfaccia web. Nessuna delle due parti puo'
+# farlo da sola, ma le due parti stanno entrambe qui - quindi si fa da soli.
+#
+# La web di ogni istanza sta sulla porta dei suoi servizi + 1: la stessa
+# progressione delle porte di streaming.
+slot_web_port(){ echo $(( SUN_PORT + $1 * 100 )); }
+
+# Il pairing di UNA istanza, guidato.
+#
+# Non e' automatizzabile fino in fondo, e ho provato: consegnare il PIN
+# all'istanza vuole le credenziali della sua interfaccia web, che stanno cifrate
+# nel suo stato e non si possono rileggere. Impostarle con "--creds" scrive
+# sull'istanza di SISTEMA, non su quella indicata da --config (verificato:
+# username cambiato solo nello stato di sistema). L'opzione "-0" leggerebbe il PIN
+# da stdin ma avvia un secondo server, che su un'istanza gia' viva e' peggio del
+# problema.
+#
+# Quindi si fa la parte automatizzabile - scegliere il PIN, tenere Moonlight in
+# attesa, aprire la pagina giusta, e VERIFICARE il risultato - e si chiede solo
+# di digitare quattro cifre.
+pair_slot(){ # slot
+  local slot="$1" name web pin
+  name="$(slot_name "$slot")"
+  [ -n "$name" ] || name="finestra $(( slot + 1 ))"
+  web="$(slot_web_port "$slot")"
+  pin="$(printf '%04d' $(( RANDOM % 10000 )))"
+
+  printf "${c_bold}%s${c_off}  PIN da inserire:  ${c_bold}%s${c_off}\n" "$name" "$pin"
+  printf "  pagina:  ${c_dim}https://%s:%s${c_off}\n" "$(agent_host)" "$web"
+
+  "$MOONLIGHT" pair "$(slot_addr "$slot")" --pin "$pin" >/dev/null 2>&1 &
+  local mpid=$!
+
+  # La pagina si apre da sola: e' l'unico passaggio manuale, tanto vale togliere
+  # anche il "dove devo andare".
+  open "https://$(agent_host):$web/pin" >/dev/null 2>&1 || true
+
+  # Si aspetta l'esito guardando l'istanza, non l'utente: quando il pairing e'
+  # andato, Moonlight esce da solo.
+  local i
+  for i in $(seq 1 60); do
+    kill -0 "$mpid" 2>/dev/null || break
+    sleep 1
+  done
+  kill "$mpid" 2>/dev/null || true
+  wait "$mpid" 2>/dev/null || true
+
+  if slot_paired "$slot"; then ok "«${name}» accoppiata"; return 0; fi
+  bad "«${name}» non accoppiata"
+  return 1
+}
+
+# L'istanza ci conosce? E' l'unica cosa che dice se lo stream partira'.
+#
+# Non si chiede a Sunshine (risponde PairStatus=0 a chi non presenta un
+# certificato client, quindi direbbe sempre 0 da curl): si guarda se MOONLIGHT ha
+# il certificato di quell'host nelle sue preferenze. E' il dato che decide.
+slot_paired(){ # slot
+  local nm; nm="$(slot_name "$1")"
+  [ -n "$nm" ] || return 1
+  WF_NAME_CHK="$nm" python3 -c '
+import os, plistlib, sys
+p = os.path.expanduser("~/Library/Preferences/com.moonlight-stream.Moonlight.plist")
+try:
+    d = plistlib.load(open(p, "rb"))
+except Exception:
+    sys.exit(1)
+want = os.environ["WF_NAME_CHK"]
+n = int(d.get("hosts.size", 0) or 0)
+for i in range(1, n + 1):
+    if d.get("hosts.%d.hostname" % i, "") == want:
+        sys.exit(0 if d.get("hosts.%d.srvcert" % i, "") else 1)
+sys.exit(1)
+' 2>/dev/null
+}
+
+cmd_pair_slots(){
+  need_config
+  [ "${SLOTS:-0}" -gt 0 ] || { info "nessuna istanza a finestre (SLOTS=0)"; return 0; }
+  local i n=0 ko=0
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    if slot_paired "$i"; then n=$(( n + 1 )); continue; fi
+    pair_slot "$i" && n=$(( n + 1 )) || ko=$(( ko + 1 ))
+  done
+  if [ "$ko" = 0 ]; then
+    ok "tutte le $n finestre sono accoppiate"
+  else
+    bad "$ko finestre non accoppiate: senza quelle la finestra resta VUOTA"
+    return 1
+  fi
 }
 
 LAUNCHERS="$HOME/Applications/WinFleet"
@@ -3143,6 +3264,7 @@ case "${1:-}" in
   # mano non ha senso, ma non fa danni: sorveglia una finestra che non c'e' e
   # torna subito.
   ready-supervise) shift; WF_SUP=1 supervise_window "$@";;
+  pair-slots) cmd_pair_slots;;
   open)     shift; cmd_open "$@";;
   ready)    shift; cmd_ready "$@";;
   ready-missing) shift; cmd_ready_missing;;
