@@ -2699,6 +2699,29 @@ cmd_doctor(){
   [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
   if [ "${SLOTS:-0}" -gt 0 ]; then
     ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+
+    # Le finestre calde: e' l'unica cosa che decide se un'app si apre in due
+    # secondi o in quindici, e quando manca non lo dice nessuno. E' successo:
+    # scorta a zero per una notte intera, ogni apertura lenta, e nessun modo di
+    # accorgersene se non cronometrando a mano.
+    local nwarm; nwarm="$(ready_count)"
+    if [ "$nwarm" -ge 1 ]; then
+      ok "$nwarm finestre tenute pronte  ${c_dim}(le app ci si aprono sopra in ~2s)${c_off}"
+    else
+      bad "nessuna finestra pronta: le app si apriranno in ~15s"
+      # Il motivo piu' probabile, e si puo' guardare: quanti slot sono
+      # disponibili secondo lo stesso criterio che usa il rifornitore.
+      local nfree=0 k
+      for k in $(seq 0 $(( SLOTS - 1 ))); do
+        if slot_free_ish "$k"; then nfree=$(( nfree + 1 )); fi
+      done
+      if [ "$nfree" = 0 ]; then
+        info "  tutte le finestre sono in uso: e' normale, si riforniscono appena se ne chiude una"
+      else
+        info "  $nfree slot liberi: il rifornitore dovrebbe prepararne una entro due minuti"
+        info "  se non succede:  launchctl kickstart -k gui/$(id -u)/com.winfleet.ready"
+      fi
+    fi
     [ -n "$HOST_NAME" ] || bad "HOST_NAME assente: senza nome mDNS le istanze non sono indirizzabili per porta"
   else
     info "nessuna istanza a finestre (SLOTS=0)"
