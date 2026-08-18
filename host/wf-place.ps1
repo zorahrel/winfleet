@@ -38,6 +38,22 @@ $req = "C:\winfleet\app$Slot.txt"
 if (Test-Path $req) { $Exe = (Get-Content $req -Raw).Trim() }
 if (-not $Exe) { return }
 
+# Caso speciale: "adotta:<hwnd>" invece di un eseguibile.
+#
+# Serve per le finestre che un'app apre per conto suo - il "Salva con nome" di
+# Esplora file lanciato da Arc. Quella finestra esiste gia', e' viva, ed e' sullo
+# schermo virtuale sbagliato: non va lanciata niente, va solo presa e portata
+# sul monitor di QUESTO slot.
+#
+# Il resto dello script - togliere la cornice, seguire la geometria, accorgersi
+# quando sparisce - vale identico: una finestra adottata e' una finestra come le
+# altre, cambia solo come ci si arriva.
+$Adopt = [IntPtr]::Zero
+if ($Exe -like 'adotta:*') {
+    $Adopt = [IntPtr][int64]($Exe -replace '^adotta:', '')
+    $Exe = ''
+}
+
 $LOG = "C:\winfleet\place$Slot.log"
 # Con i soli secondi non si misura niente: un passo da 300 ms e uno da 1200
 # sembrano uguali, e i millisecondi sono esattamente cio' che si sta cercando
@@ -184,7 +200,7 @@ if ($packaged) {
 }
 
 
-if (-not $isShell -and -not $preLaunched) {
+if (-not $isShell -and -not $preLaunched -and $Adopt -eq [IntPtr]::Zero) {
     # Un'app a istanza singola non aprirebbe una finestra qui: riporterebbe in primo
     # piano quella che ha gia', su un altro schermo. Vale anche per le app dello
     # Store — anzi soprattutto per quelle, che sono quasi tutte a istanza singola:
@@ -310,7 +326,10 @@ function Get-MyPids {
     return $out.ToArray()
 }
 
-if ($preLaunched) {
+if ($Adopt -ne [IntPtr]::Zero) {
+    Note "adotto la finestra $($Adopt.ToInt64()) invece di lanciare un'app"
+}
+elseif ($preLaunched) {
     Note "app gia' avviata dall'agente: non la rilancio"
     # ATTENZIONE all'ordine: $before e' stato preso ADESSO, cioe' dopo che
     # l'agente ha lanciato l'app. Se la finestra e' gia' comparsa sta gia' in
@@ -341,6 +360,14 @@ if ($preLaunched) {
 }
 
 $h = [IntPtr]::Zero
+if ($Adopt -ne [IntPtr]::Zero) {
+    # La finestra ce l'abbiamo gia': niente ricerca, niente attesa. Si controlla
+    # solo che esista ancora - fra quando l'agente l'ha vista e adesso possono
+    # essere passati secondi, e una finestra di dialogo puo' essere gia' stata
+    # chiusa dall'utente.
+    if ([P]::IsWindow($Adopt)) { $h = $Adopt }
+    else { Note 'la finestra da adottare non esiste piu'''; return }
+}
 for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) {
     Start-Sleep -Milliseconds 400
     # Prima si cerca SOLO fra le finestre dei processi di questa app: e' l'unico

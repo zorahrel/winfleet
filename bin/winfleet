@@ -437,7 +437,15 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
   printf '%sx%s\n' "$aw" "$ah" >"$ackf"
   printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
 
+  # Ogni tanto si guarda se l'app ha aperto una finestra per conto suo - il
+  # "Salva con nome" cliccato dentro il browser. Non a ogni giro: il ciclo gira
+  # dieci volte al secondo per seguire i ridimensionamenti, e una domanda in rete
+  # a quel ritmo sarebbe uno spreco. Ogni tre secondi e' molto piu' veloce di
+  # quanto ci metta una persona ad accorgersi che "non e' successo niente".
+  local __orph=0
   while kill -0 "$pid" 2>/dev/null; do
+    __orph=$(( __orph + 1 ))
+    if [ $(( __orph % 30 )) = 0 ]; then adopt_orphans; fi
     cur="$(win_size "$pid")"
     if [ -n "$cur" ] && [ "$cur" != "$sent" ]; then
       cw="${cur%x*}"; ch="${cur#*x}"
@@ -1895,6 +1903,143 @@ cmd_ready(){
 
 # Quante finestre calde mancano rispetto a quante se ne vogliono. Serve
 # all'agente per sapere se ha ancora lavoro da fare in questo giro.
+
+# Le finestre che un'app apre per conto suo, portate sul Mac.
+#
+# Il caso: da Arc si clicca "scarica", Windows apre Esplora file SULLO STESSO
+# schermo virtuale, e sul Mac non si vede niente - il ritaglio mostra solo la
+# finestra principale. La finestra esiste, e' viva, e' davanti a quella di Arc:
+# semplicemente nessuno la sta guardando. Da fuori il click non ha fatto nulla.
+#
+# L'agente sa dire quali finestre stanno su un monitor virtuale senza essere
+# quella rivendicata dallo slot. Qui si prendono e si aprono in una finestra
+# propria sul Mac, cosi' l'app figlia diventa una finestra come le altre.
+#
+# Regole, tutte per non far danni:
+#  - mai la stessa due volte: un handle gia' visto non si riapre, altrimenti a
+#    ogni giro si aprirebbe una finestra nuova per la stessa cosa;
+#  - solo se c'e' uno slot libero: una finestra figlia non deve rubare il posto
+#    a un'app che l'utente vuole aprire adesso;
+#  - mai la shell di Windows ne' le nostre finestre: quelle le filtra l'agente.
+adopt_orphans(){
+  [ "${SLOTS:-0}" -gt 0 ] || return 0
+
+  # Solo le finestre COMPARSE DA POCO.
+  #
+  # Una finestra che sta su un monitor virtuale da mezz'ora non e' "l'app che ne
+  # ha appena aperta un'altra": e' un residuo, o qualcosa che c'era gia' prima.
+  # Adottarla significa prendersi roba vecchia e, con gli slot pieni, portarla
+  # via a un'app viva - visto succedere, Arc si e' ritrovata senza finestra
+  # perche' un Blocco note dimenticato e' stato adottato al posto suo.
+  #
+  # Al primo giro si prende nota di quello che c'e' gia' e non si adotta niente:
+  # da li' in poi si reagisce solo alle novita'.
+  local visti="$CONFIG_DIR/orphans-visti"
+  local primo=0
+  [ -f "$visti" ] || primo=1
+
+  local righe; righe="$(curl -s --max-time 3 --connect-timeout 1 \
+    "http://$(agent_host):$AGENT_PORT/orphans" 2>/dev/null)"
+  [ -n "$righe" ] && [ "$righe" != no ] || return 0
+  touch "$visti" 2>/dev/null || true
+
+  if [ "$primo" = 1 ]; then
+    # Primo giro: si annota e basta. Quello che c'era gia' resta dov'e'.
+    printf '%s\n' "$righe" | awk -F'\t' '{print $2}' >>"$visti" 2>/dev/null || true
+    trace "figlie: primo giro, annotate $(printf '%s\n' "$righe" | grep -c . ) finestre gia' presenti"
+    return 0
+  fi
+
+  local slot_src hw wpid titolo libero
+  while IFS=$'\t' read -r slot_src hw wpid titolo; do
+    [ -n "$hw" ] || continue
+    grep -qx "$hw" "$visti" 2>/dev/null && continue
+
+    # Uno slot libero deve restare libero per l'utente: se ne serve uno per la
+    # finestra figlia e uno resta comunque, si procede; altrimenti si aspetta.
+    libero=0
+    local i
+    for i in $(seq 0 $(( SLOTS - 1 ))); do
+      if slot_free_ish "$i" && slot_paired "$i"; then libero=$(( libero + 1 )); fi
+    done
+    if [ "$libero" -lt 1 ]; then
+      trace "figlia «${titolo}»: nessuno slot libero, la lascio dov'e'"
+      continue
+    fi
+
+    # E lo slot dev'essere DAVVERO libero, non solo "non nostro": se tutti sono
+    # occupati da app dell'utente, aprire una finestra figlia significherebbe
+    # chiudere qualcosa che sta usando. Meglio non mostrarla: la finestra resta
+    # su Windows, raggiungibile, e nessuno perde il lavoro.
+    local occupati=0
+    for i in $(seq 0 $(( SLOTS - 1 ))); do
+      if slot_live "$i" 2>/dev/null; then occupati=$(( occupati + 1 )); fi
+    done
+    if [ "$occupati" -ge "$SLOTS" ]; then
+      trace "figlia «${titolo}»: tutte le finestre sono in uso, non tocco niente"
+      continue
+    fi
+
+    printf '%s\n' "$hw" >>"$visti"
+
+    # Il titolo di una finestra NON e' un nome d'app: contiene lo stato del
+    # documento ("*wwwwww - Blocco note"), il nome del file aperto, a volte
+    # caratteri che in un nome di bundle non ci possono stare. Usarlo cosi'
+    # com'e' crea un runner con un nome assurdo e l'apertura fallisce.
+    #
+    # Si tiene la parte dopo l'ultimo trattino - la convenzione di Windows e'
+    # "<documento> - <app>" - e si ripulisce il resto. Se non resta niente di
+    # sensato si usa un nome generico: meglio "Finestra" di un nome che rompe.
+    local nome="$titolo"
+    case "$nome" in *" - "*) nome="${nome##* - }";; esac
+    nome="$(printf '%s' "$nome" | tr -d '*/:<>|?\\' | sed 's/^ *//; s/ *$//')"
+    [ -n "$nome" ] || nome="Finestra"
+
+    # E dev'essere un'app che CONOSCIAMO, altrimenti niente adozione.
+    #
+    # Un nome ricavato da un titolo puo' essere qualunque cosa, e ogni apertura
+    # crea un bundle e un'icona con quel nome: dopo qualche giro la cartella dei
+    # runner e' piena di roba come "*wwwwww - Blocco note.app" - visto, e il
+    # controllo delle icone l'ha giustamente segnalato come difetto.
+    #
+    # Se il nome non e' nel catalogo delle app dell'host, si usa quello dell'app
+    # che ha generato la finestra: e' sempre un nome vero, ha gia' il suo bundle
+    # e la sua icona, ed e' anche l'informazione piu' utile - quella finestra
+    # viene da li'.
+    if ! awk -F'\t' -v n="$nome" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null; then
+      local padre; padre="$(slot_get "$slot_src" real)"
+      [ -n "$padre" ] || padre="$(slot_get "$slot_src" app)"
+      if [ -n "$padre" ] && [ "$padre" != "$READY_MARK" ]; then
+        trace "figlia «${titolo}»: «${nome}» non e' nel catalogo, uso «${padre}»"
+        nome="$padre"
+      else
+        trace "figlia «${titolo}»: nome «${nome}» sconosciuto e nessun padre, la lascio"
+        continue
+      fi
+    fi
+
+    trace "figlia «${titolo}» -> «${nome}» (hwnd $hw) dallo slot $slot_src: la apro"
+    # "adotta:<hwnd>" al posto dell'eseguibile: wf-place capisce che la finestra
+    # esiste gia' e la prende invece di lanciare qualcosa. Passa dalla stessa
+    # strada di un'apertura normale, quindi eredita tutto - cornice tolta,
+    # geometria seguita, chiusura rilevata.
+    # In una SESSIONE propria, staccata da chi la lancia.
+    #
+    # Questo codice gira dentro il supervisore della finestra che ha generato la
+    # figlia: lanciare l'adozione come suo figlio la lega a lui, e quando il
+    # supervisore fa il suo lavoro - riavviare lo stream, chiudere lo slot - si
+    # porta via anche l'adozione a meta'. Visto dal vivo: la finestra veniva
+    # riconosciuta, l'apertura partiva, e un istante dopo spariva tutto.
+    #
+    # E' lo stesso motivo per cui le finestre calde nascono con setsid.
+    ( exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+        /opt/homebrew/bin/bash -c \
+        "$(printf 'PICKED_EXE=%q %q open %q' "adotta:$hw" "$0" "$nome")" ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  done <<<"$righe"
+  return 0
+}
+
 cmd_ready_missing(){
   local want="${WF_WARM:-0}" have
   have="$(ready_count)"

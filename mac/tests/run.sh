@@ -232,4 +232,17 @@ else
   fail=1
 fi
 
+# --- 13. finestre aperte da un'altra app ------------------------------------
+# Da Arc si clicca "scarica" e Windows apre Esplora file sullo stesso schermo
+# virtuale: la finestra c'e' ma nessuno la mostra, e da fuori sembra che il click
+# non abbia fatto niente. Qui si verifica quando una finestra e' "orfana" e
+# quando invece non va toccata - e' li' che si fanno danni.
+if /opt/homebrew/bin/bash mac/tests/orphan-windows.sh > "$TMP/orph.out" 2>&1; then
+  say "ok   finestre figlie: riconosciute, senza rubare quelle degli altri slot"
+else
+  say "NO   finestre figlie:"
+  sed 's/^/       /' "$TMP/orph.out"
+  fail=1
+fi
+
 exit "$fail"

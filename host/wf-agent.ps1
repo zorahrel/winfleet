@@ -56,6 +56,7 @@ public class A {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h, out int pid);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
   public delegate bool EnumProc(IntPtr h, IntPtr p);
@@ -75,6 +76,36 @@ public class A {
       System.Text.StringBuilder t = new System.Text.StringBuilder(len + 1);
       GetWindowText(h, t, len + 1);
       outp.Append(h.ToInt64()).Append('\t').Append(t.ToString()).Append('\n');
+      return true;
+    }, IntPtr.Zero);
+    return outp.ToString();
+  }
+
+  // Come ListWindows, ma dice anche DOVE sta ogni finestra e di che processo e'.
+  //
+  // Serve a riconoscere le finestre che un'app ha aperto per conto suo su uno
+  // schermo virtuale - il classico "Salva con nome" di Esplora file lanciato da
+  // Arc. Sono finestre vere, sullo schermo giusto, che nessuno sta mostrando: da
+  // fuori l'utente ha cliccato "scarica" e non e' successo niente.
+  //
+  // Righe: hwnd \t x \t y \t w \t h \t pid \t titolo
+  public static string ListWindowsFull() {
+    System.Text.StringBuilder outp = new System.Text.StringBuilder();
+    EnumWindows(delegate(IntPtr h, IntPtr p) {
+      if (!IsWindowVisible(h)) return true;
+      if (GetWindow(h, 4) != IntPtr.Zero) return true;
+      int len = GetWindowTextLength(h);
+      if (len == 0) return true;
+      RECT r; if (!GetWindowRect(h, out r)) return true;
+      if ((r.R - r.L) < 200 || (r.B - r.T) < 120) return true;
+      System.Text.StringBuilder t = new System.Text.StringBuilder(len + 1);
+      GetWindowText(h, t, len + 1);
+      int wpid = 0; GetWindowThreadProcessId(h, out wpid);
+      outp.Append(h.ToInt64()).Append('\t')
+          .Append(r.L).Append('\t').Append(r.T).Append('\t')
+          .Append(r.R - r.L).Append('\t').Append(r.B - r.T).Append('\t')
+          .Append(wpid).Append('\t')
+          .Append(t.ToString()).Append('\n');
       return true;
     }, IntPtr.Zero);
     return outp.ToString();
@@ -155,7 +186,21 @@ function Set-AppSize($slot, $w, $h) {
 
 $listener = New-Object Net.HttpListener
 $listener.Prefixes.Add("http://+:$Port/")
-$listener.Start()
+
+# Se l'agente precedente e' morto male, Windows tiene la registrazione HTTP per
+# qualche secondo e Start() fallisce con "Conflitto con una registrazione
+# esistente". L'agente moriva li', e restava giu': winfleet smetteva di aprire
+# qualsiasi cosa, con un timeout di curl come unico sintomo. Ora si aspetta che
+# la porta si liberi - succede da solo, in una decina di secondi.
+$avviato = $false
+for ($t = 0; $t -lt 30 -and -not $avviato; $t++) {
+    try { $listener.Start(); $avviato = $true }
+    catch {
+        if ($t -eq 0) { Note "porta $Port ancora occupata da un'istanza precedente: aspetto" }
+        Start-Sleep -Seconds 2
+    }
+}
+if (-not $avviato) { Note "porta $Port occupata dopo un minuto: esco"; exit 1 }
 Note "in ascolto su $Port"
 
 while ($listener.IsListening) {
@@ -321,6 +366,78 @@ while ($listener.IsListening) {
             if ($mon) { $body = "$($mon.width)x$($mon.height)" }
         }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
+        elseif ($req.Url.AbsolutePath -eq '/orphans') {
+            # Le finestre che stanno su uno schermo virtuale e che NESSUNO slot
+            # sta mostrando.
+            #
+            # E' il caso di un'app che ne apre un'altra: si clicca "scarica" in
+            # Arc, Windows apre Esplora file sullo stesso schermo virtuale, e sul
+            # Mac non si vede niente - la finestra c'e', e' viva, ma il ritaglio
+            # mostra solo quella dell'app principale. Da fuori sembra che il
+            # click non abbia fatto nulla.
+            #
+            # "Orfana" e' una cosa precisa: sta dentro il rettangolo di un
+            # monitor virtuale, e il suo handle non e' quello che lo slot ha
+            # rivendicato. Il confronto e' con l'handle, non col titolo o col
+            # processo: e' l'unico dato che non si presta a equivoci.
+            $out = New-Object Text.StringBuilder
+            $righe = [A]::ListWindowsFull() -split "`n"
+            $vdd = @()
+            # "@(ConvertFrom-Json ...)" NON basta: su un array JSON questa
+            # versione di PowerShell restituisce UN oggetto le cui proprieta'
+            # sono a loro volta array (slot = 0,1,2,3), e avvolgerlo in @() da'
+            # un elenco di UNO. Il primo cast a [int] esplode con "Impossibile
+            # convertire System.Object[] in System.Int32" e l'endpoint muore in
+            # silenzio. Si scorre con foreach, che invece srotola davvero.
+            try {
+                $parsed = ConvertFrom-Json ((Get-Content 'C:\winfleet\vdd.json' -Raw).TrimStart([char]0xFEFF))
+                foreach ($e in $parsed) { $vdd += $e }
+            } catch { }
+            foreach ($r in $righe) {
+                if (-not $r) { continue }
+                $c = $r -split "`t"
+                if ($c.Count -lt 7) { continue }
+                $hw = [int64]$c[0]; $x = [int]$c[1]; $y = [int]$c[2]
+                $w  = [int]$c[3];   $h = [int]$c[4]; $wpid = [int]$c[5]
+                $titolo = $c[6]
+                # "Program Manager" e' il desktop di Windows: e' una finestra a
+                # tutti gli effetti, sta ovunque, e non e' roba che l'utente ha
+                # aperto. Portarla sul Mac significherebbe mostrargli lo sfondo
+                # del PC al posto della sua app.
+                if ($titolo -eq 'Program Manager') { continue }
+                # E le finestre di Moonlight/Sunshine: sono nostre, non dell'app.
+                if ($titolo -like 'NVIDIA GeForce Overlay*') { continue }
+                if ($titolo -eq 'Esperienza input di Windows' -or $titolo -eq 'Windows Input Experience') { continue }
+                $cx = $x + [int]($w / 2); $cy = $y + [int]($h / 2)
+                foreach ($m in $vdd) {
+                    if ([int]$m.width -le 0) { continue }
+                    if ($cx -lt [int]$m.x -or $cx -ge ([int]$m.x + [int]$m.width))  { continue }
+                    if ($cy -lt [int]$m.y -or $cy -ge ([int]$m.y + [int]$m.height)) { continue }
+                    $slot = [int]$m.slot
+                    $mio = Get-Hwnd $slot
+                    if ($mio -ne [IntPtr]::Zero -and $mio.ToInt64() -eq $hw) { break }
+                    # E nemmeno se e' la finestra principale di un ALTRO slot:
+                    # due slot che mostrano la stessa finestra sono due copie
+                    # della stessa cosa, e chiuderne una chiude l'altra.
+                    $altrui = $false
+                    foreach ($m2 in $vdd) {
+                        $s2 = [int]$m2.slot
+                        if ($s2 -eq $slot) { continue }
+                        $h2 = Get-Hwnd $s2
+                        if ($h2 -ne [IntPtr]::Zero -and $h2.ToInt64() -eq $hw) { $altrui = $true; break }
+                    }
+                    if ($altrui) { break }
+                    # Una riga sola: in PowerShell una catena di .Append() spezzata
+                    # su piu' righe NON continua - la seconda riga diventa
+                    # un'istruzione a se' e l'endpoint muore in silenzio,
+                    # rispondendo "no" senza dire perche'.
+                    [void]$out.Append("$slot`t$hw`t$wpid`t$titolo`n")
+                    break
+                }
+            }
+            $body = $out.ToString()
+            if (-not $body) { $body = '' }
+        }
         elseif ($req.Url.AbsolutePath -eq '/raise') {
             $hw = [IntPtr][int64]$req.QueryString['hwnd']
             if ([A]::IsWindow($hw)) {
