@@ -648,6 +648,32 @@ pick_slot(){ # [nome-app]
 # non si tocca.
 reap_stuck_slots(){
   local i freed=0
+
+  # Prima: le finestre calde che non hanno mai avuto una finestra.
+  #
+  # Succede quando l'app usata per scaldare e' a istanza singola ed era gia'
+  # aperta altrove: lo stream parte, il monitor resta vuoto, e lo slot resta
+  # occupato per sempre da qualcosa che non si vedra' mai. Costa doppio: uno
+  # stream acceso a vuoto, e uno slot in meno - e con due slot occupati cosi' il
+  # rifornitore smette di preparare ("solo 1 slot libero, non ne occupo uno") e
+  # ogni apertura torna a pagare la via lunga. Misurato: cinque minuti senza che
+  # nessuna finestra calda venisse rimpiazzata.
+  #
+  # Si chiudono solo le NOSTRE finestre di scorta (warm=1) e solo se non sono mai
+  # state marcate pronte: una finestra dell'utente, o una calda funzionante, non
+  # si tocca.
+  for i in $(seq 0 $(( SLOTS - 1 ))); do
+    slot_live "$i" 2>/dev/null || continue
+    [ "$(slot_get "$i" warm)" = "1" ] || continue
+    # (if e non "&& continue": con set -e un test falso come ultima espressione
+    # di un ramo puo' terminare la funzione, e qui succederebbe sempre.)
+    if [ "$(slot_get "$i" app)" = "$READY_MARK" ]; then continue; fi
+    if [ -n "$(slot_hwnd_live "$i" 2>/dev/null || true)" ]; then continue; fi
+    trace "slot $i: finestra calda senza finestra, la chiudo"
+    close_slot "$i" >/dev/null 2>&1 || true
+    freed=$(( freed + 1 ))
+  done
+
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
     case "$(slot_state "$i")" in
