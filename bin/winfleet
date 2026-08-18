@@ -1776,6 +1776,31 @@ cmd_open(){
     mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
     trace "modalita' scelta: $mode"
     [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
+    # Nessuna modalita' vuol dire che i monitor virtuali non ci sono piu': il
+    # driver li stacca se smette di ricevere il ping (succede quando tutti gli
+    # stream si chiudono insieme, visto dal vivo - vdd.log: "slot 0 -> 0x0
+    # (rc -100)"). Da fuori il sintomo e' che winfleet smette semplicemente di
+    # aprire, e resta cosi' finche' qualcuno non tocca l'host a mano.
+    #
+    # Si prova a farli rinascere prima di arrendersi: riavviare l'attivita' che
+    # li tiene in vita costa dieci secondi e non ha effetti collaterali - se i
+    # monitor ci fossero gia', li ricrea uguali.
+    if [ -z "$mode" ]; then
+      trace "nessuna modalita': i monitor virtuali sono spariti, li faccio rinascere"
+      info "i monitor virtuali dell'host non rispondono: li riavvio…"
+      # Prima si prova a riavviare l'attivita'. Se non c'e' piu' - e succede: e'
+      # stata trovata cancellata, e da quel momento winfleet non apriva piu'
+      # niente senza dire perche' - la si registra di nuovo. Registrarla quando
+      # c'e' gia' non fa danni (-Force la sovrascrive uguale).
+      ssh "${SSH_OPTS[@]}" -o ConnectTimeout=15 "$HOST_SSH" \
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Get-ScheduledTask -TaskName winfleet-vdd -EA SilentlyContinue)) { & C:\\winfleet\\setup-vdd.ps1 -Slots $SLOTS } ; schtasks /end /tn winfleet-vdd ; schtasks /run /tn winfleet-vdd\"" \
+        >/dev/null 2>&1 || true
+      sleep 14
+      refresh_vdd
+      mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
+      [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
+      [ -n "$mode" ] && trace "monitor virtuali ripristinati: $mode"
+    fi
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
     local ww="${want%x*}"
     [ "$ww" -gt "${mode%x*}" ] && ww="${mode%x*}"
