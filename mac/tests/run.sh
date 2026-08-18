@@ -206,4 +206,16 @@ else
   fail=1
 fi
 
+# --- 11. icone: badge e allineamento ---------------------------------------
+# Il badge di Windows e' cio' che distingue una finestra remota da un'app del
+# Mac, e il runner e' l'icona che si vede mentre l'app e' APERTA: due posti dove
+# un'icona sbagliata resta per giorni senza che niente la segnali.
+if /opt/homebrew/bin/bash mac/tests/icon-badge.sh > "$TMP/icb.out" 2>&1; then
+  say "ok   icone reali: badge presente, runner e lanciatori allineati e firmati"
+else
+  say "NO   icone reali:"
+  sed 's/^/       /' "$TMP/icb.out"
+  fail=1
+fi
+
 exit "$fail"

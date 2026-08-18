@@ -2380,7 +2380,59 @@ build_icns(){ # nome exe destinazione.icns
       --out "$tmp/i.iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1
   done
   iconutil -c icns "$tmp/i.iconset" -o "$out" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+
+  # Si CONTROLLA che il badge ci sia davvero, invece di fidarsi.
+  #
+  # Il badge lo mette wf-badge.py, che puo' fallire in silenzio (Pillow assente,
+  # sorgente strana) - e in quel caso l'icona viene scritta lo stesso, senza il
+  # segno che distingue una finestra remota da un'app del Mac. E' successo:
+  # Telegram aveva un badge grande un settimo di quello delle altre, generato in
+  # un momento in cui il ridimensionamento era ancora sbagliato, ed e' rimasto
+  # li' per giorni perche' nessuno lo guardava.
+  #
+  # Il controllo e' quello che farebbe l'occhio: quanta parte dell'angolo in
+  # basso a destra e' bianca. Sotto il 20% il badge non c'e' o e' troppo piccolo
+  # per vedersi, e l'icona non va tenuta - meglio rifarla al prossimo giro che
+  # tenersene per sempre una che mente.
+  if [ -f "$WF_BADGE" ]; then
+    local pct; pct="$(icns_badge_pct "$out")"
+    if [ "${pct:-100}" -lt 20 ] 2>/dev/null; then
+      trace "icona $1: badge mancante o troppo piccolo ($pct%), la scarto"
+      rm -f "$out" 2>/dev/null || true
+      rm -rf "$tmp"
+      return 1
+    fi
+  fi
+
   rm -rf "$tmp"
+}
+
+# Quanta parte dell'angolo in basso a destra di un'icona e' bianca, in percento.
+# E' il modo piu' semplice per chiedersi "il badge di Windows c'e'?" senza
+# guardarla: il badge e' quattro riquadri bianchi in quell'angolo, e occupa circa
+# un terzo dello spazio. Senza Pillow non si giudica e si risponde 100, cioe'
+# "va bene": un controllo che non puo' funzionare non deve buttare via icone.
+icns_badge_pct(){ # file.icns -> 0..100
+  command -v python3 >/dev/null 2>&1 || { echo 100; return 0; }
+  WF_ICNS="$1" python3 -c '
+import os, subprocess, tempfile
+try:
+    from PIL import Image
+except ImportError:
+    print(100); raise SystemExit
+d = tempfile.mkdtemp()
+png = os.path.join(d, "c.png")
+subprocess.run(["sips", "-s", "format", "png", "-Z", "256",
+                os.environ["WF_ICNS"], "--out", png], capture_output=True)
+try:
+    im = Image.open(png).convert("RGBA")
+except Exception:
+    print(100); raise SystemExit
+w, h = im.size
+px = list(im.crop((int(w * 0.6), int(h * 0.6), w, h)).getdata())
+white = sum(1 for p in px if p[0] > 200 and p[1] > 200 and p[2] > 200 and p[3] > 120)
+print(int(100 * white / max(1, len(px))))
+' 2>/dev/null || echo 100
 }
 
 # Una stringa che puo' finire dentro uno script di shell senza sorprese: i nomi delle
@@ -2605,6 +2657,17 @@ cmd_icons(){ # [--tutte]
   while IFS=$'\t' read -r name exe; do
     [ -n "$name" ] && [ -n "$exe" ] || continue
     icns="$CONFIG_DIR/icons/$name.icns"
+    # Un'icona che c'e' gia' ma ha perso il badge va rifatta comunque: e' il
+    # difetto che nessuno vedrebbe mai altrimenti, perche' il criterio normale e'
+    # "il file c'e', vado avanti". Trovate cosi' tre icone col badge grande un
+    # settimo del dovuto, rimaste in giro per giorni.
+    if [ "$force" = 0 ] && [ -f "$icns" ]; then
+      local pct; pct="$(icns_badge_pct "$icns")"
+      if [ "${pct:-100}" -lt 20 ] 2>/dev/null; then
+        trace "icona $name: badge al $pct%, la rifaccio"
+        rm -f "$icns" 2>/dev/null || true
+      fi
+    fi
     # Gia' presente: non si rifa'. Le icone di Windows non cambiano da sole, e
     # rifarle tutte a ogni giro trasformerebbe un comando da usare in uno da evitare.
     [ "$force" = 0 ] && [ -f "$icns" ] && { skip=$(( skip + 1 )); continue; }
@@ -2646,6 +2709,36 @@ refresh_launcher_icons(){
     touch "$a"
     changed=$(( changed + 1 ))
   done
+
+  # E i RUNNER, che sono quelli che si vedono davvero.
+  #
+  # Il lanciatore e' l'icona su cui si clicca; il runner e' il bundle da cui parte
+  # lo stream, cioe' quello che compare nel Dock mentre l'app e' APERTA. Aggiornare
+  # solo i primi lasciava i secondi indietro per sempre: trovati tutti e otto con
+  # icone vecchie, fra cui Telegram col badge di Windows sbagliato - visibile in
+  # quella che l'utente guarda per tutto il tempo in cui usa l'app.
+  #
+  # Il file dentro il runner si chiama moonlight.icns perche' il bundle e' una
+  # copia di Moonlight.app e la chiave CFBundleIconFile punta li'.
+  for a in "$RUNNERS"/*.app; do
+    [ -d "$a" ] || continue
+    n="$(basename "$a" .app)"
+    ic="$CONFIG_DIR/icons/$n.icns"
+    [ -f "$ic" ] || continue
+    cmp -s "$ic" "$a/Contents/Resources/moonlight.icns" && continue
+    cp -f "$ic" "$a/Contents/Resources/moonlight.icns" 2>/dev/null || continue
+    # La firma sigilla anche le risorse: appena si tocca l'icona il bundle
+    # diventa "a sealed resource is missing or invalid" e su Apple Silicon NON
+    # PARTE PIU'. Va rifirmato subito, o si scambia un'icona giusta con un'app
+    # che non si apre - verificato: dopo la copia, codesign -v fallisce.
+    if ! codesign --force --deep --sign - "$a" >/dev/null 2>&1; then
+      trace "runner $n: rifirma fallita dopo il cambio icona"
+      continue
+    fi
+    touch "$a"
+    changed=$(( changed + 1 ))
+  done
+
   [ "$changed" = 0 ] && return 0
   killall Dock 2>/dev/null || true
   info "aggiornate le icone di $changed lanciatori"
