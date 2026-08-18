@@ -33,7 +33,19 @@ $STATE   = 'C:\winfleet\vdd.json'
 $REQUEST = 'C:\winfleet\vdd-request.txt'
 $LOG   = 'C:\winfleet\vdd.log'
 function Note($m) { "$(Get-Date -f 'HH:mm:ss')  $m" | Add-Content $LOG; Write-Host $m }
-trap { Note "ERRORE: $_"; break }
+# ATTENZIONE: "break" qui usciva dal CICLO PRINCIPALE, cioe' terminava il
+# processo - e questo processo e' l'unico che tiene vivi i monitor virtuali (il
+# driver li stacca se smette di ricevere il ping). Un errore banale e
+# recuperabile bastava quindi a far sparire tutti gli schermi: e' successo con
+# "Un oggetto nel percorso C:\winfleet\vdd-request.txt non esiste", una corsa fra
+# chi legge il file delle richieste e chi lo cancella, e da quel momento winfleet
+# non apriva piu' niente.
+#
+# Il trap ha la precedenza sul try/catch locale, quindi il catch che c'era non
+# proteggeva. Ora si annota e si CONTINUA: un giro perso vale infinitamente meno
+# di tutti i monitor persi. Gli errori veri, quelli in fase di avvio, escono
+# comunque perche' li' il ciclo non e' ancora partito.
+trap { Note "ERRORE (continuo): $_"; continue }
 Set-Content $LOG ''
 
 $sig = @'
@@ -216,6 +228,24 @@ try {
     # driver li stacca da solo, ma Windows riusa gli stessi \\.\DISPLAYn, quindi
     # distinguerli per nome non funziona — si aspetta il campo libero e si conta.
     for ($t = 0; $t -lt 60 -and @([Vdd]::VirtualDisplays()).Count -gt 0; $t++) { Start-Sleep -Milliseconds 250 }
+
+    # NON si prova a rimuoverli a mano.
+    #
+    # Sembrava la cosa giusta - se ne restano di vecchi, staccali prima di
+    # aggiungerne altri - e invece rompe tutto: chiamare REMOVE su indici che il
+    # driver non ha piu' lo lascia in uno stato in cui rifiuta anche le aggiunte
+    # successive ("Nessun monitor virtuale collegato"), e il risultato e' ZERO
+    # monitor invece di quattro. Provato e misurato.
+    #
+    # I monitor di un'istanza morta li stacca il watchdog del driver da solo,
+    # quando smette di ricevere il ping: e' il motivo dell'attesa qui sopra. Se
+    # l'attesa scade e ce ne sono ancora, vuol dire che un ALTRO processo li sta
+    # tenendo vivi - e in quel caso la cosa giusta e' non aggiungerne, non
+    # strapparli a lui.
+    $residui = @([Vdd]::VirtualDisplays()).Count
+    if ($residui -gt 0) {
+        Note "attenzione: $residui monitor virtuali sono ancora attaccati (un altro wf-vdd e' vivo?)"
+    }
 
     for ($i = 0; $i -lt $Count; $i++) {
         $added += [int][Vdd]::Add($h)
