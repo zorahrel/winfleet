@@ -2174,6 +2174,27 @@ cmd_open(){
     done
 
     if [ -n "$sz" ]; then
+      # La misura dice che la finestra di Moonlight e' sullo schermo del Mac, e
+      # quella si apre SEMPRE - anche quando l'app su Windows non e' partita
+      # affatto. Dichiarare "aperta" a questo punto e' come dire che un televisore
+      # acceso su un canale spento sta trasmettendo: l'utente si ritrova una
+      # finestra vuota e nessuno gli dice perche'.
+      #
+      # Si chiede quindi all'agente se sul monitor c'e' davvero una finestra.
+      # Qualche secondo di pazienza, perche' un'app lenta ad avviarsi e' normale;
+      # se non arriva si dice com'e', invece di mentire.
+      local w i2
+      for i2 in $(seq 1 40); do
+        w="$(slot_hwnd_live "$slot" 2>/dev/null || true)"
+        if [ -n "$w" ]; then break; fi
+        sleep 0.5
+      done
+      if [ -z "${w:-}" ]; then
+        bad "«${app}» non ha aperto nessuna finestra su Windows: la finestra resterebbe vuota"
+        info "  l'app potrebbe essere rotta sull'host: provala li' e vedi se parte"
+        close_slot "$slot" >/dev/null 2>&1 || true
+        return 1
+      fi
       printf "${c_bold}%s${c_off} → finestra %d sul Mac  ${c_dim}(%s, %s, %d fps)${c_off}\n" \
         "$app" "$(( slot + 1 ))" "$HOST_NAME" "$sz" "$FPS"
       return 0

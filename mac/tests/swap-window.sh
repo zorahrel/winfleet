@@ -97,6 +97,21 @@ prova "nessuna finestra: fallisce"                  fallito  2 111 ""
 prova "finestra di un altro slot: fallisce"         fallito  2 111 999 3 999
 prova "da slot vuoto una finestra nuova va bene"    riuscito 1 ""  555
 
+# Un'app che non apre nessuna finestra su Windows non va dichiarata aperta.
+#
+# La misura che si aspettava e' quella della finestra di MOONLIGHT sul Mac, e
+# quella compare sempre - anche quando l'app di la' non e' partita affatto.
+# Risultato: winfleet diceva "Calcolatrice - finestra 1 sul Mac" e l'utente si
+# ritrovava una finestra vuota, senza che niente spiegasse perche'. (La
+# Calcolatrice, su questo host, e' rotta davvero: non parte nemmeno lanciata a
+# mano.)
+if grep -q 'non ha aperto nessuna finestra su Windows' bin/winfleet; then
+  echo "  ok   un'app senza finestra non viene dichiarata aperta"
+else
+  echo "  NO   manca il controllo: si dichiarerebbe aperta una finestra vuota"
+  fail=1
+fi
+
 # I due controlli sopra provano la LOGICA; questo prova che sia davvero nel
 # codice - una logica giusta che nessuno chiama non serve a niente.
 if grep -q 'slot_get "\$slot" real' bin/winfleet && grep -q 'real=%s' bin/winfleet; then
