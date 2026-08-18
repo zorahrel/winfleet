@@ -91,11 +91,23 @@ public class P {
   //
   // Si escludono invece gli handle che un ALTRO slot ha gia' rivendicato: sono
   // fatti registrati, non ipotesi.
-  public static IntPtr FindNew(IntPtr[] before, IntPtr[] taken) {
+  // "mine" sono i pid dei processi di QUESTA app: quando c'e', si accettano solo
+  // le loro finestre.
+  //
+  // Senza, due slot che lanciano un'app nello stesso istante si scambiano le
+  // finestre: ognuno vede comparire quella dell'altro, e' nuova anche per lui, e
+  // se la prende. Misurato aprendo Arc e Telegram insieme - lo slot di Arc
+  // mostrava Telegram e viceversa. L'elenco "gia' rivendicate" non basta, perche'
+  // nessuno dei due ha ancora fatto in tempo a rivendicare niente.
+  public static IntPtr FindNew(IntPtr[] before, IntPtr[] taken, int[] mine) {
     IntPtr best = IntPtr.Zero; int bestArea = 0;
     foreach (IntPtr h in Candidates()) {
       if (Array.IndexOf(before, h) >= 0) continue;
       if (taken != null && Array.IndexOf(taken, h) >= 0) continue;
+      if (mine != null && mine.Length > 0) {
+        int wp = 0; GetWindowThreadProcessId(h, out wp);
+        if (Array.IndexOf(mine, wp) < 0) continue;
+      }
       RECT r; GetWindowRect(h, out r);
       int area = (r.R - r.L) * (r.B - r.T);
       if (area > bestArea) { bestArea = area; best = h; }
@@ -269,6 +281,35 @@ function Get-TakenHwnds {
     return $taken.ToArray()
 }
 
+# I pid dei processi che appartengono a QUESTA app.
+#
+# Serve a non prendersi la finestra di un altro slot che sta aprendo la sua app
+# nello stesso momento: senza, due aperture simultanee si scambiano le finestre
+# (misurato con Arc e Telegram aperte insieme).
+#
+# Per le app in pacchetto si guarda la cartella del pacchetto, per le altre il
+# percorso dell'eseguibile - lo stesso criterio gia' usato per chiudere l'app,
+# che e' l'unico che non si presta a equivoci.
+#
+# Se non si riesce a determinarli si torna un elenco VUOTO, e FindNew si comporta
+# come prima: meglio il vecchio rischio che nessuna finestra.
+function Get-MyPids {
+    $out = New-Object 'System.Collections.Generic.List[int]'
+    try {
+        foreach ($pr in Get-Process -EA SilentlyContinue) {
+            $pth = $null
+            try { $pth = $pr.Path } catch { }
+            if (-not $pth) { continue }
+            if ($packaged) {
+                if ($root -and $pth.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $out.Add($pr.Id) }
+            } elseif ($pth.Equals($Exe, [StringComparison]::OrdinalIgnoreCase)) {
+                $out.Add($pr.Id)
+            }
+        }
+    } catch { }
+    return $out.ToArray()
+}
+
 if ($preLaunched) {
     Note "app gia' avviata dall'agente: non la rilancio"
     # ATTENZIONE all'ordine: $before e' stato preso ADESSO, cioe' dopo che
@@ -302,7 +343,25 @@ if ($preLaunched) {
 $h = [IntPtr]::Zero
 for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) {
     Start-Sleep -Milliseconds 400
-    $h = [P]::FindNew($before.ToArray(), (Get-TakenHwnds))
+    # Prima si cerca SOLO fra le finestre dei processi di questa app: e' l'unico
+    # modo di non prendersi quella di un altro slot che sta aprendo la sua nello
+    # stesso istante (misurato: Arc e Telegram aperte insieme si scambiavano le
+    # finestre, e Paint rubava quella della Calcolatrice lasciandola senza).
+    $h = [P]::FindNew($before.ToArray(), (Get-TakenHwnds), (Get-MyPids))
+
+    # Ma dopo qualche secondo si allarga, perche' il filtro sui pid NON vale per
+    # tutte le app: quelle dello Store affidano spesso la finestra a un altro
+    # processo (ApplicationFrameHost), che non sta nella cartella del pacchetto -
+    # e cercando solo i "propri" pid non si troverebbe MAI, con l'app viva e lo
+    # schermo vuoto. Verificato sulla Calcolatrice: CalculatorApp non possiede
+    # nessuna finestra.
+    #
+    # Tre secondi di preferenza bastano: e' molto piu' di quanto serva a due
+    # aperture simultanee per distinguersi, e molto meno dei trenta che si
+    # aspettavano prima di arrendersi.
+    if ($h -eq [IntPtr]::Zero -and $i -ge 8) {
+        $h = [P]::FindNew($before.ToArray(), (Get-TakenHwnds), $null)
+    }
 }
 if ($h -eq [IntPtr]::Zero) { Note 'nessuna finestra comparsa'; return }
 
@@ -329,7 +388,7 @@ $lastW = -1; $lastH = -1; $lastH2 = [IntPtr]::Zero
 $lastScan = Get-Date
 while ($true) {
     if (-not [P]::IsWindow($h) -or -not [P]::IsWindowVisible($h)) {
-        $h2 = [P]::FindNew($before.ToArray(), (Get-TakenHwnds))          # splash -> finestra vera
+        $h2 = [P]::FindNew($before.ToArray(), (Get-TakenHwnds), (Get-MyPids))          # splash -> finestra vera
         if ($h2 -ne [IntPtr]::Zero) { $h = $h2; $gone = 0; Set-Content "C:\winfleet\hwnd$Slot.txt" ([int64]$h) }
         # Conta il TEMPO, non i giri: il ciclo gira dieci volte al secondo per
         # seguire i ridimensionamenti, e tre giri sarebbero tre decimi — meno di
@@ -348,7 +407,7 @@ while ($true) {
         # processo: se c'e', quella e' la finestra buona e si aggiorna il file.
         if (((Get-Date) - $lastScan).TotalSeconds -ge 2) {
             $lastScan = Get-Date
-            $h3 = [P]::FindNew($before.ToArray(), (Get-TakenHwnds))
+            $h3 = [P]::FindNew($before.ToArray(), (Get-TakenHwnds), (Get-MyPids))
             if ($h3 -ne [IntPtr]::Zero -and $h3 -ne $h) {
                 $p3 = 0; [P]::GetWindowThreadProcessId($h3, [ref]$p3) | Out-Null
                 if ($p3 -eq $appPid) {
