@@ -244,7 +244,25 @@ try {
     # strapparli a lui.
     $residui = @([Vdd]::VirtualDisplays()).Count
     if ($residui -gt 0) {
-        Note "attenzione: $residui monitor virtuali sono ancora attaccati (un altro wf-vdd e' vivo?)"
+        # Quasi sempre vuol dire che un ALTRO wf-vdd e' ancora vivo: due processi
+        # insieme aggiungono ognuno i suoi quattro monitor e nessuno toglie quelli
+        # dell'altro - trovati DODICI dove ne servivano quattro, e ogni riavvio ne
+        # lasciava dietro altri quattro.
+        #
+        # Si chiude l'altro invece di aggiungere sopra il suo lavoro: i suoi
+        # monitor li stacca il watchdog del driver da solo qualche secondo dopo,
+        # che e' l'unico modo che funziona (rimuoverli a mano rompe il driver).
+        $miei = $PID
+        $altri = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
+                   Where-Object { $_.ProcessId -ne $miei -and $_.CommandLine -like '*wf-vdd*' })
+        if ($altri.Count -gt 0) {
+            Note "c'e' gia' un altro wf-vdd ($($altri.Count)): lo chiudo e aspetto che il driver stacchi i suoi"
+            foreach ($a in $altri) { Stop-Process -Id $a.ProcessId -Force -EA SilentlyContinue }
+            for ($t = 0; $t -lt 40 -and @([Vdd]::VirtualDisplays()).Count -gt 0; $t++) { Start-Sleep -Milliseconds 250 }
+            Note "ora ne restano $(@([Vdd]::VirtualDisplays()).Count)"
+        } else {
+            Note "attenzione: $residui monitor virtuali attaccati e nessun altro wf-vdd - li lascio stare"
+        }
     }
 
     for ($i = 0; $i -lt $Count; $i++) {
