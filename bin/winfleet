@@ -1872,9 +1872,22 @@ cmd_open(){
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
     # esistono.
     slot="$(pick_slot "$app")" || {
-      read -r addr _ <<<"$(resolve_endpoint)"
-      [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso?  winfleet doctor"
-      die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+      # Prima di dire "sono tutte occupate", si guarda se qualcuna e' occupata
+      # per FINTA: una finestra di scorta che non e' mai arrivata ad aprire una
+      # finestra tiene il posto senza mostrare niente, e da fuori il sintomo e'
+      # che l'app non si apre affatto. Misurato: Paint fermo 82 secondi con uno
+      # slot preso da una Calcolatrice che non era mai comparsa.
+      #
+      # reap_stuck_slots lo faceva gia', ma lo chiamava solo il rifornitore -
+      # cioe' proprio chi non gira quando gli slot sono pieni. Chi apre e non
+      # trova posto e' il primo ad avere motivo di guardare.
+      trace "nessuno slot: provo a liberare quelli occupati per finta"
+      reap_stuck_slots
+      slot="$(pick_slot "$app")" || {
+        read -r addr _ <<<"$(resolve_endpoint)"
+        [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso?  winfleet doctor"
+        die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+      }
     }
     refresh_vdd
     trace "scelta modalita' fatta"
