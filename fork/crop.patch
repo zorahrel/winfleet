@@ -65,10 +65,43 @@ index c0be000..4cf6662 100644
          engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));
          if (engine.rootObjects().isEmpty())
 diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
-index 85169d1..3c7d7e7 100644
+index 85169d1..3127c0d 100644
 --- a/app/streaming/input/mouse.cpp
 +++ b/app/streaming/input/mouse.cpp
-@@ -136,11 +136,42 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+@@ -104,9 +104,30 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
+         SDL_Rect src, dst;
+         bool mouseInVideoRegion;
+ 
++        // WinFleet: la sorgente e' il RITAGLIO, non lo schermo remoto intero.
++        //
++        // Qui si calcola il rettangolo del video dentro la finestra mantenendo
++        // il rapporto della sorgente, con le bande ai lati quando le due forme
++        // non coincidono. Col ritaglio quel conto sbagliava due volte: la forma
++        // di riferimento e' quella del RITAGLIO (che segue la finestra, quindi
++        // bande non ce ne sono mai) e il video occupa tutta la finestra.
++        //
++        // Con lo schermo intero, su una finestra 1200x700 il conto dava un video
++        // di 1050x700 spostato di 75 px: il click cadeva fino a 65 pixel lontano
++        // da dove si puntava. L'errore e' NULLO al centro e sui bordi e massimo
++        // a meta' strada - per questo sembrava capriccioso, e compariva solo
++        // dopo aver ridimensionato (finche' finestra e schermo hanno la stessa
++        // forma, non si vede).
++        SDL_Rect wfSrcCrop;
+         src.x = src.y = 0;
+-        src.w = m_StreamWidth;
+-        src.h = m_StreamHeight;
++        if (StreamUtils::getWinFleetCrop(&wfSrcCrop)) {
++            src.w = wfSrcCrop.w;
++            src.h = wfSrcCrop.h;
++        }
++        else {
++            src.w = m_StreamWidth;
++            src.h = m_StreamHeight;
++        }
+ 
+         dst.x = dst.y = 0;
+         dst.w = windowWidth;
+@@ -136,11 +157,42 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
              }
          }
          if (mouseInVideoRegion || m_MouseWasInVideoRegion || m_PendingMouseButtonsAllUpOnVideoRegionLeave) {
@@ -112,6 +145,28 @@ index 85169d1..3c7d7e7 100644
              SDL_ShowCursor((mouseInVideoRegion && m_MouseCursorCapturedVisibilityState == SDL_DISABLE) ? SDL_DISABLE : SDL_ENABLE);
              if (!mouseInVideoRegion && buttonState != 0) {
                  // If we still have a button pressed on leave, wait for that to come up
+@@ -245,9 +297,19 @@ bool SdlInputHandler::isMouseInVideoRegion(int mouseX, int mouseY, int windowWid
+         SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+     }
+ 
++    // WinFleet: stessa correzione. Con lo schermo intero come sorgente, "il
++    // mouse e' sopra il video" rispondeva di no in due strisce laterali dove il
++    // video c'e' eccome - e li' i movimenti non venivano mandati affatto.
++    SDL_Rect wfSrcCrop;
+     src.x = src.y = 0;
+-    src.w = m_StreamWidth;
+-    src.h = m_StreamHeight;
++    if (StreamUtils::getWinFleetCrop(&wfSrcCrop)) {
++        src.w = wfSrcCrop.w;
++        src.h = wfSrcCrop.h;
++    }
++    else {
++        src.w = m_StreamWidth;
++        src.h = m_StreamHeight;
++    }
+ 
+     dst.x = dst.y = 0;
+     dst.w = windowWidth;
 diff --git a/app/streaming/streamutils.cpp b/app/streaming/streamutils.cpp
 index 9bd32f5..0fdf665 100644
 --- a/app/streaming/streamutils.cpp

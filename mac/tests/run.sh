@@ -218,4 +218,18 @@ else
   fail=1
 fi
 
+# --- 12. posizione del mouse col ritaglio -----------------------------------
+# Il click deve cadere dove punti, a qualunque misura della finestra. Il conto
+# del rettangolo video partiva dalla forma dello schermo remoto invece che da
+# quella del ritaglio: fino a 210 pixel di errore, nullo al centro e sui bordi e
+# massimo in mezzo - per questo sembrava capriccioso.
+clang -O2 -o "$TMP/mousemap" mac/tests/mouse-mapping.c 2>/dev/null || exit 1
+if "$TMP/mousemap" > "$TMP/mousemap.out" 2>&1; then
+  say "ok   mouse: il click cade dove punti, a ogni misura della finestra"
+else
+  say "NO   mouse:"
+  sed 's/^/       /' "$TMP/mousemap.out"
+  fail=1
+fi
+
 exit "$fail"

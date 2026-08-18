@@ -23,6 +23,11 @@ PATCH="$(cd "$(dirname "$0")" && pwd)/crop.patch"
 command -v git >/dev/null || { echo "Serve git."; exit 1; }
 QMAKE="$(command -v qmake6 || echo /opt/homebrew/opt/qt/bin/qmake)"
 [ -x "$QMAKE" ] || { echo "Serve Qt 6:  brew install qt"; exit 1; }
+# Homebrew non e' sempre nel PATH di chi lancia questo script (launchd, un altro
+# shell, una sessione non interattiva): aggiungerlo qui evita un "serve
+# pkg-config" con pkg-config gia' installato - misurato.
+case ":$PATH:" in *:/opt/homebrew/bin:*) ;; *) PATH="/opt/homebrew/bin:$PATH";; esac
+export PATH
 command -v pkg-config >/dev/null || { echo "Serve pkg-config:  brew install pkgconf"; exit 1; }
 
 echo "==> sorgenti in $SRC"
