@@ -1534,6 +1534,17 @@ cmd_endpoint(){
 # ospitare processi lunghi - l'agente launchd in mac/com.winfleet.ready.plist -
 # oppure a mano in un terminale che si lascia aperto.
 cmd_ready(){
+  # Scorta disattivata: si esce prima di toccare qualunque cosa.
+  #
+  # Va detto qui e non piu' avanti, perche' piu' avanti si prende un lucchetto,
+  # si interrogano le istanze e si scrivono tracce - tutto lavoro per non fare
+  # niente. E il messaggio dev'essere quello vero: "spenta", non "ce ne sono gia'
+  # abbastanza", che a scorta zero e' una risposta che confonde chi legge il log.
+  if [ "${WF_WARM:-0}" -le 0 ] 2>/dev/null; then
+    trace "ready: scorta disattivata (WF_WARM=0), non preparo niente"
+    return 0
+  fi
+
   # Un solo preparatore per volta.
   #
   # Questo comando resta vivo finche' vive la finestra che tiene calda, e
@@ -1562,7 +1573,7 @@ cmd_ready(){
   # Si ricontrolla quindi DOPO aver preso il lucchetto, che e' l'unico momento in
   # cui la risposta non puo' piu' cambiare sotto i piedi.
   local now_have; now_have="$(ready_count)"
-  if [ "$now_have" -ge "${WF_WARM:-2}" ]; then
+  if [ "$now_have" -ge "${WF_WARM:-0}" ]; then
     trace "ready: nel frattempo le finestre calde ci sono gia' ($now_have)"
     return 0
   fi
@@ -1574,11 +1585,28 @@ cmd_ready(){
   # globale sopravvive fino in fondo.
   trap 'rm -f "${WF_READY_LOCK:-}" 2>/dev/null || true' EXIT
 
-  # Quante tenerne calde. Una sola basta finche' si apre un'app per volta, ma
-  # aprendone due di fila la seconda paga i quindici secondi pieni - ed e'
-  # esattamente quando si nota. Due coprono il caso normale e lasciano comunque
-  # slot liberi; si cambia con WF_WARM.
-  local want="${WF_WARM:-2}"
+  # Quante tenerne calde: ZERO, e non e' una rinuncia.
+  #
+  # Le finestre calde esistevano perche' un'apertura da zero costava quindici
+  # secondi. Ora ne costa DUE - misurate cinque aperture di fila: 1.8, 1.8, 1.7,
+  # 1.6, 0.5 - perche' nel frattempo sono spariti i tre veri colli di bottiglia:
+  # l'avvio di powershell a ogni comando, i quattordici secondi di attesa in
+  # wf-rename, e le attese fisse dopo la chiusura dell'app.
+  #
+  # A quel punto la scorta e' solo un costo: due stream accesi a vuoto, due slot
+  # in meno, e una fila di guasti tutti suoi - finestre che comparivano nel Dock
+  # col nome dell'app usata per scaldarle, slot occupati da finestre mai nate,
+  # aperture che fallivano perche' l'app chiesta era proprio quella di scorta.
+  #
+  # Resta tutto il meccanismo, spento: WF_WARM=2 lo riaccende se un domani
+  # l'apertura tornasse lenta.
+  local want="${WF_WARM:-0}"
+  # Con WF_WARM=0 non c'e' niente da preparare: si esce subito, senza toccare
+  # niente. L'agente launchd continua a passare ogni due minuti e a non fare
+  # nulla, il che costa qualche millisecondo - e lascia il meccanismo pronto per
+  # il giorno in cui servisse di nuovo.
+  [ "$want" -gt 0 ] || { trace "ready: scorta disattivata (WF_WARM=0)"; return 0; }
+
   local have; have="$(ready_count)"
   [ "$have" -ge "$want" ] && { info "$have finestre già pronte"; return 0; }
 
@@ -1849,7 +1877,7 @@ cmd_ready(){
 # Quante finestre calde mancano rispetto a quante se ne vogliono. Serve
 # all'agente per sapere se ha ancora lavoro da fare in questo giro.
 cmd_ready_missing(){
-  local want="${WF_WARM:-2}" have
+  local want="${WF_WARM:-0}" have
   have="$(ready_count)"
   echo $(( want > have ? want - have : 0 ))
 }
@@ -2836,7 +2864,12 @@ cmd_doctor(){
     # scorta a zero per una notte intera, ogni apertura lenta, e nessun modo di
     # accorgersene se non cronometrando a mano.
     local nwarm; nwarm="$(ready_count)"
-    if [ "$nwarm" -ge 1 ]; then
+    if [ "${WF_WARM:-0}" -le 0 ] 2>/dev/null; then
+      # Scorta spenta di proposito: le aperture costano due secondi comunque,
+      # misurati, e tenere finestre pronte costerebbe due slot e due stream per
+      # guadagnare mezzo secondo. Non e' un guasto e non va segnalato come tale.
+      ok "apertura diretta  ${c_dim}(~2s; nessuna finestra tenuta pronta, WF_WARM=2 per riaccenderle)${c_off}"
+    elif [ "$nwarm" -ge 1 ]; then
       ok "$nwarm finestre tenute pronte  ${c_dim}(le app ci si aprono sopra in ~2s)${c_off}"
     else
       bad "nessuna finestra pronta: le app si apriranno in ~15s"
