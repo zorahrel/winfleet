@@ -174,4 +174,36 @@ else
   fail=1
 fi
 
+# --- 10. nome della finestra ------------------------------------------------
+# Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
+# nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app
+# diverse - e sembra che si siano aperte da sole delle app a caso.
+clang -framework Cocoa -o "$TMP/wname" mac/tests/window-name.m 2>/dev/null || exit 1
+# Il file va riscritto PRIMA DI OGNI giro: il test stesso, alla fine, ci mette
+# "::pronto::" per provare la seconda proprieta', e il giro dopo leggerebbe
+# quello invece del nome dell'app.
+printf 'Arc\n' > "$TMP/name.txt"
+nm_without="$(WF_NAME="$TMP/name.txt" "$TMP/wname" 2>&1 | grep -o 'ESITO_NOME: [A-Z]*' | awk '{print $2}')"
+printf 'Arc\n' > "$TMP/name.txt"
+nm_with="$(DYLD_INSERT_LIBRARIES="$LIB" WF_NAME="$TMP/name.txt" WF_WIN=600x400 "$TMP/wname" 2>&1 | grep -o 'ESITO_NOME: [A-Z]*' | awk '{print $2}')"
+if [ "$nm_without" = FAIL ] && [ "$nm_with" = PASS ]; then
+  say "ok   nome: la finestra prende il nome dell'app che ci sta dentro"
+else
+  say "NO   nome: senza=$nm_without con=$nm_with (servono FAIL e PASS)"
+  fail=1
+fi
+
+# E la parte che l'utente vede per prima: una finestra di scorta non deve
+# comparire nel Dock. Ne comparivano tre, col nome dell'app usata per scaldarle.
+printf 'Arc\n' > "$TMP/name.txt"
+sc_without="$(WF_NAME="$TMP/name.txt" "$TMP/wname" 2>&1 | grep -o 'ESITO_SCORTA: [A-Z]*' | awk '{print $2}')"
+printf 'Arc\n' > "$TMP/name.txt"
+sc_with="$(DYLD_INSERT_LIBRARIES="$LIB" WF_NAME="$TMP/name.txt" WF_WIN=600x400 "$TMP/wname" 2>&1 | grep -o 'ESITO_SCORTA: [A-Z]*' | awk '{print $2}')"
+if [ "$sc_without" = FAIL ] && [ "$sc_with" = PASS ]; then
+  say "ok   scorta: le finestre tenute pronte restano fuori dal Dock"
+else
+  say "NO   scorta: senza=$sc_without con=$sc_with (servono FAIL e PASS)"
+  fail=1
+fi
+
 exit "$fail"

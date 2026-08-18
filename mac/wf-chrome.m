@@ -60,6 +60,11 @@ static const char *gCropFile = NULL; // rettangolo da mostrare, per il client
 // ciclo esterno dopo la risposta dell'agente; qui serve a non allargare il
 // ritaglio prima che ci sia davvero qualcosa da mostrare.
 static const char *gAckFile  = NULL;
+// Il nome da mostrare nel Dock e in Cmd-Tab. Lo scrive chi mette un'app su una
+// finestra gia' accesa: quel processo e' partito dal bundle dell'app usata per
+// scaldare (il Blocco note), e senza questo resterebbe intestato a quella per
+// sempre - nel Dock comparivano tre "Blocco note" che erano Arc, Paint e altro.
+static const char *gNameFile = NULL;
 static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
 static int    gSlot = -1;            // quale schermo virtuale e' il nostro
 // Alzata quando un click sulla barra viene trattato come trascinamento del Mac.
@@ -265,6 +270,70 @@ static void onResize(NSNotification *n) {
     f.origin.y += f.size.height - want.height;
     f.size = want;
     [w setFrame:f display:YES];
+}
+
+// Rinomina il processo nel Dock e in Cmd-Tab, senza riavviarlo.
+//
+// Il nome che macOS mostra e' quello del bundle da cui il processo e' partito, e
+// una finestra tenuta calda parte dal bundle dell'app usata per scaldare: quando
+// ci si mette sopra Arc, nel Dock resta scritto "Blocco note". Con tre finestre
+// calde si finisce con tre "Blocco note" che sono tre app diverse - e da fuori
+// sembra che si siano aperte da sole delle app a caso.
+//
+// Il bundle non si puo' cambiare a processo avviato, ma il NOME sotto l'icona
+// si': e' la voce del Dock, e si aggiorna riscrivendo il plist del bundle e
+// forzando il Dock a rileggerlo. Qui si fa la parte che spetta al processo:
+// cambiare il nome dell'applicazione (quello che compare in Cmd-Tab e nel menu).
+static void applyName(void) {
+    if (!gNameFile) return;
+    FILE *f = fopen(gNameFile, "r");
+    if (!f) return;
+    char buf[256] = {0};
+    if (!fgets(buf, sizeof buf, f)) { fclose(f); return; }
+    fclose(f);
+    size_t n = strlen(buf);
+    while (n && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' ')) buf[--n] = 0;
+    if (!n) return;
+
+    static char last[256] = {0};
+    if (strcmp(last, buf) == 0) return;      // gia' fatto: non si ripete
+    snprintf(last, sizeof last, "%s", buf);
+
+    // "::pronto::" vuol dire che questa e' una finestra di SCORTA: nessuno l'ha
+    // aperta, sta li' solo perche' la prossima app parta in due secondi invece
+    // che in quindici. Una cosa del genere non ha motivo di comparire nel Dock
+    // ne' in Cmd-Tab - e invece compariva, col nome dell'app usata per scaldarla:
+    // tre finestre calde diventavano tre "Blocco note" che l'utente non aveva
+    // aperto. Da fuori: "vedo un sacco di app aperte a caso".
+    //
+    // Il nome nel Dock si decide al LANCIO e non si puo' correggere dopo
+    // (provato: riscrivere CFBundleName a runtime non cambia niente). Ma si puo'
+    // decidere se comparire: accessory = invisibile, regular = app normale. La
+    // finestra resta sullo schermo e utilizzabile in entrambi i casi.
+    BOOL scorta = (strcmp(buf, "::pronto::") == 0);
+    NSString *name = [NSString stringWithUTF8String:buf];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL eraNascosta = ([NSApp activationPolicy] == NSApplicationActivationPolicyAccessory);
+        [NSApp setActivationPolicy:scorta ? NSApplicationActivationPolicyAccessory
+                                          : NSApplicationActivationPolicyRegular];
+        if (!scorta) {
+            // Diventare un'app vera non basta: chi era "accessory" non prende il
+            // fuoco da solo, e la finestra compariva DIETRO a quella su cui si
+            // stava lavorando - si clicca l'icona nel Dock e sembra che non sia
+            // successo niente. Va portata avanti a mano.
+            if (eraNascosta) {
+                [NSApp activateIgnoringOtherApps:YES];
+                for (NSWindow *w in [NSApp windows]) {
+                    if (isStreamWindow(w)) [w makeKeyAndOrderFront:nil];
+                }
+            }
+            // Il titolo della finestra si puo' cambiare, e vale la pena farlo:
+            // e' cio' che si legge in Exposé e nel menu Finestra.
+            for (NSWindow *w in [NSApp windows]) {
+                if (isStreamWindow(w)) w.title = name;
+            }
+        }
+    });
 }
 
 static void sweep(void) {
@@ -487,6 +556,7 @@ static void wf_chrome_init(void) {
     gSizeFile = getenv("WF_SIZE");
     gCropFile = getenv("WF_CROP");
     gAckFile  = getenv("WF_ACK");
+    gNameFile = getenv("WF_NAME");
     gAgent    = getenv("WF_AGENT");
     const char *slot = getenv("WF_SLOT");
     if (slot) gSlot = atoi(slot);
@@ -585,6 +655,16 @@ static void wf_chrome_init(void) {
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             sweep();
         }];
+        // Il nome si ricontrolla con un timer GCD e non con NSTimer: quando SDL
+        // prende in mano il run loop per lo stream i timer di AppKit smettono di
+        // scattare (gia' misurato per il cursore), e questo deve funzionare
+        // proprio DOPO che lo stream e' partito - e' li' che l'app cambia.
+        dispatch_source_t nameTimer = dispatch_source_create(
+            DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(0, 0));
+        dispatch_source_set_timer(nameTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                                  (uint64_t)(0.5 * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
+        dispatch_source_set_event_handler(nameTimer, ^{ applyName(); });
+        dispatch_resume(nameTimer);
         // Il cursore ha bisogno di un ritmo suo: SDL lo rinasconde a ogni
         // movimento, quindi rimetterlo due volte al secondo lo fa lampeggiare.
         // A 60 Hz il contrasto e' invisibile e resta sempre visibile.

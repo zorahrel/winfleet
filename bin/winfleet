@@ -508,7 +508,27 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   # Ora: si uccide solo se c'e' davvero un pid, e mai il gruppo.
   trap 'if [ -n "${pid:-}" ] && [ "$pid" -gt 0 ] 2>/dev/null; then kill "$pid" 2>/dev/null; fi; place_stop "$slot" 2>/dev/null; slot_forget "$slot" 2>/dev/null; exit' EXIT INT TERM HUP
   addr="$(slot_addr "$slot")"
-  bin="$(runner_bin "$app")"
+  # Una finestra di SCORTA non parte dal bundle dell'app usata per scaldarla, ma
+  # da uno neutro chiamato "WinFleet".
+  #
+  # Il nome che si legge nel Dock lo decide il bundle al LANCIO e non si puo'
+  # correggere dopo (provato: riscrivere CFBundleName a runtime non cambia
+  # niente). Una finestra calda nata dal Blocco note restava quindi "Blocco note"
+  # anche con dentro Telegram: nel Dock comparivano app che l'utente non aveva
+  # aperto, e con l'etichetta sbagliata. "WinFleet" e' vero qualunque app ci
+  # finisca sopra.
+  if [ "${WF_READY_KEEP:-0}" = "1" ]; then
+    ensure_runner "WinFleet" "$exe" >/dev/null 2>&1 || true
+    # E l'icona di winfleet, non quella di Moonlight: se una finestra di scorta
+    # per un istante si vede, deve essere riconoscibile come roba nostra.
+    if [ -f "$WF_ROOT/mac/assets/wf-icon.icns" ]; then
+      cp -f "$WF_ROOT/mac/assets/wf-icon.icns" \
+        "$RUNNERS/WinFleet.app/Contents/Resources/moonlight.icns" 2>/dev/null || true
+    fi
+    bin="$(runner_bin "WinFleet")"
+  else
+    bin="$(runner_bin "$app")"
+  fi
   # Con la libreria dentro, la geometria la tiene lei: sa distinguere un
   # trascinamento dell'utente da una correzione di Moonlight, cosa che da fuori non
   # si puo' fare.
@@ -542,9 +562,23 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
       # senza ritardo; il Moonlight di fork/ lo rilegge quando cambia.
       cropf="$CONFIG_DIR/slot$slot.crop"
       printf '0 0 %s %s\n' "${wsize%x*}" "${wsize#*x}" >"$cropf"
+      # Il nome da mostrare nel Dock, in un file che si puo' riscrivere a stream
+      # gia' acceso: e' cosi' che una finestra tenuta calda smette di chiamarsi
+      # come l'app usata per scaldarla quando ci si mette sopra un'altra app.
+      namef="$CONFIG_DIR/slot$slot.name"
+      # Una finestra di SCORTA nasce dichiarandosi tale: la libreria la tiene
+      # fuori dal Dock e da Cmd-Tab finche' non ci si mette sopra un'app vera.
+      # Senza, l'utente si ritrovava nel Dock delle app che non aveva aperto -
+      # e col nome sbagliato, perche' quello lo decide il bundle di partenza.
+      if [ "${WF_READY_KEEP:-0}" = "1" ]; then
+        printf '%s\n' "$READY_MARK" >"$namef"
+      else
+        printf '%s\n' "$app" >"$namef"
+      fi
       pre=( env "DYLD_INSERT_LIBRARIES=$CHROME_LIB" "WF_WIN=$wsize" \
             "WF_SIZE=$WF_SIZE_FILE" "WF_CROP=$cropf" \
             "WF_AGENT=$(agent_host):$AGENT_PORT" "WF_SLOT=$slot" \
+            "WF_NAME=$namef" \
             "WF_ACK=$CONFIG_DIR/slot$slot.ack" )
       # Diagnostica, spenta salvo richiesta: WF_DEBUG stampa la geometria della
       # finestra vera, WF_SELFTEST prova da dentro chi si prende il click sulla
@@ -817,6 +851,7 @@ swap_app(){ # slot app
   # l'apertura in silenzio. Dal Dock: click, e non succede niente.
   if [ "$(slot_get "$slot" real)" = "$app" ] && [ -n "$(slot_hwnd_live "$slot" 2>/dev/null || true)" ]; then
     trace "swap: «${app}» e' gia' sulla finestra, niente da scambiare"
+    printf '%s\n' "$app" >"$CONFIG_DIR/slot$slot.name" 2>/dev/null || true
     sed -i '' "s/^app=.*/app=$app/" "$(slot_file "$slot")" 2>/dev/null || true
     sed -i '' "s/^warm=.*/warm=0/" "$(slot_file "$slot")" 2>/dev/null || true
     printf '%s → finestra %d sul Mac  %s(pronta)%s\n' "$app" "$(( slot + 1 ))" "$c_dim" "$c_off"
@@ -872,11 +907,26 @@ swap_app(){ # slot app
   else
     printf 'real=%s\n' "$app" >>"$(slot_file "$slot")" 2>/dev/null || true
   fi
+  # Il nome mostrato nel Dock: la finestra e' nata col bundle dell'app usata per
+  # scaldarla, e senza questo resterebbe "Blocco note" con dentro Arc. La libreria
+  # dentro il processo rilegge questo file due volte al secondo.
+  printf '%s\n' "$app" >"$CONFIG_DIR/slot$slot.name" 2>/dev/null || true
+
   # NIENTE rename qui. Il nome dell'istanza serve al client per TROVARE l'host
   # quando apre lo stream, e qui lo stream e' gia' connesso: rinominare adesso
   # costerebbe il riavvio dell'istanza - 24 secondi misurati - per cambiare
   # un'etichetta che nessuno andra' piu' a leggere finche' questa finestra vive.
   # Il titolo della finestra sul Mac lo mette comunque il runner dell'app.
+  # La finestra passa da nascosta (era di scorta) a visibile, e chi era nascosto
+  # non prende il fuoco da solo: comparirebbe DIETRO a quello su cui stai
+  # lavorando, e dal Dock sembrerebbe che il click non abbia fatto niente. Lo
+  # stesso richiamo che si usa per un'app gia' aperta funziona anche qui, e agisce
+  # da fuori - cioe' dal solo posto da cui macOS lo consente.
+  #
+  # Un attimo di pausa: la libreria applica il cambio al suo giro (mezzo secondo),
+  # e chiedere il fuoco prima non ha effetto.
+  ( sleep 0.7; raise_window "$(slot_get "$slot" pid)" ) >/dev/null 2>&1 &
+
   printf '%s → finestra %d sul Mac  %s(pronta)%s\n' "$app" "$(( slot + 1 ))" "$c_dim" "$c_off"
   return 0
 }
@@ -1992,7 +2042,8 @@ cmd_open(){
     # ma la chiamata di sistema c'e' - la si raggiunge da python.
     ( WF_SUP=1 exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         /opt/homebrew/bin/bash -c \
-        "$(printf 'WF_SUP=1 %q ready-supervise %q %q %q %q %q %q' \
+        "$(printf 'WF_SUP=1 WF_READY_KEEP=%q %q ready-supervise %q %q %q %q %q %q' \
+             "${WF_READY_KEEP:-0}" \
              "$0" "$slot" "$app" "$mode" "$key" "$exe" "$want")" ) >/dev/null 2>&1 &
     WF_SUP_PID=$!
     # La finestra risulta presa da subito: il supervisore ci mette qualche secondo
