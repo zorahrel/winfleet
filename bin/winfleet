@@ -925,7 +925,14 @@ swap_app(){ # slot app
   #
   # Un attimo di pausa: la libreria applica il cambio al suo giro (mezzo secondo),
   # e chiedere il fuoco prima non ha effetto.
-  ( sleep 0.7; raise_window "$(slot_get "$slot" pid)" ) >/dev/null 2>&1 &
+  # Due tentativi, il primo dopo un secondo abbondante: la libreria applica il
+  # cambio al suo giro (mezzo secondo) e il passaggio da "fuori dal Dock" ad "app
+  # normale" ha bisogno di un altro istante per essere registrato - chiedere il
+  # fuoco prima non ha effetto e non da' errore, semplicemente non succede niente.
+  # Il secondo tentativo copre il caso lento senza far aspettare nessuno: gira in
+  # secondo piano mentre la finestra e' gia' utilizzabile.
+  ( sleep 1.2; raise_window "$(slot_get "$slot" pid)"
+    sleep 1.0; raise_window "$(slot_get "$slot" pid)" ) >/dev/null 2>&1 &
 
   printf '%s → finestra %d sul Mac  %s(pronta)%s\n' "$app" "$(( slot + 1 ))" "$c_dim" "$c_off"
   return 0
