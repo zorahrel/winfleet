@@ -1390,7 +1390,19 @@ cmd_ready(){
       slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
     done
   fi
-  [ "$freeslots" -ge 2 ] || { trace "ready: solo $freeslots slot liberi, non ne occupo uno"; return 1; }
+  # Basta UNO slot libero, non due.
+  #
+  # La soglia di due nasceva da una preoccupazione giusta - una finestra calda non
+  # deve essere il motivo per cui "sono tutte occupate" - ma con quattro slot e tre
+  # app aperte non si preparava mai piu' niente, e la quarta apertura pagava la via
+  # lunga proprio quando l'utente e' nel pieno del lavoro. Ed e' un timore infondato:
+  # la finestra calda NON occupa il posto, lo tiene caldo, e la prossima apertura la
+  # usa invece di chiederne uno nuovo. Chi apre trova una finestra pronta, non un
+  # rifiuto.
+  #
+  # Quando gli slot sono davvero finiti la preparazione salta da sola, perche' non
+  # c'e' dove metterla.
+  [ "$freeslots" -ge 1 ] || { trace "ready: nessuno slot libero, non preparo"; return 1; }
 
   # L'app con cui si scalda la finestra deve APRIRSI SEMPRE, e in fretta.
   #
@@ -1509,6 +1521,10 @@ cmd_ready(){
     for i in $(seq 0 $(( SLOTS - 1 ))); do
       slot_live "$i" || case "$(slot_state "$i")" in *FREE*) freeslots=$(( freeslots + 1 ));; esac
     done
+    # Qui invece servono DUE slot liberi, e non e' un'incoerenza: siamo dentro il
+    # ciclo che prepara le finestre OLTRE la prima, e una in piu' e' un lusso.
+    # Prendere l'ultimo posto per un lusso e' esattamente il caso in cui una
+    # finestra calda diventa il motivo per cui "sono tutte occupate".
     [ "$freeslots" -ge 2 ] || break
     # Un'app DIVERSA da quelle gia' usate: sono quasi tutte a istanza singola, e
     # lanciare di nuovo la stessa chiude la finestra calda appena preparata per
