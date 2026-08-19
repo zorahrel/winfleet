@@ -739,10 +739,96 @@ slot_free_ish(){ # slot -> 0 se e' libero o se non risponde
 # L'host dichiara la finestra occupata solo quando lo stream e' partito, e fra
 # l'apertura e quel momento passano secondi: senza la prenotazione locale due app
 # aperte di fila finiscono sulla stessa finestra.
+# Uno slot scelto e' PRENOTATO finche' non lo si usa davvero.
+#
+# pick_slot guarda lo stato e dice un numero, ma fra quel numero e il momento in
+# cui lo stream lo occupa passano secondi - il rename dell'istanza, la scelta
+# della modalita', l'avvio del binario. In quella finestra un secondo comando
+# vede lo stesso slot ancora libero e lo prende.
+#
+# Successo davvero: due "winfleet open" a pochi secondi l'uno dall'altro hanno
+# messo Paint e Arc sulla STESSA istanza (:48189). Il primo e' rimasto orfano -
+# un processo vivo senza slot registrato - e il secondo ha vinto: chi aveva
+# chiesto Paint si e' visto aprire Arc. Nessun errore da nessuna parte.
+#
+# La prenotazione e' un file creato con mkdir, che e' atomico: o lo crea questo
+# processo o esiste gia'. Vale pochi secondi - il tempo dell'apertura - e scade
+# da sola, cosi' un comando ucciso a meta' non lascia uno slot inutilizzabile.
+SLOT_HOLD_SECS=90
+
+slot_hold(){ # slot -> 0 se la prenotazione e' nostra
+  local f="$CONFIG_DIR/slot$1.hold"
+
+  # Il pid si scrive in modo ATOMICO, insieme alla creazione.
+  #
+  # Il primo tentativo usava mkdir per la cartella e poi ci scriveva dentro un
+  # file col pid: fra le due cose c'e' un istante in cui la prenotazione esiste e
+  # non dice di chi e'. Un secondo processo che guardava proprio li' leggeva
+  # "nessuno", la scambiava per orfana e se la prendeva. Con sei processi
+  # insieme ne passavano due, poi quattro: aggiungere attese ha solo spostato la
+  # collisione.
+  #
+  # Qui il contenuto arriva col file stesso: si scrive un temporaneo e lo si
+  # sposta con "ln", che fallisce se la destinazione esiste gia' - e fallisce in
+  # modo atomico, senza istanti a meta'.
+  local tmp; tmp="$(mktemp "$CONFIG_DIR/.hold.XXXXXX")" || return 1
+  printf '%s %s\n' "$$" "$(date +%s)" > "$tmp"
+
+  if ln "$tmp" "$f" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  # C'e' gia'. Di chi e', e da quanto?
+  local owner nato ora
+  read -r owner nato < "$f" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  ora="$(date +%s)"
+
+  local rilevabile=0
+  # Scaduta: un'apertura non dura un minuto e mezzo. Se e' li' da piu' tempo,
+  # chi l'ha presa non tornera'.
+  if [ -n "$nato" ] && [ $(( ora - nato )) -gt "$SLOT_HOLD_SECS" ] 2>/dev/null; then
+    rilevabile=1
+    trace "prenotazione scaduta sullo slot $1: la rilevo"
+  fi
+  # Orfana: il comando che l'aveva e' morto in mezzo.
+  if [ "$rilevabile" = 0 ] && [ -n "$owner" ] && [ "$owner" -gt 0 ] 2>/dev/null \
+     && ! kill -0 "$owner" 2>/dev/null; then
+    rilevabile=1
+    trace "prenotazione orfana sullo slot $1 (pid $owner morto): la rilevo"
+  fi
+
+  if [ "$rilevabile" = 1 ]; then
+    # Si toglie e si riprova a prenderla nello stesso modo atomico: se nel
+    # frattempo un altro e' arrivato prima, ln fallisce e si perde la corsa -
+    # che e' esattamente il comportamento voluto.
+    rm -f "$f" 2>/dev/null || true
+    if ln "$tmp" "$f" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+slot_unhold(){ rm -f "$CONFIG_DIR/slot$1.hold" 2>/dev/null || true; }
+
+slot_held(){ # slot -> 0 se prenotato da qualcun altro che e' ancora vivo
+  local f="$CONFIG_DIR/slot$1.hold"
+  [ -f "$f" ] || return 1
+  local owner nato ora
+  read -r owner nato < "$f" 2>/dev/null || return 1
+  [ "$owner" = "$$" ] && return 1                       # e' nostra
+  ora="$(date +%s)"
+  [ -n "$nato" ] && [ $(( ora - nato )) -gt "$SLOT_HOLD_SECS" ] 2>/dev/null && return 1
+  [ -n "$owner" ] && [ "$owner" -gt 0 ] 2>/dev/null && kill -0 "$owner" 2>/dev/null
+}
+
 pick_slot(){ # [nome-app]
   local i free="" named=""
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
+    # Gia' scelto da un altro comando che lo sta avviando: da fuori sembra
+    # libero, e infatti lo era - per qualche secondo ancora.
+    slot_held "$i" && continue
     case "$(slot_state "$i")" in *FREE*) ;; *) continue;; esac
     # Una finestra non accoppiata e' inutilizzabile: lo stream non parte e resta
     # vuota. Si scarta subito, cosi' le altre - che funzionano - vengono usate
@@ -2176,6 +2262,21 @@ cmd_open(){
         die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
       }
     }
+    # Prenotato subito: da qui all'avvio vero passano secondi, e senza questo un
+    # altro comando lo vedrebbe libero e ci finirebbe sopra (successo: Paint e
+    # Arc sulla stessa istanza, il primo orfano e il secondo vincitore).
+    #
+    # Se non si riesce a prenotarlo qualcuno e' arrivato prima: si riprova a
+    # sceglierne un altro invece di procedere su uno slot che non e' nostro.
+    if ! slot_hold "$slot"; then
+      trace "slot $slot preso da un altro comando: ne cerco un altro"
+      slot="$(pick_slot "$app")" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
+      slot_hold "$slot" || die "Un'altra apertura sta usando le finestre libere. Riprova fra qualche secondo."
+    fi
+    # La prenotazione va tolta comunque finisca: senza, un'apertura fallita
+    # lascerebbe lo slot inutilizzabile fino alla scadenza.
+    trap 'slot_unhold "$slot"' RETURN
+
     trace "slot scelto: $slot"
     refresh_vdd
     trace "scelta modalita' fatta"

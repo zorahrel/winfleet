@@ -234,6 +234,19 @@ else
   fail=1
 fi
 
+# --- 11. due aperture insieme ----------------------------------------------
+# Successo dal vivo: due "winfleet open" a pochi secondi l'uno dall'altro hanno
+# messo Paint e Arc sulla STESSA istanza. Chi aveva chiesto Paint si e' visto
+# aprire Arc, e il primo processo e' rimasto orfano - senza un solo messaggio di
+# errore, perche' formalmente non era successo niente di illegale.
+if /opt/homebrew/bin/bash mac/tests/slot-race.sh > "$TMP/race.out" 2>&1; then
+  say "ok   due aperture insieme: finestre diverse, nessuna sovrascritta"
+else
+  say "NO   due aperture insieme:"
+  sed 's/^/       /' "$TMP/race.out"
+  fail=1
+fi
+
 # --- 11a. pairing rimasto a meta' ------------------------------------------
 # L'host aveva gia' il nostro certificato ma il Mac aveva perso il suo: da fuori
 # identico a "mai accoppiata", e la finestra si apre VUOTA. Due su quattro sono
