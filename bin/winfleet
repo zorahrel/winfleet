@@ -840,19 +840,34 @@ pick_slot(){ # [nome-app]
   #
   # Si guarda la prima istanza: se quella non c'e', non c'e' nemmeno il PC -
   # girano tutte sulla stessa macchina.
-  # Si chiede ogni volta, senza ricordare la risposta.
+  # L'esito si ricorda in una VARIABILE ESPORTATA, che vale solo dentro questo
+  # comando.
   #
-  # Ho provato a ricordarla in un file, per non pagarla due volte nella stessa
-  # apertura (pick_slot viene chiamata due volte). Guadagno: un paio di secondi,
-  # e solo col PC spento. Costo: con il PC gia' tornato, un "no" ancora valido
-  # faceva rispondere "tutte le finestre sono occupate" mentre erano tutte
-  # libere - verificato scrivendo la memoria a mano. Legarla al pid del comando
-  # avrebbe funzionato, ma e' molta macchina per due secondi in un caso raro.
+  # pick_slot viene chiamata due volte (la seconda dopo aver provato a liberare
+  # gli slot appesi) e col PC spento ogni chiamata costa otto secondi: misurato,
+  # 8 e poi altri 9, per una risposta che non puo' essere cambiata in mezzo.
   #
-  # Con l'host acceso questa domanda costa venti millisecondi.
+  # Un FILE non va bene: sopravvive al comando, e un "no" ancora valido faceva
+  # rispondere "tutte le finestre sono occupate" con tutte le finestre libere,
+  # appena il PC tornava - verificato scrivendolo a mano. Una variabile
+  # esportata muore col comando, che e' esattamente la durata voluta: pick_slot
+  # gira in una subshell, e le subshell EREDITANO l'ambiente anche se non
+  # possono modificarlo.
+  #
+  # Per questo la si scrive nel chiamante e qui si legge soltanto: il valore
+  # arriva da cmd_open, dove la subshell non c'e' di mezzo.
+  # Un solo controllo, e la risposta la porta il VALORE DI USCITA.
+  #
+  # pick_slot gira in una subshell e non puo' scrivere nell'ambiente del
+  # chiamante, quindi per dire "non e' che non c'erano slot: non c'era proprio
+  # l'host" restano due strade. Un file: provato, e si accumula - un file per
+  # ogni apertura fallita, verificato. Un valore di uscita diverso: costa zero e
+  # non lascia niente in giro.
+  #
+  # 1 = nessuno slot libero. 3 = l'host non risponde.
   if ! reachable "$(agent_host)" "$(slot_port 0)" 1 2>/dev/null; then
     trace "host non raggiungibile: nessuno slot da cercare"
-    return 1
+    return 3
   fi
 
   local i free="" named=""
@@ -2381,7 +2396,16 @@ cmd_open(){
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
     # esistono.
     trace "cerco uno slot"
+    # Il valore d'uscita della PRIMA ricerca si legge subito: 3 vuol dire che
+    # l'host non risponde, e in quel caso non c'e' niente da liberare ne' da
+    # riprovare. Ignorarlo costava un secondo controllo da otto secondi,
+    # misurato, per una risposta gia' nota.
     slot="$(pick_slot "$app")" || {
+      if [ "$?" = 3 ]; then
+        bad "l'host non risponde: il PC è spento o la rete non c'è"
+        info "  quando torna:  winfleet open ${app}"
+        return 1
+      fi
       # Prima di dire "sono tutte occupate", si guarda se qualcuna e' occupata
       # per FINTA: una finestra di scorta che non e' mai arrivata ad aprire una
       # finestra tiene il posto senza mostrare niente, e da fuori il sintomo e'
@@ -2394,12 +2418,10 @@ cmd_open(){
       trace "nessuno slot: provo a liberare quelli occupati per finta"
       reap_stuck_slots
       slot="$(pick_slot "$app")" || {
-        # Nessuno slot: o sono occupati, o il PC non c'e'. La differenza conta -
-        # nel primo caso si chiude una finestra, nel secondo si accende il PC -
-        # e si sa gia' senza pagare niente: se l'host non risponde, pick_slot
-        # non poteva trovare niente per forza.
-        read -r addr _ <<<"$(resolve_endpoint)"
-        if [ -z "$addr" ]; then
+        # 3 = l'host non risponde, e lo sa gia' pick_slot: non si richiede
+        # niente. Nel primo caso si chiude una finestra, nel secondo si accende
+        # il PC: dirlo giusto e' la differenza fra due minuti e mezz'ora.
+        if [ "$?" = 3 ]; then
           bad "l'host non risponde: il PC è spento o la rete non c'è"
           info "  quando torna:  winfleet open ${app}"
           return 1
@@ -3385,8 +3407,20 @@ build_runner(){ # nome icns|""
       "$pb" -c "Add :$k string $name" "$plist" >/dev/null 2>&1 || \
       die "Non riesco a scrivere $k in $plist"
   done
-  "$pb" -c "Set :CFBundleIdentifier dev.winfleet.runner.$id" "$plist" >/dev/null 2>&1 || \
-    "$pb" -c "Add :CFBundleIdentifier string dev.winfleet.runner.$id" "$plist" >/dev/null 2>&1 || true
+  # UN SOLO identificativo per tutti i runner.
+  #
+  # macOS lega i permessi al CFBundleIdentifier: con uno diverso per app, la
+  # richiesta "consenti l'accesso alla rete locale" arriva una volta per OGNI
+  # app che si apre - e queste app sono settanta. Un permesso che si concede
+  # settanta volte non e' un permesso, e' un fastidio: chi lo vede la decima
+  # volta clicca senza leggere.
+  #
+  # Il nome e l'icona nel Dock NON dipendono da questo: il nome lo scrive la
+  # libreria a processo avviato (WF_NAME, applyName), l'icona sta nel bundle.
+  # Verificato che due bundle con lo stesso identificativo si aprono e restano
+  # due processi distinti, uno per finestra.
+  "$pb" -c "Set :CFBundleIdentifier dev.winfleet.runner" "$plist" >/dev/null 2>&1 || \
+    "$pb" -c "Add :CFBundleIdentifier string dev.winfleet.runner" "$plist" >/dev/null 2>&1 || true
 
   if [ -n "$icns" ] && [ -f "$icns" ]; then
     local f; f="$("$pb" -c 'Print :CFBundleIconFile' "$plist" 2>/dev/null || true)"
@@ -3420,7 +3454,9 @@ build_launcher(){ # nome icns|""
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>$name</string>
   <key>CFBundleDisplayName</key><string>$name</string>
-  <key>CFBundleIdentifier</key><string>dev.winfleet.$(slug "$name")</string>
+  <!-- Come i runner: un identificativo solo, cosi' i permessi si concedono una
+       volta e non una per app. Il nome sotto l'icona e' CFBundleName. -->
+  <key>CFBundleIdentifier</key><string>dev.winfleet.launcher</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
