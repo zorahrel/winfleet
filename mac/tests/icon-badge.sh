@@ -39,16 +39,24 @@ d = sys.argv[1]
 a = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
 ImageDraw.Draw(a).ellipse([20, 20, 490, 490], fill=(200, 30, 30, 255))
 a.save(f"{d}/senza.png")
-# col badge: lo stesso, piu' il quadrato bianco in basso a destra
-b = a.copy()
-ImageDraw.Draw(b).rectangle([300, 300, 500, 500], fill=(255, 255, 255, 255))
-b.save(f"{d}/con.png")
 PY
 
+# Il caso "col badge" si costruisce col generatore VERO, chiamato a ogni misura
+# come fa build_icns. Disegnarne uno finto - un quadrato bianco nell'angolo -
+# provava solo che la funzione distingue il bianco dal rosso: quando la misura e'
+# passata a cercare il BLU del logo, il finto e' diventato indistinguibile da
+# un'icona senza badge, e il test ha segnalato una regressione che non c'era.
+# Un test deve rompersi quando si rompe il prodotto, non quando cambia.
 for v in senza con; do
   mkdir -p "$tmp/$v.iconset"
   for s in 16 32 128 256; do
-    sips -z "$s" "$s" "$tmp/$v.png" --out "$tmp/$v.iconset/icon_${s}x${s}.png" >/dev/null 2>&1
+    dest="$tmp/$v.iconset/icon_${s}x${s}.png"
+    if [ "$v" = con ]; then
+      python3 mac/wf-badge.py "$tmp/senza.png" "$dest" "$s" 2>/dev/null || \
+        sips -z "$s" "$s" "$tmp/senza.png" --out "$dest" >/dev/null 2>&1
+    else
+      sips -z "$s" "$s" "$tmp/senza.png" --out "$dest" >/dev/null 2>&1
+    fi
   done
   iconutil -c icns "$tmp/$v.iconset" -o "$tmp/$v.icns" >/dev/null 2>&1
 done
@@ -56,8 +64,8 @@ done
 pct_con="$(/opt/homebrew/bin/bash -c 'source bin/winfleet 2>/dev/null; icns_badge_pct "'"$tmp"'/con.icns"' 2>/dev/null | tail -1)"
 pct_senza="$(/opt/homebrew/bin/bash -c 'source bin/winfleet 2>/dev/null; icns_badge_pct "'"$tmp"'/senza.icns"' 2>/dev/null | tail -1)"
 
-if [ "${pct_con:-0}" -ge 20 ] 2>/dev/null && [ "${pct_senza:-100}" -lt 20 ] 2>/dev/null; then
-  echo "  ok   misura del badge: con=${pct_con}% senza=${pct_senza}% (soglia 20%)"
+if [ "${pct_con:-0}" -ge 55 ] 2>/dev/null && [ "${pct_senza:-100}" -lt 55 ] 2>/dev/null; then
+  echo "  ok   misura del badge: con=${pct_con}% senza=${pct_senza}% (soglia 55%)"
 else
   echo "  NO   misura del badge non discrimina: con=${pct_con:-?}% senza=${pct_senza:-?}%"
   fail=1

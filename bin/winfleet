@@ -2714,14 +2714,15 @@ build_icns(){ # nome exe destinazione.icns
   # un momento in cui il ridimensionamento era ancora sbagliato, ed e' rimasto
   # li' per giorni perche' nessuno lo guardava.
   #
-  # Il controllo e' quello che farebbe l'occhio: quanta parte dell'angolo in
-  # basso a destra e' bianca. Sotto il 20% il badge non c'e' o e' troppo piccolo
-  # per vedersi, e l'icona non va tenuta - meglio rifarla al prossimo giro che
-  # tenersene per sempre una che mente.
+  # Il controllo e' quello che farebbe l'occhio, ma alla misura a cui l'occhio
+  # guarda: quanto blu si vede nell'angolo in basso a destra della fetta da
+  # 16 px. Sotto il 40% il badge non c'e', e' troppo piccolo, o si e' impastato
+  # nel rimpicciolimento - e l'icona non va tenuta: meglio rifarla al prossimo
+  # giro che tenersene per sempre una che mente.
   if [ -f "$WF_BADGE" ]; then
     local pct; pct="$(icns_badge_pct "$out")"
-    if [ "${pct:-100}" -lt 20 ] 2>/dev/null; then
-      trace "icona $1: badge mancante o troppo piccolo ($pct%), la scarto"
+    if [ "${pct:-100}" -lt 55 ] 2>/dev/null; then
+      trace "icona $1: badge illeggibile a 16px ($pct% di blu), la scarto"
       rm -f "$out" 2>/dev/null || true
       rm -rf "$tmp"
       return 1
@@ -2731,11 +2732,17 @@ build_icns(){ # nome exe destinazione.icns
   rm -rf "$tmp"
 }
 
-# Quanta parte dell'angolo in basso a destra di un'icona e' bianca, in percento.
-# E' il modo piu' semplice per chiedersi "il badge di Windows c'e'?" senza
-# guardarla: il badge e' quattro riquadri bianchi in quell'angolo, e occupa circa
-# un terzo dello spazio. Senza Pillow non si giudica e si risponde 100, cioe'
-# "va bene": un controllo che non puo' funzionare non deve buttare via icone.
+# Quanto si legge il badge nella fetta PICCOLA dell'icona, quella da 16 px.
+#
+# Si guardava a 256 px, dove il badge sta bene anche quando e' rotto: e' alle
+# misure piccole che si sfalda, ed e' li' che si guarda il Dock. Misurato sulla
+# stessa app: icona fatta col metodo vecchio - badge disegnato in grande e poi
+# rimpicciolito da sips - 41% di blu; rifatta a ogni misura, 69%. Tutte le
+# settanta icone gia' installate stavano fra 41 e 44: la soglia sta in mezzo ai
+# due gruppi, non appiccicata a uno dei due.
+#
+# Si misura il BLU e non il bianco: il bianco c'e' anche quando il disegno si e'
+# impastato in una macchia chiara, che e' proprio il difetto da riconoscere.
 icns_badge_pct(){ # file.icns -> 0..100
   command -v python3 >/dev/null 2>&1 || { echo 100; return 0; }
   WF_ICNS="$1" python3 -c '
@@ -2745,17 +2752,34 @@ try:
 except ImportError:
     print(100); raise SystemExit
 d = tempfile.mkdtemp()
-png = os.path.join(d, "c.png")
-subprocess.run(["sips", "-s", "format", "png", "-Z", "256",
-                os.environ["WF_ICNS"], "--out", png], capture_output=True)
+icns = os.environ["WF_ICNS"]
+# Dentro l.icns la fetta da 16 px c e gia: va letta com e, non ricavata
+# rimpicciolendo quella grande - sarebbe rifare l errore che si sta cercando.
+best = None
 try:
-    im = Image.open(png).convert("RGBA")
+    subprocess.run(["iconutil", "-c", "iconset", icns, "-o", os.path.join(d, "s.iconset")],
+                   capture_output=True)
+    cand = os.path.join(d, "s.iconset", "icon_16x16.png")
+    if os.path.exists(cand):
+        best = cand
+except Exception:
+    pass
+if best is None:
+    best = os.path.join(d, "c.png")
+    subprocess.run(["sips", "-s", "format", "png", "-Z", "16", icns, "--out", best],
+                   capture_output=True)
+try:
+    im = Image.open(best).convert("RGBA")
 except Exception:
     print(100); raise SystemExit
 w, h = im.size
-px = list(im.crop((int(w * 0.6), int(h * 0.6), w, h)).getdata())
-white = sum(1 for p in px if p[0] > 200 and p[1] > 200 and p[2] > 200 and p[3] > 120)
-print(int(100 * white / max(1, len(px))))
+# Lo stesso riquadro in cui wf-badge.py disegna: 34% del lato, appoggiato
+# all angolo (sotto i 64 px non lascia margine). Un ritaglio piu largo
+# includerebbe pixel dell icona sotto e diluirebbe la misura.
+lato = max(6, round(w * 0.34))
+px = list(im.crop((w - lato, h - lato, w, h)).getdata())
+blu = sum(1 for p in px if p[2] > 150 and p[0] < 100 and p[3] > 120)
+print(int(100 * blu / max(1, len(px))))
 ' 2>/dev/null || echo 100
 }
 
@@ -2987,8 +3011,8 @@ cmd_icons(){ # [--tutte]
     # settimo del dovuto, rimaste in giro per giorni.
     if [ "$force" = 0 ] && [ -f "$icns" ]; then
       local pct; pct="$(icns_badge_pct "$icns")"
-      if [ "${pct:-100}" -lt 20 ] 2>/dev/null; then
-        trace "icona $name: badge al $pct%, la rifaccio"
+      if [ "${pct:-100}" -lt 55 ] 2>/dev/null; then
+        trace "icona $name: a 16px solo $pct% di blu, la rifaccio"
         rm -f "$icns" 2>/dev/null || true
       fi
     fi
