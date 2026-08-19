@@ -247,6 +247,18 @@ else
   fail=1
 fi
 
+# --- 10d. il comando che chiude -------------------------------------------
+# "winfleet stop Paint" moriva con «Paint: unbound variable» e non chiudeva
+# niente: l'argomento finiva in un'espressione aritmetica. Era li' dal primo
+# commit, perche' i test guardavano sempre l'apertura e mai la chiusura.
+if /opt/homebrew/bin/bash mac/tests/stop-cmd.sh > "$TMP/stop.out" 2>&1; then
+  say "ok   chiusura: stop funziona col nome dell'app, non solo col numero"
+else
+  say "NO   chiusura:"
+  sed 's/^/       /' "$TMP/stop.out"
+  fail=1
+fi
+
 # --- 11. due aperture insieme ----------------------------------------------
 # Successo dal vivo: due "winfleet open" a pochi secondi l'uno dall'altro hanno
 # messo Paint e Arc sulla STESSA istanza. Chi aveva chiesto Paint si e' visto

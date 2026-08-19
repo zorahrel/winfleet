@@ -105,5 +105,28 @@ else
   echo "  ok   viva: una prenotazione attiva non viene rubata"
 fi
 
+# --- 5. il trap rilascia la prenotazione anche se l'apertura fallisce -------
+# La prenotazione si prende alla scelta dello slot e si toglie con un trap: se
+# quel trap non ci fosse, ogni apertura fallita lascerebbe uno slot bloccato per
+# 90 secondi, e il sintomo sarebbe "le finestre sono tutte occupate" con tutte
+# le finestre libere.
+if grep -q "trap 'slot_unhold" bin/winfleet; then
+  echo "  ok   rilascio: la prenotazione si toglie comunque finisca l'apertura"
+else
+  echo "  NO   rilascio: un'apertura fallita lascerebbe lo slot bloccato"
+  fail=1
+fi
+
+# --- 6. chi sceglie tiene conto delle prenotazioni ANCHE al secondo giro ----
+# cmd_open, se non riesce a prenotare lo slot scelto, ne cerca un altro: se quel
+# secondo giro non prenotasse, due comandi tornerebbero a scontrarsi - solo un
+# po' piu' tardi.
+if [ "$(grep -c 'slot_hold "$slot"' bin/winfleet)" -ge 2 ]; then
+  echo "  ok   ripiego: anche lo slot di riserva viene prenotato"
+else
+  echo "  NO   ripiego: il secondo tentativo non prenota, la corsa si ripresenta"
+  fail=1
+fi
+
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"

@@ -648,7 +648,15 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
         sleep 0.5
       done
     fi
-    trace "aperta: stream=$smode finestra=$(win_size "$pid") (chiesta $wsize)"
+    # "aperta" con la misura VUOTA e' una bugia: la finestra c'e' ma non mostra
+    # niente. Si dice com'e', cosi' nella traccia il caso si riconosce a colpo
+    # d'occhio invece di sembrare un'apertura riuscita.
+    local misura; misura="$(win_size "$pid")"
+    if [ -n "$misura" ]; then
+      trace "aperta: stream=$smode finestra=$misura (chiesta $wsize)"
+    else
+      trace "VUOTA: stream=$smode nessuna misura (chiesta $wsize) - lo stream non ha mostrato niente"
+    fi
 
     want="$(follow_resize "$pid" "$slot" "$wsize" "$cropf")"
     # La misura si legge finche' la finestra c'e' ancora: serve a riaprirla domani
@@ -2553,7 +2561,22 @@ cmd_open(){
       # (Prima diceva sempre "entro 45 secondi", anche quando l'attesa era
       # durata 13: un numero sbagliato in un messaggio d'errore manda a cercare
       # nel posto sbagliato.)
-      if [ "$(slot_gave_up "$slot")" = si ]; then
+      # Il pairing e' il primo sospettato, e va CONTROLLATO, non ricordato.
+      #
+      # Senza pairing lo stream non parte affatto: la finestra di Moonlight
+      # resta grigia, la misura non arriva mai, e si finisce qui. Ma il pairing
+      # e' proprio quello che si tiene in memoria per cinque minuti, quindi
+      # nell'unico momento in cui conta si stava usando un dato vecchio.
+      #
+      # Misurato: tolto il certificato di un'istanza, winfleet ha aperto Arc su
+      # quello slot, ci ha messo 55 secondi, ha detto "aperta" con la finestra
+      # VUOTA, e al tentativo dopo ha incolpato l'app ("potrebbe essere rotta
+      # sull'host") mentre l'app non c'entrava niente.
+      slot_paired_forget "$slot"
+      if ! slot_paired "$slot"; then
+        bad "la finestra $(( slot + 1 )) non e' piu' accoppiata: lo stream non e' potuto partire"
+        info "  rimedio:  winfleet pair-slots     ${c_dim}(prova prima da sola, senza chiedere un PIN)${c_off}"
+      elif [ "$(slot_gave_up "$slot")" = si ]; then
         bad "«${app}» non ha aperto nessuna finestra su Windows: la finestra resterebbe vuota"
         info "  l'app potrebbe essere rotta sull'host: provala li' e vedi se parte"
       else
@@ -2661,9 +2684,28 @@ close_slot(){ # slot
 cmd_stop(){
   local i closed=0
   if [ -n "${1:-}" ]; then
-    i=$(( $1 - 1 ))
-    [ "$i" -ge 0 ] && [ "$i" -lt "${SLOTS:-0}" ] || die "Finestra $1 inesistente (ce ne sono ${SLOTS:-0})."
-    close_slot "$i"; return
+    # Anche per NOME, non solo per numero.
+    #
+    # "winfleet stop Paint" moriva con «Paint: unbound variable»: l'argomento
+    # finiva dritto in $(( $1 - 1 )), e bash prova a valutare "Paint" come una
+    # variabile. Sotto set -u quello e' un errore fatale, quindi il comando non
+    # chiudeva niente e non spiegava perche'.
+    #
+    # Ed e' il modo naturale di chiedere: chi ha aperto "winfleet open Paint" si
+    # aspetta di chiuderlo con "winfleet stop Paint", non di dover prima
+    # guardare in che finestra e' finito.
+    if [ "$1" -eq "$1" ] 2>/dev/null; then
+      i=$(( $1 - 1 ))
+      [ "$i" -ge 0 ] && [ "$i" -lt "${SLOTS:-0}" ] || die "Finestra $1 inesistente (ce ne sono ${SLOTS:-0})."
+      close_slot "$i"; return
+    fi
+    # Un nome: si cerca in quale finestra sta quell'app.
+    local k trovata=""
+    for k in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do
+      if slot_live "$k" 2>/dev/null && [ "$(slot_get "$k" app)" = "$1" ]; then trovata="$k"; break; fi
+    done
+    [ -n "$trovata" ] || die "«$1» non è aperta.  winfleet windows"
+    close_slot "$trovata"; return
   fi
   for i in $(seq 0 $(( ${SLOTS:-0} - 1 ))); do
     slot_live "$i" || continue
