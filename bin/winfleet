@@ -831,6 +831,33 @@ slot_held(){ # slot -> 0 se prenotato da qualcun altro che e' ancora vivo
 }
 
 pick_slot(){ # [nome-app]
+  # Se l'host non risponde AFFATTO, non c'e' niente da cercare.
+  #
+  # Senza questo si interroga ogni slot uno per uno, e ognuno paga il proprio
+  # timeout: con il PC spento erano oltre venti secondi per arrivare a dire "il
+  # PC e' spento". Una domanda sola, con un secondo di pazienza, la stessa
+  # risposta.
+  #
+  # Si guarda la prima istanza: se quella non c'e', non c'e' nemmeno il PC -
+  # girano tutte sulla stessa macchina.
+  # L'esito si ricorda in un FILE, non in una variabile: pick_slot viene
+  # chiamata dentro $(...), cioe' in una subshell, e una variabile muore con
+  # lei - lo stesso motivo per cui agent_host usa un file. Senza, il PC spento
+  # si paga due volte: 8 secondi, poi altri 10.
+  local memo="$CONFIG_DIR/host-up" su=""
+  if [ -f "$memo" ]; then
+    local eta; eta=$(( $(date +%s) - $(stat -f %m "$memo" 2>/dev/null || echo 0) ))
+    [ "$eta" -lt 20 ] && su="$(cat "$memo" 2>/dev/null)"
+  fi
+  if [ -z "$su" ]; then
+    if reachable "$(agent_host)" "$(slot_port 0)" 1 2>/dev/null; then su=si; else su=no; fi
+    printf '%s' "$su" >"$memo" 2>/dev/null || true
+  fi
+  if [ "$su" = no ]; then
+    trace "host non raggiungibile: nessuno slot da cercare"
+    return 1
+  fi
+
   local i free="" named=""
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
@@ -1094,8 +1121,19 @@ refresh_vdd(){
   # Prima l'agente: una GET su LAN costa millisecondi, un giro ssh un paio di
   # decimi - e questo veniva fatto a ogni apertura, prima ancora di lanciare
   # qualcosa. ssh resta come riserva, per quando l'agente non risponde.
+  #
+  # "|| true" NON e' pignoleria: con "pipefail" attivo una pipe vale quanto il
+  # comando FALLITO, e curl che non raggiunge l'host esce 28. Con "set -e"
+  # quello basta a terminare l'intero comando, senza un messaggio e con codice
+  # di uscita ZERO - cioe' "winfleet open" con il PC spento diceva di aver
+  # funzionato e non apriva niente. Misurato: 2.6 secondi, nessuna riga in
+  # output, la traccia che si interrompe a meta'.
+  #
+  # Un host che non risponde e' il caso NORMALE quando il PC e' spento, e da qui
+  # in poi c'e' gia' tutto: il ripiego via ssh, e piu' avanti il messaggio che
+  # spiega che l'host non e' raggiungibile.
   curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
-    | tr -d '\r' >"$VDD_CACHE.tmp"
+    | tr -d '\r' >"$VDD_CACHE.tmp" || true
   if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
     need_ssh
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \
@@ -1326,11 +1364,38 @@ agent_host(){
   if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$AGENT_PORT" 1; then
     h="$HOST_LAN"
   elif [ -n "$HOST_NAME" ]; then
-    h="$(dscacheutil -q host -a name "${HOST_NAME%.local}.local" 2>/dev/null | awk '/^ip_address/{print $2; exit}')"
+    # Con un tetto di due secondi: risolvere un nome .local che NON esiste costa
+    # dieci secondi pieni (misurato), perche' mDNS non ha nessuno che risponda
+    # "no" - aspetta e basta. E questo giro si fa a ogni apertura, prima di
+    # qualunque altra cosa: con il PC spento erano undici secondi buttati per
+    # arrivare a dire "il PC e' spento".
+    #
+    # Se scade si usa il nome cosi' com'e': se il PC c'e' funziona lo stesso
+    # (piu' lento, perche' ogni richiesta rifa' la risoluzione), se non c'e'
+    # fallisce comunque - ma in fretta.
+    h="$(WF_N="${HOST_NAME%.local}.local" perl -e '
+        eval {
+            local $SIG{ALRM} = sub { die };
+            alarm 2;
+            my $out = `dscacheutil -q host -a name $ENV{WF_N} 2>/dev/null`;
+            alarm 0;
+            print $1 if $out =~ /^ip_address:\s*(\S+)/m;
+        };
+    ' 2>/dev/null)"
     [ -n "$h" ] || h="$HOST_NAME"
   fi
   [ -n "$h" ] || h="$HOST_TS"
   AGENT_HOST="$h"
+  # Si scrive la cache SEMPRE, anche quando l'indirizzo trovato non risponde.
+  #
+  # Prima si scriveva solo il caso buono, quindi con il PC spento ogni chiamata
+  # rifaceva tutto il giro - reachable sulla LAN piu' la risoluzione mDNS, che
+  # su un nome inesistente costa il suo tetto pieno. E agent_host viene chiamata
+  # da mezza dozzina di posti in un'apertura sola.
+  #
+  # Non e' un rischio: la cache dura cinque minuti e chi la usa controlla
+  # comunque se l'host risponde. Al massimo si insiste per qualche minuto su un
+  # indirizzo che era giusto poco fa.
   printf '%s' "$h" >"$CONFIG_DIR/agent-host" 2>/dev/null || true
   echo "$h"
 }
@@ -2284,8 +2349,16 @@ cmd_open(){
       trace "nessuno slot: provo a liberare quelli occupati per finta"
       reap_stuck_slots
       slot="$(pick_slot "$app")" || {
+        # Nessuno slot: o sono occupati, o il PC non c'e'. La differenza conta -
+        # nel primo caso si chiude una finestra, nel secondo si accende il PC -
+        # e si sa gia' senza pagare niente: se l'host non risponde, pick_slot
+        # non poteva trovare niente per forza.
         read -r addr _ <<<"$(resolve_endpoint)"
-        [ -n "$addr" ] || die "Host irraggiungibile (LAN e Tailscale). PC acceso?  winfleet doctor"
+        if [ -z "$addr" ]; then
+          bad "l'host non risponde: il PC è spento o la rete non c'è"
+          info "  quando torna:  winfleet open ${app}"
+          return 1
+        fi
         die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
       }
     }
@@ -2611,7 +2684,29 @@ cmd_open(){
         bad "«${app}» non ha ancora aperto una finestra (ci sta ancora provando)"
       fi
     else
-      bad "«${app}» non si e' aperta.  winfleet doctor"
+      # Il PC e' acceso? E' la prima cosa da escludere, e la si puo' guardare
+      # invece di mandare l'utente a indovinare con "winfleet doctor".
+      #
+      # Con l'host spento questo ramo e' proprio quello che scatta: lo stream
+      # non si aggancia a niente e il supervisore muore. Prima si diceva solo
+      # "non si e' aperta", che e' vero e inutile - la stessa frase per un PC
+      # spento, una rete caduta e un'app che non parte.
+      # Gli indirizzi si prendono dalla CONFIG, non da agent_host: quello
+      # risponde da una cache di cinque minuti, e qui serve sapere com'e' la
+      # rete ADESSO - se il PC si e' appena spento, la cache dice ancora di si'.
+      local raggiungibile=0 h
+      for h in "${HOST_LAN:-}" "${HOST_TS:-}"; do
+        [ -n "$h" ] || continue
+        if reachable "$h" "$AGENT_PORT" 1 2>/dev/null || reachable "$h" "$SUN_PORT" 1 2>/dev/null; then
+          raggiungibile=1; break
+        fi
+      done
+      if [ "$raggiungibile" = 0 ]; then
+        bad "l'host non risponde: il PC è spento o la rete non c'è"
+        info "  «${app}» non si è aperta per questo, non per un problema suo"
+      else
+        bad "«${app}» non si e' aperta.  winfleet doctor"
+      fi
     fi
     return 1
   fi
@@ -2887,7 +2982,11 @@ slot_paired(){ # slot
 
 slot_paired_ask(){ # slot
   local uid
-  uid="$(curl -s --max-time 3 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+  # --connect-timeout separato da --max-time: il primo dice quanto si aspetta
+  # per AGGANCIARE l'host, il secondo quanto per l'intera risposta. Senza il
+  # primo, un PC spento costa il timeout pieno per OGNI slot - misurato: 15.7
+  # secondi solo per scoprire che non c'e' nessuno, su quattro finestre.
+  uid="$(curl -s --max-time 3 --connect-timeout 1 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
          | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
   [ -n "$uid" ] || return 1
   WF_UID_CHK="$uid" python3 -c '
@@ -2916,7 +3015,7 @@ MOON_DOM="com.moonlight-stream.Moonlight"
 # host. Il nome non serve - cambia, e per un periodo due istanze si sono
 # chiamate uguali.
 slot_uuid(){ # slot -> uuid
-  curl -s --max-time 4 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+  curl -s --max-time 4 --connect-timeout 1 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
     | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}'
 }
 

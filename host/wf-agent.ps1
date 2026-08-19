@@ -206,6 +206,9 @@ Note "in ascolto su $Port"
 while ($listener.IsListening) {
     $ctx = $listener.GetContext()
     $req = $ctx.Request
+    # Il flusso della richiesta va chiuso quanto quello della risposta: se resta
+    # aperto la connessione non si libera, ed e' l'altra meta' dei CLOSE_WAIT.
+    try { if ($req.InputStream) { $req.InputStream.Close() } } catch { }
     $body = 'no'
     try {
         if ($req.Url.AbsolutePath -eq '/rect') {
@@ -469,8 +472,24 @@ while ($listener.IsListening) {
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
     } catch { $body = 'no' }
 
-    $bytes = [Text.Encoding]::UTF8.GetBytes($body)
-    $ctx.Response.ContentLength64 = $bytes.Length
-    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-    $ctx.Response.Close()
+    # La risposta si chiude SEMPRE, anche se scriverla fallisce.
+    #
+    # Senza il finally, un errore nella scrittura (il client se n'e' andato, la
+    # rete e' caduta a meta') salta la Close() e lascia la connessione appesa.
+    # Windows la mette in CLOSE_WAIT e non la libera mai: dopo un po' di queste
+    # l'agente accetta ancora connessioni ma non risponde piu' a nessuna.
+    #
+    # E' successo TRE volte in un pomeriggio, sempre allo stesso modo: log fermo,
+    # "ping" senza risposta, e nel frattempo la porta 48088 piena di CLOSE_WAIT.
+    # Da fuori sembra un PC spento, e winfleet aspettava a vuoto ad ogni
+    # apertura.
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+        $ctx.Response.ContentLength64 = $bytes.Length
+        $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    } catch {
+        Note "risposta non inviata: $_"
+    } finally {
+        try { $ctx.Response.Close() } catch { }
+    }
 }

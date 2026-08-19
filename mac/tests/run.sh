@@ -260,6 +260,19 @@ else
   fail=1
 fi
 
+# --- 10c-bis. col PC spento ------------------------------------------------
+# "winfleet open" con l'host irraggiungibile usciva con codice ZERO e senza una
+# riga di output: una pipe con pipefail (curl esce 28) terminava il comando a
+# meta', prima del messaggio. Uno script che ne guarda l'esito andava avanti
+# convinto.
+if /opt/homebrew/bin/bash mac/tests/host-down.sh > "$TMP/hostdown.out" 2>&1; then
+  say "ok   PC spento: lo dice ed esce con errore, invece di fingere"
+else
+  say "NO   PC spento:"
+  sed 's/^/       /' "$TMP/hostdown.out"
+  fail=1
+fi
+
 # --- 10d. il comando che chiude -------------------------------------------
 # "winfleet stop Paint" moriva con «Paint: unbound variable» e non chiudeva
 # niente: l'argomento finiva in un'espressione aritmetica. Era li' dal primo
