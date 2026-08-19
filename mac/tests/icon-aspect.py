@@ -50,7 +50,53 @@ def badge_presente(path):
     ang = im.crop((int(w * 0.62), int(h * 0.62), w, h)).getdata()
     return sum(1 for p in ang if p[0] > 200 and p[1] > 200 and p[2] > 200 and p[3] > 120)
 
+def badge_leggibile(path, lato):
+    """Il badge si distingue a questa misura?
+
+    Non basta "c'e' del bianco": a 16 px il disegno a quattro riquadri diventava
+    una macchia chiara - il 72% del badge bianco, il blu quasi sparito - e nel
+    Dock si vedeva un puntino sbiadito invece del segno di Windows.
+
+    Il criterio e' che si veda il COLORE: un badge riconoscibile ha una quota
+    consistente di blu. Sotto quella, qualunque cosa ci sia disegnata non si
+    legge.
+    """
+    im = Image.open(path).convert("RGBA")
+    w, h = im.size
+    b = max(8, round(w * 0.34))
+    px = list(im.crop((w - b, h - b, w, h)).getdata())
+    if not px:
+        return 0.0
+    blu = sum(1 for q in px if q[2] > 150 and q[0] < 100 and q[3] > 120)
+    return 100.0 * blu / len(px)
+
+
 esito = 0
+
+# --- il badge deve leggersi a TUTTE le misure del Dock ---------------------
+# 16 px e' Cmd-Tab e il Dock piccolo, 32 px il Dock normale: sono le misure a
+# cui l'icona si guarda davvero, e sono quelle a cui un disegno pensato per 512
+# si sfalda.
+sorgente = TMP / "src_badge.png"
+im = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+ImageDraw.Draw(im).ellipse([10, 10, 500, 500], fill=(90, 90, 90, 255))
+im.save(sorgente)
+
+for lato in (16, 32, 64, 128, 256):
+    out = TMP / f"badge_{lato}.png"
+    r = subprocess.run([sys.executable, str(BADGE), str(sorgente), str(out), str(lato)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not out.exists():
+        print(f"NO  badge a {lato}px: non prodotto ({r.stderr.strip()[:60]})")
+        esito = 1
+        continue
+    blu = badge_leggibile(out, lato)
+    if blu < 25:
+        print(f"NO  badge a {lato}px: solo {blu:.0f}% di blu, non si distingue")
+        esito = 1
+    else:
+        print(f"ok  badge a {lato}px: {blu:.0f}% di blu, si legge")
+
 for w, h in CASI:
     src = TMP / f"src_{w}x{h}.png"
     out = TMP / f"out_{w}x{h}.png"

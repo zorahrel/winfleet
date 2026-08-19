@@ -2674,20 +2674,34 @@ build_icns(){ # nome exe destinazione.icns
   # Il distintivo di Windows in basso a destra: nel Dock queste finestre sono
   # indistinguibili dalle app native del Mac - ed e' il punto del progetto - ma
   # quando il PC e' spento o la rete cade la differenza conta, e senza un segno
-  # non c'e' modo di capirlo guardando l'icona. Se lo script non c'e' o Pillow
-  # manca si prosegue con l'icona nuda: un badge mancante e' un peccato, un'app
-  # senza icona no.
-  if [ -f "$WF_BADGE" ] && python3 "$WF_BADGE" "$tmp/src.png" "$tmp/badged.png" 2>/dev/null; then
-    mv "$tmp/badged.png" "$tmp/src.png"
-  fi
-
+  # non c'e' modo di capirlo guardando l'icona.
+  #
+  # Il badge si compone a OGNI MISURA, non una volta sola in grande.
+  #
+  # Prima si disegnava a 512 e si lasciava rimpicciolire a sips: a 32 px i
+  # quattro riquadri del logo finiscono sotto il pixel e si fondono in una
+  # macchia chiara - il segno c'e', ma non si capisce cosa sia, ed e' proprio la
+  # misura a cui si guarda il Dock. Ridisegnandolo per ogni lato, sotto una certa
+  # soglia il disegno cambia invece di sfocarsi.
+  #
+  # Se lo script non c'e' o Pillow manca si prosegue con l'icona nuda: un badge
+  # mancante e' un peccato, un'app senza icona no.
   mkdir -p "$tmp/i.iconset"
-  local s
+  local s lato f
   for s in 16 32 128 256; do
-    sips -z "$s" "$s" "$tmp/src.png" --out "$tmp/i.iconset/icon_${s}x${s}.png" >/dev/null 2>&1
-    [ "$s" = 256 ] && continue
-    sips -z "$(( s * 2 ))" "$(( s * 2 ))" "$tmp/src.png" \
-      --out "$tmp/i.iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1
+    for f in 1 2; do
+      lato=$(( s * f ))
+      # (if e non "&& continue": con set -e un test falso in coda a un ramo puo'
+      # terminare la funzione, e qui il caso falso e' quello normale.)
+      if [ "$f" = 2 ] && [ "$s" = 256 ]; then continue; fi
+      local dest="$tmp/i.iconset/icon_${s}x${s}.png"
+      if [ "$f" = 2 ]; then dest="$tmp/i.iconset/icon_${s}x${s}@2x.png"; fi
+      if [ -f "$WF_BADGE" ] && python3 "$WF_BADGE" "$tmp/src.png" "$dest" "$lato" 2>/dev/null; then
+        continue
+      fi
+      # Senza badge: almeno l'icona, ridimensionata come si puo'.
+      sips -z "$lato" "$lato" "$tmp/src.png" --out "$dest" >/dev/null 2>&1
+    done
   done
   iconutil -c icns "$tmp/i.iconset" -o "$out" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
 
