@@ -840,20 +840,17 @@ pick_slot(){ # [nome-app]
   #
   # Si guarda la prima istanza: se quella non c'e', non c'e' nemmeno il PC -
   # girano tutte sulla stessa macchina.
-  # L'esito si ricorda in un FILE, non in una variabile: pick_slot viene
-  # chiamata dentro $(...), cioe' in una subshell, e una variabile muore con
-  # lei - lo stesso motivo per cui agent_host usa un file. Senza, il PC spento
-  # si paga due volte: 8 secondi, poi altri 10.
-  local memo="$CONFIG_DIR/host-up" su=""
-  if [ -f "$memo" ]; then
-    local eta; eta=$(( $(date +%s) - $(stat -f %m "$memo" 2>/dev/null || echo 0) ))
-    [ "$eta" -lt 20 ] && su="$(cat "$memo" 2>/dev/null)"
-  fi
-  if [ -z "$su" ]; then
-    if reachable "$(agent_host)" "$(slot_port 0)" 1 2>/dev/null; then su=si; else su=no; fi
-    printf '%s' "$su" >"$memo" 2>/dev/null || true
-  fi
-  if [ "$su" = no ]; then
+  # Si chiede ogni volta, senza ricordare la risposta.
+  #
+  # Ho provato a ricordarla in un file, per non pagarla due volte nella stessa
+  # apertura (pick_slot viene chiamata due volte). Guadagno: un paio di secondi,
+  # e solo col PC spento. Costo: con il PC gia' tornato, un "no" ancora valido
+  # faceva rispondere "tutte le finestre sono occupate" mentre erano tutte
+  # libere - verificato scrivendo la memoria a mano. Legarla al pid del comando
+  # avrebbe funzionato, ma e' molta macchina per due secondi in un caso raro.
+  #
+  # Con l'host acceso questa domanda costa venti millisecondi.
+  if ! reachable "$(agent_host)" "$(slot_port 0)" 1 2>/dev/null; then
     trace "host non raggiungibile: nessuno slot da cercare"
     return 1
   fi
@@ -1117,6 +1114,45 @@ slot_name(){ # slot
     | tr '<' '\n' | awk -F'>' '/^hostname/{print $2; exit}'
 }
 
+# L'agente sull'host non risponde piu': lo si riavvia.
+#
+# E' successo TRE volte in un pomeriggio: il processo c'e', la porta e' in
+# ascolto, e ogni richiesta scade. Da fuori sembra un PC spento, e da li' in poi
+# ogni apertura e' lenta e ogni ridimensionamento non arriva.
+#
+# La causa probabile - connessioni lasciate in CLOSE_WAIT da una risposta che
+# non veniva chiusa - e' stata corretta, ma NON e' dimostrata: le richieste
+# abbandonate a meta' non l'hanno riprodotta. Quindi qui non ci si fida della
+# diagnosi e si mette una rete: se non risponde, si riavvia il task che lo
+# ospita. Costa qualche secondo e vale finche' la causa vera non e' certa.
+#
+# Non si insiste: un solo tentativo per comando. Se non basta, il problema e'
+# altrove e insistere lo nasconderebbe.
+agent_revive(){
+  [ -n "${HOST_SSH:-}" ] || return 1
+  local marca="$CONFIG_DIR/agent-revived"
+  # Non piu' di una volta al minuto: se l'agente muore appena riavviato, il
+  # problema non e' quello che questa funzione cura.
+  if [ -f "$marca" ]; then
+    local eta; eta=$(( $(date +%s) - $(stat -f %m "$marca" 2>/dev/null || echo 0) ))
+    [ "$eta" -lt 60 ] && return 1
+  fi
+  date +%s >"$marca" 2>/dev/null || true
+  trace "agente muto: riavvio il task sull'host"
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+    'schtasks /end /tn winfleet-agent & schtasks /run /tn winfleet-agent' >/dev/null 2>&1 || true
+  # Gli si da' il tempo di mettersi in ascolto, poi si guarda se e' tornato.
+  local k
+  for k in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if [ "$(curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/ping" 2>/dev/null)" = ok ]; then
+      trace "agente tornato dopo il riavvio"
+      return 0
+    fi
+  done
+  return 1
+}
+
 refresh_vdd(){
   # Prima l'agente: una GET su LAN costa millisecondi, un giro ssh un paio di
   # decimi - e questo veniva fatto a ogni apertura, prima ancora di lanciare
@@ -1134,6 +1170,15 @@ refresh_vdd(){
   # spiega che l'host non e' raggiungibile.
   curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
     | tr -d '\r' >"$VDD_CACHE.tmp" || true
+  # Niente risposta e l'host c'e'? Allora e' l'agente a essere muto: si prova a
+  # rimetterlo in piedi prima di ripiegare su ssh, che funziona ma e' lento e
+  # non cura niente.
+  if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
+    if reachable "$(agent_host)" "$SUN_PORT" 1 2>/dev/null && agent_revive; then
+      curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
+        | tr -d '\r' >"$VDD_CACHE.tmp" || true
+    fi
+  fi
   if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
     need_ssh
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \

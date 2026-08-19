@@ -260,6 +260,18 @@ else
   fail=1
 fi
 
+# --- 10c-ter. l'agente sull'host che smette di rispondere ------------------
+# Tre volte in un pomeriggio: processo vivo, porta in ascolto, ogni richiesta
+# che scade. Da fuori sembra un PC spento. La causa probabile e' corretta ma non
+# dimostrata, quindi oltre al fix c'e' una rete: se non risponde, si riavvia.
+if /opt/homebrew/bin/bash mac/tests/agent-revive.sh > "$TMP/revive.out" 2>&1; then
+  say "ok   agente host: se smette di rispondere, torna da solo"
+else
+  say "NO   agente host:"
+  sed 's/^/       /' "$TMP/revive.out"
+  fail=1
+fi
+
 # --- 10c-bis. col PC spento ------------------------------------------------
 # "winfleet open" con l'host irraggiungibile usciva con codice ZERO e senza una
 # riga di output: una pipe con pipefail (curl esce 28) terminava il comando a
