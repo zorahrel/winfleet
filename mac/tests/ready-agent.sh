@@ -113,5 +113,18 @@ else
   fail=1
 fi
 
+# --- 4. lo rimette anche chi APRE, non solo doctor --------------------------
+# ensure_ready_agent era chiamata da doctor e dal risveglio dopo il riuso di una
+# finestra calda. Ma con la scorta spenta quel riuso non avviene mai, e chi apre
+# le app dal Dock - cioe' l'uso normale - non lancia mai "winfleet" a mano:
+# verificato che un'apertura vera NON rimetteva l'agente, e restava assente per
+# sempre.
+if grep -q 'rifornitore assente: lo rimetto' bin/winfleet; then
+  echo "  ok   apertura: anche chi apre una finestra rimette il rifornitore"
+else
+  echo "  NO   apertura: solo doctor lo rimette, e dal Dock non passa da li'"
+  fail=1
+fi
+
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"

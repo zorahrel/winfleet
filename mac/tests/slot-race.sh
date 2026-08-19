@@ -117,14 +117,39 @@ else
   fail=1
 fi
 
-# --- 6. chi sceglie tiene conto delle prenotazioni ANCHE al secondo giro ----
+# --- 6. il ripiego prenota anche lo slot di riserva -------------------------
 # cmd_open, se non riesce a prenotare lo slot scelto, ne cerca un altro: se quel
-# secondo giro non prenotasse, due comandi tornerebbero a scontrarsi - solo un
-# po' piu' tardi.
-if [ "$(grep -c 'slot_hold "$slot"' bin/winfleet)" -ge 2 ]; then
-  echo "  ok   ripiego: anche lo slot di riserva viene prenotato"
+# giro non prenotasse, due comandi tornerebbero a scontrarsi - solo un po' piu'
+# tardi. (Il controllo guarda che la prenotazione stia DENTRO il ciclo di
+# ripiego: contare le occorrenze non bastava piu' quando i due tentativi sono
+# diventati un ciclo.)
+if grep -A 3 'for tent in 1 2 3 4 5 6 7 8; do' bin/winfleet | grep -q 'slot_hold "\$slot"'; then
+  echo "  ok   ripiego: ogni tentativo prenota prima di procedere"
 else
-  echo "  NO   ripiego: il secondo tentativo non prenota, la corsa si ripresenta"
+  echo "  NO   ripiego: un tentativo procede senza prenotare, la corsa si ripresenta"
+  fail=1
+fi
+
+# --- 7. il ripiego RIPROVA, non si arrende al primo scontro ----------------
+# Con due comandi insieme un solo ripiego basta. Con quattro no: i perdenti
+# ripiegano tutti sullo stesso secondo slot, e chi perde di nuovo moriva
+# dicendo "un'altra apertura sta usando le finestre libere" mentre due finestre
+# erano libere davvero. Misurato aprendo quattro app dal Dock insieme: due
+# aperte, due sparite. Col ciclo: quattro su quattro.
+if grep -q 'for tent in 1 2 3 4 5 6 7 8; do' bin/winfleet; then
+  echo "  ok   ripiego: riprova finche' ci sono finestre libere"
+else
+  echo "  NO   ripiego: si arrende al primo scontro, e con 4 aperture ne perde 2"
+  fail=1
+fi
+
+# --- 8. il messaggio di resa e' vero ---------------------------------------
+# "sta usando le finestre libere" ha senso solo se le finestre sono davvero
+# tutte prenotate: si controlla lo stato invece di dedurlo dal fallimento.
+if grep -q 'slot_held "\$slot" && die' bin/winfleet; then
+  echo "  ok   resa: si arrende solo se lo slot e' davvero prenotato da altri"
+else
+  echo "  NO   resa: si arrende senza guardare se e' vero"
   fail=1
 fi
 

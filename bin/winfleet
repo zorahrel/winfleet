@@ -2295,16 +2295,44 @@ cmd_open(){
     #
     # Se non si riesce a prenotarlo qualcuno e' arrivato prima: si riprova a
     # sceglierne un altro invece di procedere su uno slot che non e' nostro.
-    if ! slot_hold "$slot"; then
+    # Si riprova finche' ci sono finestre libere, non una volta sola.
+    #
+    # Con DUE comandi insieme un solo ripiego basta. Con QUATTRO no: i perdenti
+    # ripiegano tutti sullo stesso secondo slot, e chi perde di nuovo moriva
+    # con "un'altra apertura sta usando le finestre libere" mentre due finestre
+    # erano libere davvero. Misurato: quattro click dal Dock insieme, due app
+    # aperte e due sparite senza aprirsi.
+    #
+    # Il ciclo finisce quando pick_slot non trova piu' niente - e li' il
+    # messaggio e' vero.
+    local tent
+    for tent in 1 2 3 4 5 6 7 8; do
+      if slot_hold "$slot"; then break; fi
       trace "slot $slot preso da un altro comando: ne cerco un altro"
+      # Un attimo di respiro: chi ha vinto sta scrivendo il proprio stato, e
+      # ripartire nello stesso istante vuol dire rivedere lo stesso slot.
+      sleep 0.4
       slot="$(pick_slot "$app")" || die "Tutte le $SLOTS finestre sono occupate.  winfleet windows"
-      slot_hold "$slot" || die "Un'altra apertura sta usando le finestre libere. Riprova fra qualche secondo."
-    fi
+    done
+    slot_held "$slot" && die "Un'altra apertura sta usando le finestre libere. Riprova fra qualche secondo."
     # La prenotazione va tolta comunque finisca: senza, un'apertura fallita
     # lascerebbe lo slot inutilizzabile fino alla scadenza.
     trap 'slot_unhold "$slot"' RETURN
 
     trace "slot scelto: $slot"
+    # Il rifornitore c'e' ancora? Si guarda QUI, non solo in doctor.
+    #
+    # Era chiamato da doctor e dal risveglio dopo il riuso di una finestra
+    # calda - ma con la scorta spenta quel riuso non avviene mai, e chi non
+    # lancia "winfleet" a mano (cioe' chi apre le app dal Dock, cioe' l'uso
+    # normale) restava senza rifornitore per sempre. Verificato: tolto l'agente,
+    # un'apertura vera non lo rimetteva.
+    #
+    # Costa un controllo locale e non stampa niente quando e' a posto.
+    if ! launchctl print "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+      trace "rifornitore assente: lo rimetto"
+      ensure_ready_agent >/dev/null 2>&1 || true
+    fi
     refresh_vdd
     trace "scelta modalita' fatta"
 
