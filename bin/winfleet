@@ -2633,12 +2633,100 @@ sys.exit(1)
 ' 2>/dev/null
 }
 
+# Il dominio delle preferenze di Moonlight, e l'identita' di un'istanza.
+#
+# Si tengono qui perche' servono a piu' di un punto: chi controlla il pairing,
+# chi lo ripara, chi legge il certificato.
+MOON_DOM="com.moonlight-stream.Moonlight"
+
+# L'uuid con cui l'istanza si presenta: e' come Moonlight la ritrova fra i suoi
+# host. Il nome non serve - cambia, e per un periodo due istanze si sono
+# chiamate uguali.
+slot_uuid(){ # slot -> uuid
+  curl -s --max-time 4 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+    | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}'
+}
+
+# Il pairing senza PIN, quando l'host ci conosce gia'.
+#
+# Il pairing di Moonlight e' uno scambio di certificati: l'host tiene quello del
+# client nel suo state.json, il client tiene quello del server nelle proprie
+# preferenze. Il PIN serve solo ad autorizzare lo scambio la prima volta.
+#
+# Succede di restare a meta': l'host ha gia' il nostro certificato - da un
+# pairing andato a buon fine in passato - ma il Mac ha perso il suo, per esempio
+# perche' Moonlight e' stato reinstallato o le preferenze sono state riscritte.
+# Da fuori e' indistinguibile da "mai accoppiata": la finestra si apre vuota, e
+# l'unico rimedio era rifare il PIN a mano.
+#
+# Quando l'host ci riconosce gia', il certificato mancante si puo' semplicemente
+# prendere: e' su C:\winfleet\sunN\cert.pem, leggibile via ssh, e non e' un
+# segreto - e' la chiave PUBBLICA con cui il client verifica il server.
+#
+# Trovato cosi': due finestre su quattro erano inutilizzabili da giorni, e il
+# sintomo era altrove - le finestre che un'app apre per conto suo restavano su
+# Windows con la traccia "nessuno slot libero" mentre di slot liberi ce n'erano
+# due, perche' uno slot non accoppiato non conta come disponibile.
+pair_slot_auto(){ # slot -> 0 se accoppiata senza chiedere niente
+  local slot="$1"
+  [ -n "${HOST_SSH:-}" ] || return 1
+  command -v defaults >/dev/null 2>&1 || return 1
+
+  local uid; uid="$(slot_uuid "$slot")"
+  [ -n "$uid" ] || return 1
+
+  # In che posizione del plist sta questo host? Si cerca per uuid: il nome
+  # cambia, l'uuid no.
+  local n idx="" i u
+  n="$(defaults read "$MOON_DOM" hosts.size 2>/dev/null || echo 0)"
+  [ "$n" -gt 0 ] 2>/dev/null || return 1
+  for i in $(seq 1 "$n"); do
+    u="$(defaults read "$MOON_DOM" "hosts.$i.uuid" 2>/dev/null)"
+    if [ "$(printf '%s' "$u" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$uid" | tr 'A-Z' 'a-z')" ]; then
+      idx="$i"; break
+    fi
+  done
+  # Host mai visto da Moonlight: qui non c'e' niente da completare, serve il PIN.
+  [ -n "$idx" ] || return 1
+
+  # L'host ci conosce? Se non ha il nostro certificato il pairing va fatto
+  # davvero, e questa scorciatoia non e' lecita.
+  local nostro
+  nostro="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"if (Test-Path C:\\winfleet\\sun${slot}\\state.json) { (Get-Content C:\\winfleet\\sun${slot}\\state.json -Raw) -match 'BEGIN CERTIFICATE' } else { 'False' }\"" 2>/dev/null | tr -d '\r' | tr -d ' ')"
+  [ "$nostro" = True ] || return 1
+
+  local cert
+  cert="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"Get-Content C:\\winfleet\\sun${slot}\\cert.pem -Raw\"" 2>/dev/null | tr -d '\r')"
+  case "$cert" in *"BEGIN CERTIFICATE"*) :;; *) return 1;; esac
+
+  # -data e non -string: nel plist il certificato e' un dato binario, e scritto
+  # come stringa finisce dentro come blocco VUOTO - il pairing sembra fatto e
+  # non funziona. Misurato: "Type is data" sugli host accoppiati davvero.
+  local hex; hex="$(printf '%s' "$cert" | xxd -p | tr -d '\n')"
+  [ -n "$hex" ] || return 1
+  defaults write "$MOON_DOM" "hosts.$idx.srvcert" -data "$hex" 2>/dev/null || return 1
+  # Le preferenze vivono in memoria dentro cfprefsd: senza questo, chi legge il
+  # FILE - come fa slot_paired - continua a vedere la versione vecchia.
+  killall cfprefsd 2>/dev/null || true
+  sleep 1
+  slot_paired "$slot"
+}
+
 cmd_pair_slots(){
   need_config
   [ "${SLOTS:-0}" -gt 0 ] || { info "nessuna istanza a finestre (SLOTS=0)"; return 0; }
-  local i n=0 ko=0
+  local i n=0 ko=0 auto=0
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     if slot_paired "$i"; then n=$(( n + 1 )); continue; fi
+    # Prima si prova senza disturbare: se l'host ci conosce gia', manca solo il
+    # suo certificato da questa parte e si puo' prendere. Un PIN chiesto quando
+    # non serve e' comunque un PIN da digitare.
+    if pair_slot_auto "$i"; then
+      ok "«$(slot_name "$i")» accoppiata  ${c_dim}(l'host ci conosceva gia')${c_off}"
+      n=$(( n + 1 )); auto=$(( auto + 1 )); continue
+    fi
     pair_slot "$i" && n=$(( n + 1 )) || ko=$(( ko + 1 ))
   done
   if [ "$ko" = 0 ]; then

@@ -234,6 +234,20 @@ else
   fail=1
 fi
 
+# --- 11a. pairing rimasto a meta' ------------------------------------------
+# L'host aveva gia' il nostro certificato ma il Mac aveva perso il suo: da fuori
+# identico a "mai accoppiata", e la finestra si apre VUOTA. Due su quattro sono
+# rimaste cosi' per giorni, col sintomo visibile altrove - le finestre figlie
+# restavano su Windows con "nessuno slot libero" mentre due slot erano liberi,
+# perche' uno slot spaiato non conta come disponibile.
+if /opt/homebrew/bin/bash mac/tests/pair-auto.sh > "$TMP/pair.out" 2>&1; then
+  say "ok   pairing: se l'host ci conosce gia', si ripara senza chiedere un PIN"
+else
+  say "NO   pairing:"
+  sed 's/^/       /' "$TMP/pair.out"
+  fail=1
+fi
+
 # --- 11b. il rifornitore delle finestre pronte -----------------------------
 # L'agente launchd si era scaricato da solo ("service inactive" nei log, nessun
 # riavvio del Mac). Senza danno visibile finche' la scorta resta spenta
