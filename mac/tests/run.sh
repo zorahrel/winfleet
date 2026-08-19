@@ -234,6 +234,19 @@ else
   fail=1
 fi
 
+# --- 10b-bis. Cmd+W in una finestra VERA -----------------------------------
+# Il test del menu gira in un processo di prova e dice che la voce e' collegata
+# bene. Non diceva se, dentro un Moonlight vero, quella voce chiude davvero: il
+# delegate di SDL rifiuta windowShouldClose:, quindi performClose: non chiudeva
+# niente e lo stream finiva per una strada sua 4.6 secondi dopo. Ora 0.14s.
+if /opt/homebrew/bin/bash mac/tests/cmdw-live.sh > "$TMP/cmdwlive.out" 2>&1; then
+  say "ok   Cmd+W dal vivo: $(grep -o 'si chiude in .*' "$TMP/cmdwlive.out" | head -1)"
+else
+  say "NO   Cmd+W dal vivo:"
+  sed 's/^/       /' "$TMP/cmdwlive.out"
+  fail=1
+fi
+
 # --- 10c. app che non apre nessuna finestra --------------------------------
 # La finestra di Moonlight si apre SEMPRE, anche quando su Windows non e'
 # partito niente: si aspettavano 45 secondi e poi altri 20, cioe' 56 misurati,

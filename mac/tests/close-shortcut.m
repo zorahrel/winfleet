@@ -65,11 +65,20 @@ int main(void) { @autoreleasepool {
     NSLog(@"ESITO_CMDW: %@", gClosed ? @"PASS" : @"FAIL");
     if (!gClosed) fail++;
 
+    // gClosed va AZZERATO fra una prova e l'altra: resta vero dal Cmd+W di
+    // sopra, quindi le prove successive leggevano il risultato della prima e
+    // dicevano "intercettato" qualunque cosa succedesse. Il difetto e' rimasto
+    // nascosto finche' Cmd+W chiudeva davvero; appena la chiusura e' passata a
+    // un'altra via, Cmd+Shift+W ha cominciato a fallire senza motivo.
+    gClosed = NO;
     sendKey(w, @"t", NSEventModifierFlagCommand);
     NSLog(@"ESITO_CMDT: %@", (!gClosed) ? @"PASS" : @"FAIL");
     if (gClosed) fail++;
 
+    gClosed = NO;
     sendKey(w, @"w", NSEventModifierFlagCommand | NSEventModifierFlagShift);
+    NSLog(@"DIAGNOSI: closed=%d swallowed=%d menu-voci=%ld",
+          gClosed, gSwallowed, (long)(NSApp.windowsMenu ? NSApp.windowsMenu.numberOfItems : -1));
     NSLog(@"ESITO_CMDSHIFTW: %@", (!gClosed) ? @"PASS" : @"FAIL");
     if (gClosed) fail++;
 

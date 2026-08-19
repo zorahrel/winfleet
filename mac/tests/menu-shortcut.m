@@ -59,7 +59,15 @@ int main(void) {
         // --- 1. le voci ci sono, con la scorciatoia giusta ------------------
         NSMenuItem *chiudi = nil, *riduci = nil;
         for (NSMenuItem *it in win.itemArray) {
-            if (it.action == @selector(performClose:)) chiudi = it;
+            // performClose: NON va bene su queste finestre: il delegate di SDL
+            // risponde NO a windowShouldClose:, quindi AppKit non chiude niente
+            // e lo stream finisce per una strada sua 4.6 secondi dopo. La voce
+            // deve puntare alla chiusura della libreria, che ci mette 0.37s.
+            if (it.action == @selector(performClose:)) {
+                printf("  NO   menu: «Chiudi» usa performClose:, che SDL rifiuta (4.6s invece di 0.4s)\n");
+                chiudi = it;
+            }
+            if (it.action == NSSelectorFromString(@"wfClose:")) chiudi = it;
             if (it.action == @selector(miniaturize:))  riduci = it;
         }
         if (chiudi && [chiudi.keyEquivalent isEqualToString:@"w"] &&
@@ -128,19 +136,29 @@ int main(void) {
         // Quello che conta e' che l'azione della voce sia performClose: e che
         // quella chiuda la finestra. La seconda meta' si prova chiamandola sulla
         // finestra direttamente, com'e' scritto nel menu.
-        if (chiudi.action == @selector(performClose:)) {
-            printf("  ok   Cmd+W: la voce chiama performClose:, non altro\n");
+        if (chiudi.action == NSSelectorFromString(@"wfClose:")) {
+            printf("  ok   Cmd+W: la voce chiama la chiusura della libreria\n");
         } else {
-            printf("  NO   Cmd+W: la voce e' collegata a un'azione diversa\n");
+            printf("  NO   Cmd+W: la voce e' collegata a un'azione che SDL rifiuta\n");
+            fail = 1;
+        }
+
+        // La voce deve avere un BERSAGLIO esplicito: senza, l'azione va per la
+        // catena dei responder, non trova nessuno che risponda, e la voce resta
+        // grigia - la scorciatoia sembra esserci e non fa niente.
+        if (chiudi.target != nil) {
+            printf("  ok   Cmd+W: la voce ha un bersaglio, quindi e' attiva\n");
+        } else {
+            printf("  NO   Cmd+W: nessun bersaglio, la voce resta grigia\n");
             fail = 1;
         }
 
         [w performClose:nil];
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.4]];
         if (!w.isVisible) {
-            printf("  ok   performClose:: la finestra si chiude davvero\n");
+            printf("  ok   chiusura: su una finestra normale si chiude subito\n");
         } else {
-            printf("  NO   performClose:: la finestra resta aperta\n");
+            printf("  NO   chiusura: la finestra resta aperta\n");
             fail = 1;
         }
 

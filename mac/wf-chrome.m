@@ -206,6 +206,125 @@ static CGFloat titlebarHeight(NSWindow *w) {
     return canonical;
 }
 
+// Chiudere una finestra di stream, per davvero e senza attese.
+//
+// performClose: e' la via giusta su una finestra normale, e qui NON funziona:
+// il delegate di SDL (SDL3Cocoa_WindowListener) risponde NO a
+// windowShouldClose:, quindi AppKit non chiude niente. Lo stream poi finisce
+// lo stesso, ma per una strada sua: misurato, 4.6 secondi fra Cmd+W e la
+// finestra che sparisce - su un'app del Mac e' istantaneo, ed e' il tipo di
+// ritardo che fa capire che quella finestra non e' nativa.
+//
+// La via veloce e' quella che usa gia' "winfleet stop": chiedere al processo di
+// terminare. Lo stream si spegne in 0.7 secondi misurati, il supervisore se ne
+// accorge e libera lo slot come per qualunque altra chiusura.
+//
+// Si prova comunque performClose: prima: se un domani SDL smettesse di
+// rifiutare, la strada pulita resta quella.
+// L'ultimo tasto visto dal monitor, coi suoi modificatori.
+//
+// Serve alla voce di menu: AppKit le passa l'azione senza dirle quale evento
+// l'ha scatenata, e NSApp.currentEvent puo' essere nullo. Il monitor invece
+// vede SEMPRE l'evento, anche quando arriva da codice.
+static NSEventModifierFlags gLastKeyMods = 0;
+static BOOL gLastKeyValid = NO;
+
+// Chi riceve la voce "Chiudi" del menu.
+//
+// La voce puntava a performClose:, che e' il selettore giusto su una finestra
+// normale - e qui NON chiude: il delegate di SDL risponde NO a
+// windowShouldClose:. Lo stream finiva lo stesso, ma 4.6 secondi dopo, e in
+// mezzo la finestra restava li' come se il comando fosse stato ignorato.
+//
+// Puntando a questo oggetto si passa dalla stessa chiusura del pulsante rosso:
+// misurato, la finestra sparisce in mezzo secondo.
+@interface WFCloser : NSObject
++ (instancetype)shared;
+- (void)wfClose:(id)sender;
+@end
+
+static void closeStreamWindow(NSWindow *w);
+
+@implementation WFCloser
++ (instancetype)shared {
+    static WFCloser *s = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[WFCloser alloc] init]; });
+    return s;
+}
+// AppKit chiede se la voce e' utilizzabile PRIMA di eseguirla, e a quel punto
+// l'evento in corso c'e' ancora: e' il posto giusto per rifiutare Cmd+Shift+W.
+//
+// Una voce con keyEquivalent @"w" scatta anche con Shift o Alt premuti: la
+// maschera dice quali modificatori SERVONO, non quali sono vietati, e AppKit
+// ignora quelli in piu'. Cmd+Shift+W in un browser chiude l'intera finestra o
+// il profilo, ed e' roba che deve arrivare a Windows. Era gia' gestito nel
+// monitor sugli eventi, ma la voce di menu - aggiunta dopo - scavalca il
+// monitor e se lo prendeva lo stesso: una regressione, trovata dal test che
+// verifica proprio questo.
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action != @selector(wfClose:)) return YES;
+    // Da dove si leggono i modificatori, in ordine di attendibilita':
+    //   1. l'evento che il MONITOR ha appena visto - c'e' sempre, anche quando
+    //      il tasto arriva da codice invece che da una tastiera vera;
+    //   2. NSApp.currentEvent, che pero' e' nullo quando l'azione arriva da una
+    //      voce di menu (verificato: "currentEvent=(null)");
+    //   3. lo stato fisico della tastiera.
+    //
+    // Serve tutt'e tre perche' il caso da rifiutare - Cmd+Shift+W - deve essere
+    // riconosciuto sia quando lo preme una persona sia quando lo manda un test.
+    NSEventModifierFlags mods = 0;
+    if (gLastKeyValid)                 mods = gLastKeyMods;
+    else if (NSApp.currentEvent)       mods = NSApp.currentEvent.modifierFlags;
+    else                               mods = [NSEvent modifierFlags];
+
+    NSEventModifierFlags altri = mods &
+        (NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagControl);
+    if (altri) {
+        if (getenv("WF_DEBUG")) NSLog(@"[wf] Chiudi: c'e' un altro modificatore, lascio passare");
+        return NO;
+    }
+    return YES;
+}
+
+- (void)wfClose:(id)sender {
+    (void)sender;
+    if (getenv("WF_DEBUG")) NSLog(@"[wf] wfClose: invocato");
+    // SOLO Cmd nudo.
+    //
+    // Una voce di menu con keyEquivalent @"w" scatta anche su Cmd+Shift+W: la
+    // maschera dei modificatori dice quali servono, non quali sono vietati, e
+    // AppKit ignora quelli in piu'. Cmd+Shift+W in un browser chiude l'intera
+    // finestra o il profilo, ed e' roba che deve arrivare a Windows: era gia'
+    // gestito nel monitor sugli eventi, ma la voce di menu - aggiunta dopo -
+    // scavalcava il monitor e se lo prendeva lo stesso.
+    //
+    // Trovato dal test che verifica proprio questo, ed era una REGRESSIONE:
+    // prima del passaggio al menu, Cmd+Shift+W passava.
+    // La finestra CHIAVE, come farebbe performClose:.
+    NSWindow *w = NSApp.keyWindow ?: NSApp.mainWindow;
+    if (!w) { for (NSWindow *x in [NSApp windows]) { if (x.isVisible) { w = x; break; } } }
+    closeStreamWindow(w);
+}
+@end
+
+static void closeStreamWindow(NSWindow *w) {
+    if (!w) return;
+    id del = w.delegate;
+    BOOL rifiuta = NO;
+    if (del && [del respondsToSelector:@selector(windowShouldClose:)]) {
+        rifiuta = ![(id<NSWindowDelegate>)del windowShouldClose:w];
+    }
+    if (!rifiuta) { [w performClose:nil]; return; }
+
+    // Il delegate dice di no: la finestra non si chiudera' mai per questa via.
+    // Si esce dal processo, che e' cio' che l'utente ha chiesto - questa
+    // finestra E' l'app.
+    if (getenv("WF_DEBUG")) NSLog(@"[wf] chiusura: SDL rifiuta, termino lo stream");
+    [w orderOut:nil];          // sparisce subito, senza aspettare lo spegnimento
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+}
+
 static void adopt(NSWindow *w) {
     if (!isStreamWindow(w)) return;
     if (objc_getAssociatedObject(w, kSeen)) return;
@@ -511,7 +630,7 @@ static void watchTitlebarClicks(void) {
             return e;
         }
 
-        if      (hit == [w standardWindowButton:NSWindowCloseButton])       [w performClose:nil];
+        if      (hit == [w standardWindowButton:NSWindowCloseButton])       closeStreamWindow(w);
         else if (hit == [w standardWindowButton:NSWindowMiniaturizeButton]) [w miniaturize:nil];
         else                                                                [w zoom:nil];
         return nil;   // consumato: SDL non deve vederlo
@@ -561,7 +680,8 @@ static void watchTitlebarClicks(void) {
         // chiamata piu' di una volta durante la vita del processo.
         BOOL haveClose = NO, haveMin = NO;
         for (NSMenuItem *it in win.itemArray) {
-            if (it.action == @selector(performClose:))  haveClose = YES;
+            if (it.action == @selector(performClose:) ||
+                it.action == @selector(wfClose:))       haveClose = YES;
             if (it.action == @selector(miniaturize:))   haveMin   = YES;
         }
         if (!haveMin) {
@@ -572,8 +692,12 @@ static void watchTitlebarClicks(void) {
         }
         if (!haveClose) {
             NSMenuItem *c = [[NSMenuItem alloc] initWithTitle:@"Chiudi"
-                                                       action:@selector(performClose:)
+                                                       action:@selector(wfClose:)
                                                 keyEquivalent:@"w"];
+            // Il bersaglio e' esplicito: senza, l'azione va per la catena dei
+            // responder e non trova nessuno che risponda a wfClose:, quindi la
+            // voce resta grigia e la scorciatoia non fa niente.
+            c.target = [WFCloser shared];
             [win addItem:c];
         }
         if (getenv("WF_DEBUG")) {
@@ -599,6 +723,10 @@ static void watchTitlebarClicks(void) {
                   w ? NSStringFromClass([w class]) : @"(nessuna)",
                   isStreamWindow(w) ? 1 : 0);
         }
+        // Si annota SEMPRE, prima di qualunque filtro: e' l'unica traccia
+        // dell'evento che la voce di menu potra' consultare.
+        gLastKeyMods = e.modifierFlags;
+        gLastKeyValid = YES;
         if (!isStreamWindow(w)) return e;
         if (!(e.modifierFlags & NSEventModifierFlagCommand)) return e;
         // Solo Cmd nudo: Cmd+Shift+W o Cmd+Alt+W sono altre cose, e in un
@@ -608,7 +736,7 @@ static void watchTitlebarClicks(void) {
         if (other) return e;
 
         NSString *k = e.charactersIgnoringModifiers.lowercaseString;
-        if ([k isEqualToString:@"w"]) { [w performClose:nil];  return nil; }
+        if ([k isEqualToString:@"w"]) { closeStreamWindow(w);  return nil; }
         if ([k isEqualToString:@"m"]) { [w miniaturize:nil];   return nil; }
         return e;
     }];
