@@ -234,6 +234,19 @@ else
   fail=1
 fi
 
+# --- 10c. app che non apre nessuna finestra --------------------------------
+# La finestra di Moonlight si apre SEMPRE, anche quando su Windows non e'
+# partito niente: si aspettavano 45 secondi e poi altri 20, cioe' 56 misurati,
+# per dire una cosa che l'host sapeva dopo 35. Trovato con la Calcolatrice, che
+# su quel PC e' rotta e non apre finestre comunque la si lanci.
+if /opt/homebrew/bin/bash mac/tests/no-window.sh > "$TMP/nowin.out" 2>&1; then
+  say "ok   app senza finestra: lo si scopre subito, non dopo un minuto"
+else
+  say "NO   app senza finestra:"
+  sed 's/^/       /' "$TMP/nowin.out"
+  fail=1
+fi
+
 # --- 11. due aperture insieme ----------------------------------------------
 # Successo dal vivo: due "winfleet open" a pochi secondi l'uno dall'altro hanno
 # messo Paint e Arc sulla STESSA istanza. Chi aveva chiesto Paint si e' visto

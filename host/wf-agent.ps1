@@ -365,6 +365,26 @@ while ($listener.IsListening) {
             $mon = Get-Monitor $slot
             if ($mon) { $body = "$($mon.width)x$($mon.height)" }
         }
+        elseif ($req.Url.AbsolutePath -eq '/nowin') {
+            # "L'app non ha aperto nessuna finestra": una resa gia' constatata.
+            #
+            # Serve perche' il Mac altrimenti aspetta a vuoto: la finestra di
+            # Moonlight si apre SEMPRE, anche quando dall'altra parte non e'
+            # partito niente, quindi da li' non si distingue un'app lenta da
+            # un'app che non partira' mai. Il risultato erano 56 secondi misurati
+            # per arrivare a una risposta che qui si conosceva dopo 35.
+            #
+            # Il file lo scrive wf-place quando smette di cercare la finestra, e
+            # lo cancella quando invece la trova.
+            $slot = [int]$req.QueryString['slot']
+            $f = "C:\winfleet\nowin$slot.txt"
+            if (Test-Path $f) {
+                # Solo se e' di ADESSO: un file vecchio e' di un'apertura
+                # precedente, e farebbe fallire quella in corso.
+                $eta = ((Get-Date) - (Get-Item $f).LastWriteTime).TotalSeconds
+                if ($eta -lt 120) { $body = 'si' } else { $body = 'no' }
+            } else { $body = 'no' }
+        }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
         elseif ($req.Url.AbsolutePath -eq '/orphans') {
             # Le finestre che stanno su uno schermo virtuale e che NESSUNO slot

@@ -1050,6 +1050,15 @@ swap_app(){ # slot app
 # NON si usa /rect per chiederlo: quell'endpoint RIDIMENSIONA la finestra, e
 # chiamarlo con 0x0 la schiacciava a 200x150 (il minimo che l'agente impone).
 # Un controllo non deve cambiare cio' che osserva.
+# L'host ha smesso di cercare la finestra di quest'app?
+#
+# Risponde "si" solo se la resa e' di adesso: un segnale vecchio e' di
+# un'apertura precedente, e farebbe fallire quella in corso.
+slot_gave_up(){ # slot -> si|no
+  curl -s --max-time 2 --connect-timeout 1 \
+    "http://$(agent_host):$AGENT_PORT/nowin?slot=$1" 2>/dev/null | tr -d '\r\n'
+}
+
 slot_hwnd_live(){ # slot
   local hw; hw="$(curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/hwnd?slot=$1" 2>/dev/null)"
   case "$hw" in ''|no|0) return 1;; *) echo "$hw";; esac
@@ -2442,6 +2451,20 @@ cmd_open(){
       # valore di uscita e' quello del test, non dell'assegnamento.
       if [ -n "${sz:-}" ] && [ "$sz" != "${sz#*x}" ]; then break; fi
       sz=""
+      # L'host ha gia' rinunciato? Allora non c'e' niente da aspettare.
+      #
+      # La finestra di Moonlight si apre SEMPRE, anche quando dall'altra parte
+      # non e' partito niente: da qui un'app lenta e un'app che non partira' mai
+      # sono identiche. Si aspettavano 45 secondi, poi altri 20 per chiedere
+      # all'agente - 56 misurati - per una risposta che su Windows era nota dopo
+      # 35. Ora la si chiede appena e' plausibile che sia pronta.
+      #
+      # Ogni due giri, non tutti: e' una richiesta di rete dentro un ciclo che
+      # gira due volte al secondo.
+      if [ "$i" -gt 12 ] && [ $(( i % 4 )) = 0 ] && [ "$(slot_gave_up "$slot")" = si ]; then
+        trace "l'host dice che «${app}» non ha aperto nessuna finestra: smetto di aspettare"
+        break
+      fi
       # Il supervisore si ricontrolla dallo stato dello slot, non da una variabile:
       # e' lui stesso a riscrivere il file col proprio pid appena parte, e quello e'
       # l'unico numero che vale. Un giro di grazia perche' la misura e la fine del
@@ -2473,6 +2496,10 @@ cmd_open(){
       for i2 in $(seq 1 40); do
         w="$(slot_hwnd_live "$slot" 2>/dev/null || true)"
         if [ -n "$w" ]; then break; fi
+        # Se l'host ha gia' smesso di cercare, aspettare altri venti secondi non
+        # cambia l'esito: cambia solo quanto ci mette l'utente a saperlo. Sono i
+        # secondi che facevano di un'app rotta un'attesa da 56 secondi.
+        [ "$(slot_gave_up "$slot")" = si ] && break
         sleep 0.5
       done
       if [ -z "${w:-}" ]; then
@@ -2490,7 +2517,19 @@ cmd_open(){
       # variabile, e sotto set -u il messaggio d'errore muore invece di dirti
       # cosa non e' andato. La regola era gia' scritta 120 righe sopra, ma qui
       # non era stata applicata: proprio nei due rami che spiegano un fallimento.
-      bad "«${app}» non ha aperto una finestra entro 45 secondi (ci sta ancora provando)"
+      # Il messaggio distingue i due casi, perche' portano a cose diverse: se
+      # l'host ha gia' rinunciato l'app e' rotta li' e non serve riprovare; se
+      # invece stiamo solo finendo la pazienza, riprovare ha senso.
+      #
+      # (Prima diceva sempre "entro 45 secondi", anche quando l'attesa era
+      # durata 13: un numero sbagliato in un messaggio d'errore manda a cercare
+      # nel posto sbagliato.)
+      if [ "$(slot_gave_up "$slot")" = si ]; then
+        bad "«${app}» non ha aperto nessuna finestra su Windows: la finestra resterebbe vuota"
+        info "  l'app potrebbe essere rotta sull'host: provala li' e vedi se parte"
+      else
+        bad "«${app}» non ha ancora aperto una finestra (ci sta ancora provando)"
+      fi
     else
       bad "«${app}» non si e' aperta.  winfleet doctor"
     fi

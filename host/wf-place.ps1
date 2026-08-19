@@ -390,7 +390,29 @@ for ($i = 0; $i -lt 75 -and $h -eq [IntPtr]::Zero; $i++) {
         $h = [P]::FindNew($before.ToArray(), (Get-TakenHwnds), $null)
     }
 }
-if ($h -eq [IntPtr]::Zero) { Note 'nessuna finestra comparsa'; return }
+if ($h -eq [IntPtr]::Zero) {
+    Note 'nessuna finestra comparsa'
+    # Lo si dice anche al Mac, non solo a questo log.
+    #
+    # Da qui in poi chi ha chiesto l'apertura aspetta a vuoto: prima i 45 secondi
+    # dell'attesa sulla finestra del Mac - che si apre SEMPRE, anche quando
+    # dall'altra parte non e' partito niente - e poi altri 20 per chiedere
+    # all'agente se una finestra esiste. Cinquantasei secondi misurati, per una
+    # risposta che era gia' nota qui.
+    #
+    # Un file, non un messaggio: il Mac non e' in ascolto, e lo legge quando
+    # arriva. Il nome porta lo slot cosi' due aperture insieme non si
+    # confondono.
+    try {
+        [IO.File]::WriteAllText("C:\winfleet\nowin$Slot.txt",
+                                (Get-Date -Format o),
+                                (New-Object Text.UTF8Encoding $false))
+    } catch { }
+    return
+}
+# Se invece la finestra c'e', il segnale di resa va tolto: altrimenti resterebbe
+# li' dall'apertura precedente e farebbe fallire questa.
+try { Remove-Item "C:\winfleet\nowin$Slot.txt" -EA SilentlyContinue } catch { }
 
 $appPid = 0
 [P]::GetWindowThreadProcessId($h, [ref]$appPid) | Out-Null
