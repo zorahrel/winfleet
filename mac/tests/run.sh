@@ -218,6 +218,22 @@ else
   fail=1
 fi
 
+# --- 10b. Cmd+W passa dal menu, come in un'app nativa ----------------------
+# Il monitor sugli eventi non basta e non e' mai bastato: AppKit manda i tasti
+# prima a performKeyEquivalent: della barra dei menu, e solo quello che avanza
+# arriva ai monitor locali. Verificato dal vivo su Arc, con la finestra a fuoco
+# confermato: il monitor non e' scattato una sola volta. La strada giusta e'
+# quella di qualsiasi app del Mac - una voce nel menu Finestra con la sua
+# scorciatoia.
+clang -framework Cocoa -Wno-deprecated-declarations -o "$TMP/menukey" mac/tests/menu-shortcut.m 2>/dev/null || exit 1
+if "$TMP/menukey" > "$TMP/menukey.out" 2>&1; then
+  say "ok   menu: Cmd+W e Cmd+M nel menu Finestra, Cmd+T e Cmd+Shift+W all'app"
+else
+  say "NO   menu:"
+  sed 's/^/       /' "$TMP/menukey.out"
+  fail=1
+fi
+
 # --- 11b. il rifornitore delle finestre pronte -----------------------------
 # L'agente launchd si era scaricato da solo ("service inactive" nei log, nessun
 # riavvio del Mac). Senza danno visibile finche' la scorta resta spenta

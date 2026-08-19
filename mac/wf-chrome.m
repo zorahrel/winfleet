@@ -528,9 +528,77 @@ static void watchTitlebarClicks(void) {
     // Si intercetta solo questa coppia. Tutto il resto - Cmd+C, Cmd+T, Cmd+L,
     // le frecce - deve continuare ad arrivare all'app di la', altrimenti si
     // romperebbe il lavoro vero per far funzionare due scorciatoie.
+    // Il menu ha la precedenza sui monitor: senza una voce, Cmd+W non arriva.
+    //
+    // addLocalMonitorForEventsMatchingMask sembra il punto giusto per
+    // intercettare una scorciatoia, e per il mouse lo e'. Per i tasti no: AppKit
+    // manda prima l'evento a performKeyEquivalent: della barra dei menu, e i
+    // monitor locali vedono solo quello che avanza. Moonlight e' una app SDL
+    // senza voci di finestra nel menu, quindi Cmd+W non veniva consumato da
+    // nessuno... e nemmeno consegnato: verificato dal vivo con la finestra a
+    // fuoco confermato, il monitor non e' scattato una sola volta.
+    //
+    // La via che funziona e' quella che userebbe un'app nativa: mettere le voci
+    // nel menu Finestra, con la loro scorciatoia. Da li' AppKit chiama
+    // performClose:/miniaturize: sulla finestra chiave, che e' esattamente
+    // quello che si voleva - e in piu' le scorciatoie compaiono nel menu, come
+    // in qualsiasi app del Mac.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSMenu *main = NSApp.mainMenu;
+        if (!main) {
+            main = [[NSMenu alloc] init];
+            NSApp.mainMenu = main;
+        }
+        // Il menu Finestra puo' gia' esserci: si riusa, altrimenti si crea.
+        NSMenu *win = NSApp.windowsMenu;
+        if (!win) {
+            NSMenuItem *host = [main addItemWithTitle:@"Finestra" action:NULL keyEquivalent:@""];
+            win = [[NSMenu alloc] initWithTitle:@"Finestra"];
+            host.submenu = win;
+            NSApp.windowsMenu = win;
+        }
+        // Se le voci ci sono gia' non si duplicano: questa funzione puo' essere
+        // chiamata piu' di una volta durante la vita del processo.
+        BOOL haveClose = NO, haveMin = NO;
+        for (NSMenuItem *it in win.itemArray) {
+            if (it.action == @selector(performClose:))  haveClose = YES;
+            if (it.action == @selector(miniaturize:))   haveMin   = YES;
+        }
+        if (!haveMin) {
+            NSMenuItem *m = [[NSMenuItem alloc] initWithTitle:@"Riduci a icona"
+                                                       action:@selector(miniaturize:)
+                                                keyEquivalent:@"m"];
+            [win addItem:m];
+        }
+        if (!haveClose) {
+            NSMenuItem *c = [[NSMenuItem alloc] initWithTitle:@"Chiudi"
+                                                       action:@selector(performClose:)
+                                                keyEquivalent:@"w"];
+            [win addItem:c];
+        }
+        if (getenv("WF_DEBUG")) {
+            NSLog(@"[wf] menu Finestra: %ld voci (Chiudi=Cmd+W, Riduci=Cmd+M)",
+                  (long)win.numberOfItems);
+        }
+    });
+
+    // Il monitor resta come rete di sicurezza: se un domani il menu venisse
+    // rimpiazzato da Qt o da SDL, le due scorciatoie continuerebbero a
+    // funzionare da qui.
     [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
                                           handler:^NSEvent *(NSEvent *e) {
         NSWindow *w = e.window;
+        // Con WF_DEBUG si vede perche' una scorciatoia non ha funzionato: quasi
+        // sempre l'evento non arriva affatto (il menu lo prende prima) oppure
+        // arriva con e.window a nil, e da fuori i due casi sono
+        // indistinguibili - la finestra semplicemente non si chiude.
+        if (getenv("WF_DEBUG")) {
+            NSLog(@"[wf] tasto: char=%@ cmd=%d finestra=%@ stream=%d",
+                  e.charactersIgnoringModifiers,
+                  (e.modifierFlags & NSEventModifierFlagCommand) ? 1 : 0,
+                  w ? NSStringFromClass([w class]) : @"(nessuna)",
+                  isStreamWindow(w) ? 1 : 0);
+        }
         if (!isStreamWindow(w)) return e;
         if (!(e.modifierFlags & NSEventModifierFlagCommand)) return e;
         // Solo Cmd nudo: Cmd+Shift+W o Cmd+Alt+W sono altre cose, e in un
