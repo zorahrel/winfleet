@@ -2129,7 +2129,13 @@ cmd_open(){
       # kickstart e non un processo figlio: qualunque cosa lanciata da qui muore
       # con questo comando (provato con &, nohup, subshell), mentre l'agente
       # launchd e' fatto per ospitare un preparatore che deve restare vivo.
-      launchctl kickstart "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1 || true
+      # Se il kickstart fallisce l'agente non c'e' piu': si reinstalla e si
+      # riprova, invece di ingoiare l'errore e non rifornire mai piu'.
+      if ! launchctl kickstart "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+        trace "rifornitore assente: reinstallo l'agente"
+        ensure_ready_agent >/dev/null 2>&1 || true
+        launchctl kickstart "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1 || true
+      fi
       # Se ne prepara subito un'altra, in secondo piano: la finestra calda si
       # consuma appena la si usa, e senza rigenerarla il vantaggio varrebbe una
       # volta sola. L'utente intanto ha gia' la sua finestra e non aspetta.
@@ -3294,6 +3300,54 @@ cmd_unlock(){
   info "adesso sblocca il PC a mano una volta: e' l'unica cosa che la password protegge"
 }
 
+# L'agente launchd che rifornisce le finestre pronte: installato e caricato da
+# qui, non a mano.
+#
+# Il plist era stato copiato una volta in ~/Library/LaunchAgents e caricato a
+# mano: nessun comando lo installava, quindi su una macchina nuova non c'e', e
+# se sparisce non torna. E sparisce - trovato scaricato ("service inactive" nei
+# log di sistema, senza nessun riavvio del Mac).
+#
+# Oggi non si e' visto danno perche' la scorta e' spenta di proposito
+# (WF_WARM=0, dal 18/08: aprire da zero costa due secondi e tenere due stream
+# accesi non li vale). Ma il meccanismo esiste per essere riacceso, e riacceso
+# non funzionerebbe: WF_WARM=2 senza agente vuol dire scorta sempre a zero, cioe'
+# quindici secondi ad apertura, col sintomo indistinguibile da "oggi e' lento".
+#
+# Peggio: il codice che risveglia il rifornitore dopo ogni apertura fa
+# "kickstart ... || true", cioe' ingoia proprio l'errore "l'agente non c'e'".
+#
+# Qui si rimette a posto senza chiedere niente: il plist si riscrive se e'
+# diverso da quello del repo (cosi' un aggiornamento arriva davvero) e il
+# servizio si carica se manca. Ritorna 0 se alla fine l'agente c'e'.
+ensure_ready_agent(){
+  local src="$WF_ROOT/mac/com.winfleet.ready.plist"
+  local dst="$HOME/Library/LaunchAgents/com.winfleet.ready.plist"
+  local label="gui/$(id -u)/com.winfleet.ready"
+  [ -f "$src" ] || return 1
+  mkdir -p "$HOME/Library/LaunchAgents"
+
+  # Il plist nel repo nomina l'utente per esteso: va adattato a questa macchina,
+  # altrimenti su un altro Mac punta a un percorso che non esiste.
+  local tmp; tmp="$(mktemp)"
+  sed -e "s#/Users/[^/]*/#$HOME/#g" "$src" > "$tmp"
+
+  if ! cmp -s "$tmp" "$dst" 2>/dev/null; then
+    trace "agente finestre pronte: plist da aggiornare"
+    cp "$tmp" "$dst"
+    # Scaricarlo prima di ricaricarlo: launchd tiene in memoria la versione
+    # vecchia, e senza questo un plist nuovo non ha effetto fino al riavvio.
+    launchctl bootout "$label" >/dev/null 2>&1 || true
+  fi
+  rm -f "$tmp"
+
+  if ! launchctl print "$label" >/dev/null 2>&1; then
+    trace "agente finestre pronte: non caricato, lo carico"
+    launchctl bootstrap "gui/$(id -u)" "$dst" >/dev/null 2>&1 || true
+  fi
+  launchctl print "$label" >/dev/null 2>&1
+}
+
 cmd_doctor(){
   printf "${c_bold}WinFleet doctor${c_off}\n"
   [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
@@ -3312,8 +3366,26 @@ cmd_doctor(){
       # misurati, e tenere finestre pronte costerebbe due slot e due stream per
       # guadagnare mezzo secondo. Non e' un guasto e non va segnalato come tale.
       ok "apertura diretta  ${c_dim}(~2s; nessuna finestra tenuta pronta, WF_WARM=2 per riaccenderle)${c_off}"
+      # L'agente si rimette anche adesso che non serve. Se lo si lasciasse
+      # mancante, il giorno in cui qualcuno scrive WF_WARM=2 non succederebbe
+      # niente - scorta a zero per sempre - e il sospetto cadrebbe sulla scorta,
+      # non su un servizio che manca. Costa un controllo e non stampa nulla
+      # quando e' gia' a posto.
+      if ! launchctl print "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+        ensure_ready_agent >/dev/null 2>&1 || true
+      fi
     elif [ "$nwarm" -ge 1 ]; then
       ok "$nwarm finestre tenute pronte  ${c_dim}(le app ci si aprono sopra in ~2s)${c_off}"
+      # Le finestre ci sono, ma se il rifornitore e' morto sono le ultime: si
+      # consumano in due click e nessuno ne prepara altre. Va rimesso ORA, non
+      # quando la scorta e' gia' a zero e ogni apertura costa quindici secondi.
+      if ! launchctl print "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+        if ensure_ready_agent; then
+          info "  il rifornitore non era caricato: rimesso (senza, la scorta finiva e non tornava)"
+        else
+          bad "  il rifornitore non e' caricato e non si carica: la scorta non verra' rifornita"
+        fi
+      fi
     else
       bad "nessuna finestra pronta: le app si apriranno in ~15s"
       # Il motivo piu' probabile, e si puo' guardare: quanti slot sono
@@ -3325,8 +3397,20 @@ cmd_doctor(){
       if [ "$nfree" = 0 ]; then
         info "  tutte le finestre sono in uso: e' normale, si riforniscono appena se ne chiude una"
       else
-        info "  $nfree slot liberi: il rifornitore dovrebbe prepararne una entro due minuti"
-        info "  se non succede:  launchctl kickstart -k gui/$(id -u)/com.winfleet.ready"
+        # Il motivo piu' probabile e' che il rifornitore non ci sia proprio.
+        # Prima si diceva a chi legge di lanciare un kickstart a mano: inutile
+        # quando l'agente non e' caricato - il kickstart fallisce e basta - e
+        # comunque e' lavoro che puo' fare il comando. Ora si ripara e si dice
+        # cosa e' stato fatto.
+        if ensure_ready_agent; then
+          if launchctl kickstart -k "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+            info "  $nfree slot liberi: rifornitore risvegliato, una finestra pronta entro un minuto"
+          else
+            info "  $nfree slot liberi: rifornitore caricato, prepara una finestra entro due minuti"
+          fi
+        else
+          bad "  il rifornitore non si carica: mac/com.winfleet.ready.plist non installabile"
+        fi
       fi
     fi
     [ -n "$HOST_NAME" ] || bad "HOST_NAME assente: senza nome mDNS le istanze non sono indirizzabili per porta"

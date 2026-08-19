@@ -218,6 +218,20 @@ else
   fail=1
 fi
 
+# --- 11b. il rifornitore delle finestre pronte -----------------------------
+# L'agente launchd si era scaricato da solo ("service inactive" nei log, nessun
+# riavvio del Mac). Senza danno visibile finche' la scorta resta spenta
+# (WF_WARM=0), ma riaccenderla senza agente vuol dire scorta sempre a zero:
+# quindici secondi ad apertura invece di due. Il plist era installato a mano,
+# quindi una volta perso restava perso.
+if /opt/homebrew/bin/bash mac/tests/ready-agent.sh > "$TMP/ready.out" 2>&1; then
+  say "ok   rifornitore: se l'agente sparisce, torna da solo"
+else
+  say "NO   rifornitore:"
+  sed 's/^/       /' "$TMP/ready.out"
+  fail=1
+fi
+
 # --- 12. posizione del mouse col ritaglio -----------------------------------
 # Il click deve cadere dove punti, a qualunque misura della finestra. Il conto
 # del rettangolo video partiva dalla forma dello schermo remoto invece che da
