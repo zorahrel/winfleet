@@ -1067,8 +1067,18 @@ slot_hwnd_live(){ # slot
 # Come si chiama l'istanza Sunshine di uno slot, cioe' il nome che il client vede
 # e con cui la cerca. Lo si chiede all'agente: una GET, non un giro ssh.
 slot_name(){ # slot
+  # L'INDIRIZZO, non il nome mDNS.
+  #
+  # Chiedere a "PC.local" costa 301 millisecondi contro 29 dell'IP - dieci volte
+  # tanto, misurato - perche' ogni richiesta rifà la risoluzione mDNS. E questa
+  # funzione la chiama pick_slot per OGNI slot, prima di ogni apertura: un
+  # secondo e due decimi buttati su quattro finestre.
+  #
+  # Il nome mDNS serve a MOONLIGHT, che distingue gli host per indirizzo e con
+  # l'IP nudo vedrebbe quattro istanze uguali. Qui si sta solo leggendo un dato,
+  # e l'indirizzo va benissimo.
   curl -s --max-time 2 --connect-timeout 1 \
-    "http://$HOST_NAME:$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
+    "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
     | tr '<' '\n' | awk -F'>' '/^hostname/{print $2; exit}'
 }
 
@@ -2429,8 +2439,18 @@ cmd_open(){
     # precedente veniva letto come se fosse gia' pronto, e "aperta" tornava a essere
     # una bugia detta mezzo secondo dopo invece che subito.
     local dead=0
-    for i in $(seq 1 90); do
-      sleep 0.5
+    for i in $(seq 1 200); do
+      # Si GUARDA prima di dormire, e all'inizio si guarda fitto.
+      #
+      # Il ciclo dormiva mezzo secondo e poi controllava: una finestra pronta
+      # dopo 2.7 secondi veniva vista a 3.0, e il resto del ritardo si sommava
+      # negli altri passi. Misurato sull'host: la finestra c'era a 2.7s, il Mac
+      # diceva "aperta" a 7.1s.
+      #
+      # I primi tre secondi si guarda ogni 100ms - e' solo la lettura di un file
+      # locale - e poi si rallenta, perche' oltre quel punto sta partendo un'app
+      # lenta e controllare venti volte al secondo non la fa arrivare prima.
+      if [ "$i" -gt 30 ]; then sleep 0.5; else sleep 0.1; fi
       # La misura si legge dal file che scrive la libreria dentro Moonlight, non con
       # AppleScript: chiedere la geometria a System Events richiede il permesso di
       # Accessibilita', che l'utente puo' non aver dato (o che macOS revoca quando il
@@ -2461,7 +2481,11 @@ cmd_open(){
       #
       # Ogni due giri, non tutti: e' una richiesta di rete dentro un ciclo che
       # gira due volte al secondo.
-      if [ "$i" -gt 12 ] && [ $(( i % 4 )) = 0 ] && [ "$(slot_gave_up "$slot")" = si ]; then
+      # (le soglie sono in GIRI, e i primi trenta durano 100ms: 30 giri = 3
+      # secondi, poi mezzo secondo l'uno. Cambiare il passo senza ricontare qui
+      # vorrebbe dire chiedere all'host la resa dopo un secondo, quando l'app non
+      # ha ancora avuto tempo di partire.)
+      if [ "$i" -gt 40 ] && [ $(( i % 4 )) = 0 ] && [ "$(slot_gave_up "$slot")" = si ]; then
         trace "l'host dice che «${app}» non ha aperto nessuna finestra: smetto di aspettare"
         break
       fi
@@ -2472,7 +2496,7 @@ cmd_open(){
       # I primi secondi non si giudica: il supervisore sta ancora scrivendo il
       # proprio pid nello stato, e slot_live risponde "morto" a una finestra che sta
       # nascendo. Chiedere troppo presto significa dichiarare fallita ogni apertura.
-      if [ "$i" -gt 8 ]; then
+      if [ "$i" -gt 36 ]; then
         if slot_live "$slot" 2>/dev/null; then
           dead=0
         else
@@ -2503,6 +2527,11 @@ cmd_open(){
         sleep 0.5
       done
       if [ -z "${w:-}" ]; then
+        # Un'apertura andata male e' il momento in cui NON ci si puo' fidare di
+        # quello che si ricordava: se il pairing e' saltato, tenerselo in memoria
+        # per cinque minuti vuol dire cinque minuti di aperture su una finestra
+        # che non partira'. Alla prossima si torna a chiedere.
+        slot_paired_forget "$slot"
         bad "«${app}» non ha aperto nessuna finestra su Windows: la finestra resterebbe vuota"
         info "  l'app potrebbe essere rotta sull'host: provala li' e vedi se parte"
         close_slot "$slot" >/dev/null 2>&1 || true
@@ -2752,7 +2781,41 @@ pair_slot(){ # slot
 #
 # E non si chiede a Sunshine: a chi non presenta un certificato client risponde
 # PairStatus=0 sempre, anche per le istanze che funzionano.
+# Il pairing di uno slot, ricordato per qualche minuto.
+#
+# slot_paired fa una richiesta all'istanza e poi legge il plist di Moonlight:
+# 113 millisecondi misurati, e pick_slot lo chiama per OGNI slot - quasi un
+# secondo di un'apertura che ne dura dieci, speso per una risposta che cambia
+# forse una volta al mese.
+#
+# La memoria dura poco: se un pairing salta si torna a chiederlo entro pochi
+# minuti, e nel frattempo l'apertura fallisce con un messaggio chiaro invece di
+# aprire una finestra vuota. Si cancella comunque quando il pairing cambia
+# davvero (pair_slot_auto e cmd_pair_slots la buttano).
+SLOT_PAIRED_TTL=300
+
+slot_paired_forget(){ rm -f "$CONFIG_DIR/slot$1.paired" 2>/dev/null || true; }
+
 slot_paired(){ # slot
+  local memo="$CONFIG_DIR/slot$1.paired"
+  if [ -f "$memo" ]; then
+    local nato ora
+    nato="$(stat -f %m "$memo" 2>/dev/null || echo 0)"
+    ora="$(date +%s)"
+    if [ $(( ora - nato )) -lt "$SLOT_PAIRED_TTL" ]; then
+      [ "$(cat "$memo" 2>/dev/null)" = si ]
+      return $?
+    fi
+  fi
+  if slot_paired_ask "$1"; then
+    echo si > "$memo" 2>/dev/null || true
+    return 0
+  fi
+  echo no > "$memo" 2>/dev/null || true
+  return 1
+}
+
+slot_paired_ask(){ # slot
   local uid
   uid="$(curl -s --max-time 3 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
          | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
@@ -2847,6 +2910,8 @@ pair_slot_auto(){ # slot -> 0 se accoppiata senza chiedere niente
   local hex; hex="$(printf '%s' "$cert" | xxd -p | tr -d '\n')"
   [ -n "$hex" ] || return 1
   defaults write "$MOON_DOM" "hosts.$idx.srvcert" -data "$hex" 2>/dev/null || return 1
+  # Il pairing e' appena cambiato: quello che ricordavamo non vale piu'.
+  slot_paired_forget "$slot"
   # Le preferenze vivono in memoria dentro cfprefsd: senza questo, chi legge il
   # FILE - come fa slot_paired - continua a vedere la versione vecchia.
   killall cfprefsd 2>/dev/null || true
@@ -2859,6 +2924,9 @@ cmd_pair_slots(){
   [ "${SLOTS:-0}" -gt 0 ] || { info "nessuna istanza a finestre (SLOTS=0)"; return 0; }
   local i n=0 ko=0 auto=0
   for i in $(seq 0 $(( SLOTS - 1 ))); do
+    # Chi chiede espressamente di accoppiare vuole lo stato VERO, non quello
+    # ricordato: e' il comando che si usa proprio quando qualcosa non torna.
+    slot_paired_forget "$i"
     if slot_paired "$i"; then n=$(( n + 1 )); continue; fi
     # Prima si prova senza disturbare: se l'host ci conosce gia', manca solo il
     # suo certificato da questa parte e si puo' prendere. Un PIN chiesto quando

@@ -59,6 +59,7 @@ ripristina(){
     killall cfprefsd 2>/dev/null || true
   fi
   rm -f "$backup"
+  rm -f "$HOME/.config/winfleet/slot$vittima.paired"
 }
 trap ripristina EXIT
 
@@ -66,6 +67,11 @@ trap ripristina EXIT
 # Se non risultasse, il test non starebbe misurando niente.
 defaults delete "$DOM" "hosts.$idx.srvcert" 2>/dev/null || true
 killall cfprefsd 2>/dev/null || true
+# Il pairing viene RICORDATO per qualche minuto (costa 113ms a chiamata e
+# pick_slot lo chiede per ogni slot). Togliere il certificato senza buttare
+# quella memoria vuol dire misurare cio' che winfleet ricordava, non lo stato
+# vero: il test diceva "il guasto non si riproduce" mentre il guasto c'era.
+rm -f "$HOME/.config/winfleet/slot$vittima.paired"
 sleep 1
 if /opt/homebrew/bin/bash -c "source bin/winfleet >/dev/null 2>&1; slot_paired $vittima" 2>/dev/null; then
   echo "  NO   il guasto non si riproduce: senza certificato risulta comunque accoppiata"
@@ -86,6 +92,7 @@ fi
 # Non basta che la funzione dica di si': deve dirlo il criterio che usa il resto
 # del programma per decidere se aprire una finestra.
 sleep 1
+rm -f "$HOME/.config/winfleet/slot$vittima.paired"
 if /opt/homebrew/bin/bash -c "source bin/winfleet >/dev/null 2>&1; slot_paired $vittima" 2>/dev/null; then
   echo "  ok   la finestra risulta accoppiata al criterio normale"
 else
