@@ -1982,9 +1982,17 @@ cmd_ready(){
   # arriva mai a mostrare qualcosa, quell'app finisce in una lista di scartate.
   # La lista scade dopo un giorno, cosi' un'app riparata torna in gioco da sola.
   local scarti="$CONFIG_DIR/warm-scarti"
+  # Ogni riga porta la propria data: "quando<TAB>nome". Prima era un elenco di
+  # soli nomi con la scadenza sul file, e bastava aggiungere un'app per
+  # rimandare la scadenza di TUTTE - una bocciata a torto restava dentro
+  # all'infinito finche' qualcun'altra la teneva in vita.
+  #
+  # Le righe vecchie di piu' di un giorno si buttano: un'app puo' essere rotta
+  # oggi e a posto domani (aggiornamento, riavvio, sessione sbloccata).
   if [ -f "$scarti" ]; then
-    local eta_s; eta_s=$(( $(date +%s) - $(stat -f %m "$scarti" 2>/dev/null || echo 0) ))
-    [ "$eta_s" -gt 86400 ] && rm -f "$scarti" 2>/dev/null || true
+    local ora_s; ora_s=$(date +%s)
+    awk -F'\t' -v ora="$ora_s" 'NF==2 && (ora-$1)<86400' "$scarti" >"$scarti.tmp" 2>/dev/null &&
+      mv -f "$scarti.tmp" "$scarti" 2>/dev/null || rm -f "$scarti.tmp" 2>/dev/null || true
   fi
 
   local app="${1:-}" cand
@@ -1992,8 +2000,19 @@ cmd_ready(){
   for cand in "Blocco note" "Notepad" "Calcolatrice" "Calculator" "Memo" "Sticky Notes" "Fotocamera" "Camera"; do
     # Nell'elenco dell'host?
     awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null || continue
-    # E non gia' bocciata perche' non apre finestre su questa macchina.
-    if [ -f "$scarti" ] && grep -qxF "$cand" "$scarti" 2>/dev/null; then
+    # E non gia' bocciata DUE volte perche' non apre finestre su questa macchina.
+    #
+    # Due, non una. Con una sola bastava un guasto passeggero per bandire per
+    # sempre un'app sana: successo davvero con il Blocco note, condannato mentre
+    # una libreria non firmata faceva fallire OGNI apertura. Quando il guasto e'
+    # passato, il rifornitore aveva una sola app buona rimasta e preparava una
+    # finestra invece di due, senza dire perche'.
+    #
+    # Un'app davvero rotta viene ripescata al giro dopo e bocciata di nuovo: il
+    # costo dell'errore e' mezzo minuto una volta, contro un'app persa per
+    # sempre.
+    if [ -f "$scarti" ] &&
+       [ "$(awk -F'\t' -v n="$cand" 'NF==2 && $2==n' "$scarti" 2>/dev/null | wc -l)" -ge 2 ]; then
       trace "ready: «${cand}» scartata (non apre finestre su questo PC)"
       continue
     fi
@@ -2212,9 +2231,17 @@ cmd_ready(){
     [ -z "$(slot_hwnd_live "$s2" 2>/dev/null || true)" ] || continue
     rotta="$(slot_get "$s2" app)"
     [ -n "$rotta" ] || continue
-    if ! grep -qxF "$rotta" "$scarti" 2>/dev/null; then
-      printf '%s\n' "$rotta" >>"$scarti" 2>/dev/null || true
-      trace "ready: «${rotta}» non apre finestre qui, la scarto per le prossime volte"
+    # Si annota SEMPRE, anche se c'e' gia': e' il conteggio a decidere, e la
+    # seconda bocciatura e' proprio l'informazione che serve. Con "aggiungi solo
+    # se manca" il conto sarebbe rimasto a uno per sempre e nessuna app sarebbe
+    # mai stata scartata davvero.
+    printf '%s\t%s\n' "$(date +%s)" "$rotta" >>"$scarti" 2>/dev/null || true
+    local bocciature
+    bocciature="$(awk -F'\t' -v n="$rotta" 'NF==2 && $2==n' "$scarti" 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$bocciature" -ge 2 ]; then
+      trace "ready: «${rotta}» non apre finestre qui (2a volta), la scarto per le prossime volte"
+    else
+      trace "ready: «${rotta}» non ha aperto finestre: le do' un'altra occasione"
     fi
     # E lo slot si libera: tenerlo occupato da una finestra che non mostra
     # niente e' peggio che non averla.

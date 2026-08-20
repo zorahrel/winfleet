@@ -285,6 +285,19 @@ else
   fail=1
 fi
 
+# --- 10c-ter. un guasto passeggero non bandisce un'app ---------------------
+# Il rifornitore ricorda quali app "non aprono finestre qui" per non bruciare uno
+# slot ogni giro. Ma bastava UNA prova andata male: il Blocco note e' finito
+# nell'elenco mentre una libreria non firmata faceva fallire ogni apertura, e da
+# li' in poi il rifornitore preparava una finestra invece di due.
+if /opt/homebrew/bin/bash mac/tests/warm-scarti.sh > "$TMP/warmscarti.out" 2>&1; then
+  say "ok   scorta: serve una seconda conferma per bandire un'app dalle finestre calde"
+else
+  say "NO   scorta:"
+  sed 's/^/       /' "$TMP/warmscarti.out"
+  fail=1
+fi
+
 # --- 10c-bis. il nome sotto l'icona ----------------------------------------
 # Aprendo un'app su una finestra CALDA, nel Dock compariva il nome della scorta:
 # "Armoury Crate" si leggeva "Finestra WinFleet". Il file del nome e il titolo
