@@ -1026,8 +1026,20 @@ swap_app(){ # slot app
   # pausa di un quarto di secondo in mezzo si controllava ogni 0.4s - cioe' fino
   # a quattro decimi buttati dopo che la finestra era gia' li'. Su un'apertura
   # che ne dura quattro, e' un decimo del totale regalato all'attesa.
+  # Quanto si aspetta: fino a un minuto, non dieci secondi.
+  #
+  # Centoventi giri sembravano tanti - con la pausa di 0.08s fanno dieci secondi
+  # - ma ogni giro fa anche una domanda all'agente, e su un'app dello Store
+  # l'attesa vera arrivava a trentaquattro secondi. Misurato: winfleet si
+  # arrendeva alle 19:31:43, l'host trovava la finestra alle 19:31:48. Cinque
+  # secondi di troppo, e il riuso falliva SEMPRE - con l'effetto perverso che
+  # accendere le finestre calde rendeva l'apertura piu' lenta (12s contro 8),
+  # perche' si pagava l'attesa a vuoto e poi la via lunga.
+  #
+  # Arrendersi resta giusto: se l'app non compare, la via lunga funziona. Ma
+  # bisogna arrendersi DOPO che l'app ha avuto il tempo di aprirsi, non prima.
   local i now
-  for i in $(seq 1 120); do
+  for i in $(seq 1 400); do
     now="$(slot_hwnd_live "$slot" || true)"
     [ -n "$now" ] && [ "$now" != "$before_hwnd" ] && break
     sleep 0.08
