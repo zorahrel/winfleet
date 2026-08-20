@@ -1,23 +1,50 @@
-# Aperture da 42 secondi invece di 9
+# Aperture lente: come si misurano, e come NON si misurano
 
-**Quando**: comparso la sera del 19/08/2026. Prima dello stesso giorno le
-aperture stavano sui 8.6-9.8 secondi misurati dal Dock.
+**Aggiornamento 20/08/2026.** Il rallentamento a 42 secondi descritto qui sotto
+era in buona parte un ERRORE DI MISURA mio. Rimisurato il giorno dopo, sei
+aperture di fila stanno fra 7.6 e 12.7 secondi.
 
-## Il sintomo
+## Come si misura, e perche' il numero sbagliato e' facile da ottenere
 
-Ogni apertura impiega circa 42 secondi. Nel log di Moonlight
-(`/tmp/Moonlight-*.log`) c'e' un salto secco:
+`winfleet open` NON ritorna quando la finestra e' pronta: resta vivo a fare da
+supervisore finche' la finestra esiste - segue il ridimensionamento, tiene il
+ritaglio, libera lo slot alla chiusura. Cronometrare quanto ci mette il comando
+a tornare misura la durata della SESSIONE, non dell'apertura.
+
+Il numero giusto lo scrive winfleet stesso nella traccia:
+
+```bash
+grep "aperta:" ~/.config/winfleet/trace.log | tail -6
+```
+
+La riga `aperta:` porta i millisecondi dall'avvio dello stream. In alternativa,
+dal Dock, si aspetta che compaia la misura DI QUELLA finestra - ma attenzione:
+il file `slotN.size` viene riscritto in continuazione dalla libreria, quindi
+guardare "esiste" invece di "e' cambiato" da' risposte a caso (e' cosi' che ho
+ottenuto 107 secondi per un'apertura che ne aveva richiesti 7.9).
+
+## Quel che resta vero
+
+Nel log di Moonlight compare davvero, a volte, un'attesa di 35 secondi:
 
 ```
-00:00:00 - Qt Info: Sent WoL packet to WinFleet 1 via ff02::1%utun8:48110
 00:00:35 - Qt Warning: Error resolving "PCdiCasa.local" : "Host not found"
-00:00:35 - Qt Info: "PCdiCasa" is now online at "192.168.1.50:47989"
 ```
 
-Trentacinque secondi fra l'ultimo pacchetto e il primo segno di vita. Dopo,
-tutto il resto (handshake, decoder, primo frame) richiede cinque secondi.
+Ma NON e' su tutte le aperture: su sei misurate il giorno dopo, zero. Quando
+capita, il nome risolve verso un IPv6 link-local che non risponde e Qt aspetta
+prima di ripiegare sull'IPv4. E' un caso occasionale, non la norma.
 
-## Cosa e' stato escluso
+C'e' anche un secondo costo occasionale, questo sicuro e visibile in traccia:
+
+```
+nessuna modalita': i monitor virtuali sono spariti, li faccio rinascere
+```
+
+Sedici secondi per ricrearli. Succede quando il VDD sull'host si e' perso, ed e'
+capitato una volta sola in una giornata di prove.
+
+## Cosa e' stato escluso (e resta valido)
 
 Ognuna di queste e' stata misurata, non supposta:
 
@@ -55,7 +82,13 @@ E `getaddrinfo` restituisce i due IPv6 PRIMA dell'IPv4.
 - **Non e' Tailscale.** Spento con `tailscale down` e rimisurato: 92.7 secondi,
   cioe' PEGGIO. Riacceso.
 
-## Cosa proverei, in ordine
+## Se ricapita
+
+Prima di tutto: RIMISURARE con la traccia, non col cronometro sul comando.
+Se le righe `aperta:` stanno sotto i quindici secondi, non c'e' niente da
+sistemare.
+
+Se invece sono davvero decine di secondi, in ordine:
 
 1. **Riavviare il Mac.** Il problema e' comparso in giornata senza che nulla
    cambiasse nel codice: qualcosa nello stato di rete si e' incastrato, e un
