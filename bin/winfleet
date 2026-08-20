@@ -82,7 +82,7 @@ FPS=60
 BITRATE=auto        # Kbps, o "auto" = scelto in base alla risoluzione
 RESOLUTION=auto     # "auto" = nativa dell'host (nessun riscalo); es. 2560x1440
 HOST_RES=""         # risoluzione desktop dell'host, rilevata al primo stream
-HOST_NAME=""        # nome mDNS dell'host (es. WindowsAtti.local): indirizza le istanze per porta
+HOST_NAME=""        # nome mDNS dell'host (es. PCdiCasa.local): indirizza le istanze per porta
 SLOTS=0             # quante istanze WinFleet (monitor virtuali) ci sono sull'host
 SLOT_BASE=48089     # porta della prima istanza; le successive +100
 AGENT_PORT=48088    # agente sull'host: ridimensiona la finestra dell'app e conferma
@@ -710,7 +710,7 @@ slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
   # guarda la risposta, non uno che si lancia e si aspetta. Se un'istanza e' giu' lo
   # si scopre in due secondi invece che in sedici.
   #
-  # Per INDIRIZZO e non per nome mDNS: risolvere "WindowsAtti.local" costa 300 ms
+  # Per INDIRIZZO e non per nome mDNS: risolvere "PCdiCasa.local" costa 300 ms
   # contro i 30 dell'indirizzo (misurati), e questa domanda si fa per ogni slot,
   # a ogni giro del rifornitore e a ogni apertura. agent_host lo risolve una volta
   # sola e se lo ricorda.

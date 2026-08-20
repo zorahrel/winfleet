@@ -119,7 +119,7 @@ shortcut on disk at all, so a Start-Menu-only scan silently misses half the Star
 
 ```sh
 $ winfleet search blocco
-Blocco note → finestra 1 sul Mac  (WindowsAtti.local, 1280x800, 60 fps)
+Blocco note → finestra 1 sul Mac  (PCdiCasa.local, 1280x800, 60 fps)
 ```
 
 ## Install
