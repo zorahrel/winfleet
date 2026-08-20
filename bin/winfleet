@@ -1155,6 +1155,20 @@ slot_name(){ # slot
 #
 # Non si insiste: un solo tentativo per comando. Se non basta, il problema e'
 # altrove e insistere lo nasconderebbe.
+# L'agente risponde? Una domanda sola, mezzo secondo.
+#
+# Serve a scoprirlo SUBITO invece che dopo: quando l'agente e' muto, ogni
+# funzione che gli parla paga il proprio timeout di due secondi, e prima che
+# qualcuno se ne accorga ne sono passati dodici o quattordici - misurati sui
+# riavvii automatici di oggi, che sono stati quattordici.
+#
+# Mezzo secondo basta: sulla LAN l'agente sano risponde in trenta millisecondi.
+# Se non risponde in mezzo secondo, non e' lento: e' bloccato.
+agent_alive(){
+  [ "$(curl -s --max-time 0.5 --connect-timeout 0.3 \
+        "http://$(agent_host):$AGENT_PORT/ping" 2>/dev/null)" = ok ]
+}
+
 agent_revive(){
   [ -n "${HOST_SSH:-}" ] || return 1
   local marca="$CONFIG_DIR/agent-revived"
@@ -2407,6 +2421,17 @@ cmd_open(){
     # Un'istanza che non risponde non e' un'istanza occupata: a PC spento il
     # messaggio giusto e' che il PC e' spento, non di chiudere finestre che non
     # esistono.
+    # L'agente e' vivo? Si guarda in mezzo secondo, prima di cominciare.
+    #
+    # Senza questo, un agente bloccato si scopre a pezzi: ogni chiamata paga i
+    # suoi due secondi di timeout, e dopo dodici o quattordici secondi qualcuno
+    # finalmente lo rimette. Oggi e' successo quattordici volte, e ogni volta
+    # quei secondi li ha aspettati l'utente.
+    if ! agent_alive; then
+      trace "agente muto all'avvio: lo rimetto prima di cominciare"
+      agent_revive >/dev/null 2>&1 || true
+    fi
+
     trace "cerco uno slot"
     # Il valore d'uscita della PRIMA ricerca si legge subito: 3 vuol dire che
     # l'host non risponde, e in quel caso non c'e' niente da liberare ne' da
