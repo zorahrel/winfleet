@@ -870,6 +870,7 @@ pick_slot(){ # [nome-app]
     return 3
   fi
 
+
   local i free="" named=""
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
@@ -2500,6 +2501,17 @@ cmd_open(){
       # reap_stuck_slots lo faceva gia', ma lo chiamava solo il rifornitore -
       # cioe' proprio chi non gira quando gli slot sono pieni. Chi apre e non
       # trova posto e' il primo ad avere motivo di guardare.
+      # Perche' QUI e non prima di cercare: provato a farlo a ogni apertura, e
+      # l'apertura passava da sette secondi a ventidue. La pulizia costa 1.7
+      # secondi solo per guardare e fino a tredici per chiudere una sessione
+      # appesa; e peggio, uno slot occupato da un'apertura IN CORSO sembra un
+      # fantasma, quindi si finiva per provare a chiudere finestre che stavano
+      # nascendo.
+      #
+      # Il prezzo di tenerla qui: dopo un kill brutale (verificato con kill -9)
+      # gli slot fantasma restano finche' non si esauriscono anche gli altri.
+      # E' accettabile - le aperture continuano a funzionare sugli slot sani, e
+      # il primo che non trova posto ripulisce per tutti.
       trace "nessuno slot: provo a liberare quelli occupati per finta"
       reap_stuck_slots
       slot="$(pick_slot "$app")" || {
