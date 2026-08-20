@@ -33,13 +33,19 @@ done
   cp "$HOME/.config/winfleet/host-apps.tsv" "$TMP/winfleet/" 2>/dev/null || true
 sed -e 's/^HOST_LAN=.*/HOST_LAN="192.168.99.99"/' \
     -e 's/^HOST_TS=.*/HOST_TS="100.99.99.99"/' \
-    -e 's/^HOST_NAME=.*/HOST_NAME="nonesiste.local"/' \
+    -e "s/^HOST_NAME=.*/HOST_NAME=\"nonesiste-$RANDOM.local\"/" \
     "$CONFIG" > "$TMP/winfleet/config.env"
+# Il nome dev'essere DIVERSO a ogni giro. Con un nome fisso la prima esecuzione
+# paga la risoluzione mDNS e le successive la trovano in cache: il test passava
+# sul portatile di chi lo aveva gia' lanciato e falliva altrove, e soprattutto
+# nascondeva proprio il costo che ora si misura.
 
 # WINFLEET_CONFIG sposta CONFIG_DIR: winfleet leggera' la copia, non
 # l'originale. (XDG_CONFIG_HOME non c'entra: il percorso e' scritto a mano.)
+t0=$(date +%s)
 out="$(WINFLEET_CONFIG="$TMP/winfleet" ./bin/winfleet open Paint 2>&1)"
 esito=$?
+durata=$(( $(date +%s) - t0 ))
 
 # --- 1. lo dice ------------------------------------------------------------
 if printf '%s' "$out" | grep -qi "host non risponde\|irraggiungibile\|PC è spento\|PC e. spento"; then
@@ -76,6 +82,29 @@ if grep -q 'host non raggiungibile: nessuno slot da cercare' bin/winfleet; then
   echo "  ok   attesa: una domanda sola invece di una per finestra"
 else
   echo "  NO   attesa: si interroga ogni slot, e ognuno aspetta il suo timeout"
+  fail=1
+fi
+
+# --- 5. e lo dice IN FRETTA -------------------------------------------------
+# I controlli qui sopra erano tutti verdi mentre il comando ci metteva TRENTUNO
+# secondi: guardavano il messaggio e il codice d'uscita, non il tempo. Due costi
+# nascosti, entrambi trovati solo cronometrando:
+#   - il risveglio dell'agente partiva anche a PC spento, e il suo ssh con
+#     ConnectTimeout 8 se ne prendeva ventitre;
+#   - agent_host, non riuscendo a risolvere, restituiva il NOME, e ogni suo uso
+#     ripagava cinque secondi di mDNS ("nc -G" limita la connessione, non la
+#     risoluzione).
+# Misurato dopo i due fix: sei secondi, tre giri di fila.
+#
+# Il tetto sta a DIECI, e la cifra e' stata scelta rimettendo i guasti uno alla
+# volta invece che a occhio: senza la guardia in agent_revive sono trenta
+# secondi, con agent_host che torna il nome sono quattordici. Un tetto a quindici
+# - il primo che avevo scritto - avrebbe preso il primo guasto e lasciato passare
+# il secondo.
+if [ "$durata" -le 10 ]; then
+  echo "  ok   PC spento: risponde in ${durata}s, senza attese nascoste"
+else
+  echo "  NO   PC spento: ci mette ${durata}s per dire che il PC e' spento (max 10)"
   fail=1
 fi
 

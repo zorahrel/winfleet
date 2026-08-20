@@ -1172,6 +1172,18 @@ agent_alive(){
 
 agent_revive(){
   [ -n "${HOST_SSH:-}" ] || return 1
+  # Prima di tutto: l'host c'e'? Un agente muto e un PC spento si assomigliano
+  # - in entrambi i casi nessuno risponde - ma curarli costa in modo molto
+  # diverso. Il giro ssh qui sotto ha ConnectTimeout 8, e a PC spento se lo
+  # prende tutto piu' il resto: misurato, VENTITRE secondi su un'apertura che
+  # ne durava cinque. Peggio, il freno di un minuto qui sopra nascondeva il
+  # problema: solo la PRIMA apertura era lenta, le successive no, quindi
+  # misurandone due di fila sembrava tutto sano.
+  #
+  # Un colpo da un secondo sulla porta di Sunshine separa i due casi. Se il PC
+  # non c'e', non c'e' nessun agente da rimettere in piedi e chi ha chiamato
+  # dira' da solo che il PC e' spento.
+  reachable "$(agent_host)" "$SUN_PORT" 1 2>/dev/null || return 1
   local marca="$CONFIG_DIR/agent-revived"
   # Non piu' di una volta al minuto: se l'agente muore appena riavviato, il
   # problema non e' quello che questa funzione cura.
@@ -1216,7 +1228,7 @@ refresh_vdd(){
   # rimetterlo in piedi prima di ripiegare su ssh, che funziona ma e' lento e
   # non cura niente.
   if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
-    if reachable "$(agent_host)" "$SUN_PORT" 1 2>/dev/null && agent_revive; then
+    if agent_revive; then
       curl -s --max-time 2 --connect-timeout 1 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
         | tr -d '\r' >"$VDD_CACHE.tmp" || true
     fi
@@ -1457,9 +1469,16 @@ agent_host(){
     # qualunque altra cosa: con il PC spento erano undici secondi buttati per
     # arrivare a dire "il PC e' spento".
     #
-    # Se scade si usa il nome cosi' com'e': se il PC c'e' funziona lo stesso
-    # (piu' lento, perche' ogni richiesta rifa' la risoluzione), se non c'e'
-    # fallisce comunque - ma in fretta.
+    # Se scade NON si usa il nome cosi' com'e'. Sembrava innocuo ("al massimo
+    # e' piu' lento"), ma il tetto di due secondi qui sopra non protegge chi
+    # riceve il nome: "nc -G 1" applica il suo timeout alla connessione, non
+    # alla risoluzione, quindi ogni singolo uso del nome ripaga CINQUE secondi
+    # pieni - misurato. A PC spento erano due attese da cinque su una sola
+    # apertura.
+    #
+    # Se dscacheutil non risolve in due secondi, il nome non esiste: un PC
+    # acceso risponde in millisecondi. Meglio l'indirizzo Tailscale, che e' un
+    # IP e quindi fallisce nel tempo che gli si concede.
     h="$(WF_N="${HOST_NAME%.local}.local" perl -e '
         eval {
             local $SIG{ALRM} = sub { die };
@@ -1469,7 +1488,9 @@ agent_host(){
             print $1 if $out =~ /^ip_address:\s*(\S+)/m;
         };
     ' 2>/dev/null)"
-    [ -n "$h" ] || h="$HOST_NAME"
+    # Il nome resta solo come ultimissima spiaggia: senza Tailscale configurato
+    # e' comunque meglio di una stringa vuota.
+    [ -n "$h" ] || h="${HOST_TS:-$HOST_NAME}"
   fi
   [ -n "$h" ] || h="$HOST_TS"
   AGENT_HOST="$h"
