@@ -10,8 +10,8 @@ Ogni apertura impiega circa 42 secondi. Nel log di Moonlight
 
 ```
 00:00:00 - Qt Info: Sent WoL packet to WinFleet 1 via ff02::1%utun8:48110
-00:00:35 - Qt Warning: Error resolving "windowsatti.local" : "Host not found"
-00:00:35 - Qt Info: "WindowsAtti" is now online at "192.168.1.2:47989"
+00:00:35 - Qt Warning: Error resolving "PCdiCasa.local" : "Host not found"
+00:00:35 - Qt Info: "PCdiCasa" is now online at "192.168.1.50:47989"
 ```
 
 Trentacinque secondi fra l'ultimo pacchetto e il primo segno di vita. Dopo,
@@ -27,8 +27,8 @@ Ognuna di queste e' stata misurata, non supposta:
   con gli identificativi separati.
 - **Non e' quello che passiamo a Moonlight.** Nome mDNS o indirizzo IP diretto:
   42 e 44 secondi. L'attesa non riguarda l'host a cui ci si connette.
-- **Non e' mDNS del Mac.** `getaddrinfo("windowsatti.local")` risponde in 8 ms e
-  restituisce l'IPv4 giusto. `dns-sd` mostra che l'host annuncia solo 192.168.1.2.
+- **Non e' mDNS del Mac.** `getaddrinfo("PCdiCasa.local")` risponde in 8 ms e
+  restituisce l'IPv4 giusto. `dns-sd` mostra che l'host annuncia solo 192.168.1.50.
 - **Non e' un host "fantasma" nelle preferenze.** Ce n'era uno senza nome ne'
   indirizzo, rimosso: nessun cambiamento.
 - **Non e' `manualaddress`.** Toglierlo peggiora (111 secondi). Ripristinato.
@@ -45,9 +45,9 @@ per apertura, 77 dei quali verso indirizzi IPv6 multicast su interfacce VPN.
 Gli IPv6 dell'host non rispondono:
 
 ```
-fd00::62d8:30cc:2bcd:a22b   MORTO (2019ms)
-fe80::3351:fff6:650e:a191   MORTO (2031ms)
-192.168.1.2                 ok    (42ms)
+fd00::1122:3344:5566:7788   MORTO (2019ms)
+fe80::aabb:ccdd:eeff:0011   MORTO (2031ms)
+192.168.1.50                 ok    (42ms)
 ```
 
 E `getaddrinfo` restituisce i due IPv6 PRIMA dell'IPv4.
