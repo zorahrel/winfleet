@@ -1948,12 +1948,34 @@ cmd_ready(){
   # secondo slot che lancia il Blocco note chiude quello del primo per aprire il
   # proprio. Il risultato, misurato, e' che i preparatori si distruggono a
   # vicenda: tre slot marcati "pronto" e una sola finestra viva.
+  # Le app che NON aprono una finestra si imparano, non si indovinano.
+  #
+  # L'elenco qui sotto e' scritto a mano e vale su un Windows sano. Ma su questo
+  # PC la Calcolatrice non apre nessuna finestra - verificato lanciandola a mano
+  # dalla sessione interattiva: il processo parte e MainWindowHandle resta 0 - e
+  # ogni volta che il rifornitore ci prova brucia uno slot per trenta secondi e
+  # lascia una finestra calda che nessuno potra' usare.
+  #
+  # Chi se ne accorge e' il rifornitore stesso: quando una finestra calda non
+  # arriva mai a mostrare qualcosa, quell'app finisce in una lista di scartate.
+  # La lista scade dopo un giorno, cosi' un'app riparata torna in gioco da sola.
+  local scarti="$CONFIG_DIR/warm-scarti"
+  if [ -f "$scarti" ]; then
+    local eta_s; eta_s=$(( $(date +%s) - $(stat -f %m "$scarti" 2>/dev/null || echo 0) ))
+    [ "$eta_s" -gt 86400 ] && rm -f "$scarti" 2>/dev/null || true
+  fi
+
   local app="${1:-}" cand
   WARM_APPS=()
   for cand in "Blocco note" "Notepad" "Calcolatrice" "Calculator" "Memo" "Sticky Notes" "Fotocamera" "Camera"; do
-    if awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null; then
-      WARM_APPS+=("$cand")
+    # Nell'elenco dell'host?
+    awk -F'\t' -v n="$cand" 'tolower($1)==tolower(n){found=1} END{exit !found}' "$HOST_APPS" 2>/dev/null || continue
+    # E non gia' bocciata perche' non apre finestre su questa macchina.
+    if [ -f "$scarti" ] && grep -qxF "$cand" "$scarti" 2>/dev/null; then
+      trace "ready: «${cand}» scartata (non apre finestre su questo PC)"
+      continue
     fi
+    WARM_APPS+=("$cand")
   done
   # Anche la PRIMA app va scelta fra quelle non gia' aperte, per lo stesso motivo:
   # se una finestra calda con il Blocco note e' ancora li' da un giro precedente,
@@ -2150,6 +2172,32 @@ cmd_ready(){
   done
   kill "${WF_MARKER_PID:-0}" 2>/dev/null || true
   trap - EXIT
+
+  # Chi non ce l'ha fatta finisce fra le scartate.
+  #
+  # Uno slot ancora vivo, marcato come scorta, che dopo tutta l'attesa non ha
+  # una finestra: quell'app non apre niente su questa macchina. La Calcolatrice
+  # qui fa esattamente questo - il processo parte e MainWindowHandle resta 0,
+  # verificato lanciandola a mano - e senza ricordarselo il rifornitore ci
+  # riprova a ogni giro, bruciando uno slot per mezzo minuto ogni volta.
+  #
+  # Si scrive il nome, non lo slot: e' l'app a essere rotta, non la finestra.
+  local s2 rotta
+  for s2 in $(seq 0 $(( SLOTS - 1 ))); do
+    [ "$(slot_get "$s2" warm)" = "1" ] || continue
+    [ "$(slot_get "$s2" app)" != "$READY_MARK" ] || continue
+    slot_live "$s2" 2>/dev/null || continue
+    [ -z "$(slot_hwnd_live "$s2" 2>/dev/null || true)" ] || continue
+    rotta="$(slot_get "$s2" app)"
+    [ -n "$rotta" ] || continue
+    if ! grep -qxF "$rotta" "$scarti" 2>/dev/null; then
+      printf '%s\n' "$rotta" >>"$scarti" 2>/dev/null || true
+      trace "ready: «${rotta}» non apre finestre qui, la scarto per le prossime volte"
+    fi
+    # E lo slot si libera: tenerlo occupato da una finestra che non mostra
+    # niente e' peggio che non averla.
+    close_slot "$s2" >/dev/null 2>&1 || true
+  done
 
   # E qui si ESCE, invece di restare ad aspettare.
   #
