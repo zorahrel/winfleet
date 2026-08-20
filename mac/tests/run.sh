@@ -285,6 +285,19 @@ else
   fail=1
 fi
 
+# --- 10c-bis. il nome sotto l'icona ----------------------------------------
+# Aprendo un'app su una finestra CALDA, nel Dock compariva il nome della scorta:
+# "Armoury Crate" si leggeva "Finestra WinFleet". Il file del nome e il titolo
+# della finestra erano gia' giusti - era la scheda che LaunchServices tiene per
+# ogni processo vivo a restare quella del bundle di partenza.
+if /opt/homebrew/bin/bash mac/tests/dock-name.sh > "$TMP/dockname.out" 2>&1; then
+  say "ok   nome nel Dock: l'app riusata mostra il proprio, non quello della scorta"
+else
+  say "NO   nome nel Dock:"
+  sed 's/^/       /' "$TMP/dockname.out"
+  fail=1
+fi
+
 # --- 10d. il comando che chiude -------------------------------------------
 # "winfleet stop Paint" moriva con «Paint: unbound variable» e non chiudeva
 # niente: l'argomento finiva in un'espressione aritmetica. Era li' dal primo

@@ -66,6 +66,24 @@ static const char *gAckFile  = NULL;
 // sempre - nel Dock comparivano tre "Blocco note" che erano Arc, Paint e altro.
 static const char *gNameFile = NULL;
 static const char *gAgent    = NULL; // "host:porta" dell'agente su Windows
+
+// Cambiare il nome che il Dock e Cmd-Tab mostrano, a processo GIA' avviato.
+//
+// Qui c'era scritto che non si poteva fare, e la conclusione era sbagliata:
+// e' vero che riscrivere CFBundleName a runtime non cambia niente - il Dock
+// quel valore l'ha gia' letto - ma il nome mostrato non viene da li'. Viene da
+// LaunchServices, che tiene una scheda per ogni processo vivo, e quella scheda
+// si puo' correggere.
+//
+// Le tre funzioni sono private (underscore, non nei .h), quindi si dichiarano a
+// mano. Sono le stesse che usa il Dock: se un domani sparissero, il peggio che
+// succede e' che la finestra riusata resti col nome della scorta - cioe'
+// esattamente com'era prima di questa modifica.
+extern CFTypeRef  _LSGetCurrentApplicationASN(void);
+extern OSStatus   _LSSetApplicationInformationItem(int, CFTypeRef, CFStringRef,
+                                                   CFStringRef, CFDictionaryRef *);
+extern CFStringRef _kLSDisplayNameKey;
+
 static int    gSlot = -1;            // quale schermo virtuale e' il nostro
 // Alzata quando un click sulla barra viene trattato come trascinamento del Mac.
 // Serve solo all'autoverifica (WF_SELFTEST): e' la differenza fra "l'evento l'ho
@@ -425,9 +443,7 @@ static void applyName(void) {
     // tre finestre calde diventavano tre "Blocco note" che l'utente non aveva
     // aperto. Da fuori: "vedo un sacco di app aperte a caso".
     //
-    // Il nome nel Dock si decide al LANCIO e non si puo' correggere dopo
-    // (provato: riscrivere CFBundleName a runtime non cambia niente). Ma si puo'
-    // decidere se comparire: accessory = invisibile, regular = app normale. La
+    // Se comparire o no: accessory = invisibile, regular = app normale. La
     // finestra resta sullo schermo e utilizzabile in entrambi i casi.
     BOOL scorta = (strcmp(buf, "::pronto::") == 0);
     NSString *name = [NSString stringWithUTF8String:buf];
@@ -451,6 +467,17 @@ static void applyName(void) {
             for (NSWindow *w in [NSApp windows]) {
                 if (isStreamWindow(w)) w.title = name;
             }
+            // E il nome sotto l'icona nel Dock, che e' quello che si legge per
+            // primo. Una finestra di scorta nasce dal bundle dell'app usata per
+            // scaldarla, quindi senza questo l'utente apriva "Armoury Crate" e
+            // nel Dock leggeva "Finestra WinFleet" - verificato dal vivo, con
+            // slot2.name gia' corretto e il processo ancora intestato alla
+            // scorta. Il titolo della finestra da solo non basta: il Dock e
+            // Cmd-Tab leggono LaunchServices, non il titolo.
+            _LSSetApplicationInformationItem(-2 /* kLSDefaultSessionID */,
+                                             _LSGetCurrentApplicationASN(),
+                                             _kLSDisplayNameKey,
+                                             (__bridge CFStringRef)name, NULL);
         }
     });
 }
