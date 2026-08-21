@@ -65,6 +65,7 @@ WF_ROOT="$(cd "$(dirname "$WF_SELF")/.." && pwd)"
 
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
 CONFIG="$CONFIG_DIR/config.env"
+DIRECT_STREAMS="$CONFIG_DIR/direct-streams"
 # Il Moonlight di WinFleet, se e' stato costruito (fork/build.sh): e' l'originale
 # piu' il ritaglio, cioe' l'unico che sappia mostrare la sola finestra dell'app.
 # Senza, si usa quello installato e si torna a far seguire la risoluzione.
@@ -104,7 +105,18 @@ c_grn=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off
 ok(){ printf "  ${c_grn}✓${c_off} %s\n" "$1"; }
 bad(){ printf "  ${c_red}✗${c_off} %s\n" "$1"; }
 info(){ printf "  ${c_dim}○${c_off} %s\n" "$1"; }
-die(){ printf "${c_red}%s${c_off}\n" "$1" >&2; exit 1; }
+die(){
+  # cmd_open rende questa variabile locale mentre possiede una prenotazione.
+  # die puo' arrivare anche da funzioni annidate (per esempio refresh_vdd →
+  # need_ssh), dove una RETURN trap non scatta perche' exit chiude la shell.
+  # Liberarla qui rende ogni errore fatale innocuo per gli altri opener.
+  if [ -n "${WF_SLOT_HOLD:-}" ]; then
+    slot_unhold "$WF_SLOT_HOLD" 2>/dev/null || true
+    unset WF_SLOT_HOLD
+  fi
+  printf "${c_red}%s${c_off}\n" "$1" >&2
+  exit 1
+}
 
 need_config(){
   [ -n "$HOST_TS$HOST_LAN" ] || die "Nessun host configurato.\nEsegui:  winfleet setup   (o modifica $CONFIG)"
@@ -445,7 +457,7 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
   local __orph=0
   while kill -0 "$pid" 2>/dev/null; do
     __orph=$(( __orph + 1 ))
-    if [ $(( __orph % 30 )) = 0 ]; then adopt_orphans; fi
+    if [ $(( __orph % 30 )) = 0 ]; then adopt_orphans "$slot"; fi
     cur="$(win_size "$pid")"
     if [ -n "$cur" ] && [ "$cur" != "$sent" ]; then
       cw="${cur%x*}"; ch="${cur#*x}"
@@ -779,8 +791,14 @@ slot_hold(){ # slot -> 0 se la prenotazione e' nostra
   # Qui il contenuto arriva col file stesso: si scrive un temporaneo e lo si
   # sposta con "ln", che fallisce se la destinazione esiste gia' - e fallisce in
   # modo atomico, senza istanti a meta'.
-  local tmp; tmp="$(mktemp "$CONFIG_DIR/.hold.XXXXXX")" || return 1
-  printf '%s %s\n' "$$" "$(date +%s)" > "$tmp"
+  local tmp owner_pid
+  tmp="$(mktemp "$CONFIG_DIR/.hold.XXXXXX")" || return 1
+  # $$ resta il pid della shell padre dentro il cmd_open mandato in background
+  # dal rifornitore. La prenotazione sembrava quindi orfana appena cmd_ready
+  # usciva, mentre il worker stava ancora aprendo lo stream: il giro dopo la
+  # rubava e lasciava due supervisori sullo stesso slot.
+  owner_pid="${BASHPID:-$$}"
+  printf '%s %s\n' "$owner_pid" "$(date +%s)" > "$tmp"
 
   if ln "$tmp" "$f" 2>/dev/null; then
     rm -f "$tmp"
@@ -824,7 +842,8 @@ slot_held(){ # slot -> 0 se prenotato da qualcun altro che e' ancora vivo
   [ -f "$f" ] || return 1
   local owner nato ora
   read -r owner nato < "$f" 2>/dev/null || return 1
-  [ "$owner" = "$$" ] && return 1                       # e' nostra
+  # Stesso pid usato da slot_hold: in una subshell $$ e' ancora il padre.
+  [ "$owner" = "${BASHPID:-$$}" ] && return 1            # e' nostra
   ora="$(date +%s)"
   [ -n "$nato" ] && [ $(( ora - nato )) -gt "$SLOT_HOLD_SECS" ] 2>/dev/null && return 1
   [ -n "$owner" ] && [ "$owner" -gt 0 ] 2>/dev/null && kill -0 "$owner" 2>/dev/null
@@ -1236,7 +1255,7 @@ refresh_vdd(){
   if ! [ -s "$VDD_CACHE.tmp" ] || ! grep -q '"slot"' "$VDD_CACHE.tmp" 2>/dev/null; then
     need_ssh
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" "type C:\\winfleet\\vdd.json" 2>/dev/null \
-      | tr -d '\r' >"$VDD_CACHE.tmp"
+      | tr -d '\r' >"$VDD_CACHE.tmp" || true
   fi
   if [ -s "$VDD_CACHE.tmp" ]; then mv "$VDD_CACHE.tmp" "$VDD_CACHE"; else rm -f "$VDD_CACHE.tmp"; fi
 }
@@ -2282,8 +2301,20 @@ cmd_ready(){
 #  - solo se c'e' uno slot libero: una finestra figlia non deve rubare il posto
 #    a un'app che l'utente vuole aprire adesso;
 #  - mai la shell di Windows ne' le nostre finestre: quelle le filtra l'agente.
-adopt_orphans(){
+adopt_orphans(){ # [slot sorgente]
   [ "${SLOTS:-0}" -gt 0 ] || return 0
+
+  # Una finestra calda non e' un flusso dell'utente: le app usate per scaldarla
+  # possono a loro volta apparire in /orphans, e adottarle riempiva gli slot
+  # oltre WF_WARM. Si guarda lo stato persistente dello slot, non
+  # WF_READY_KEEP: dopo uno swap la stessa sessione diventa una finestra vera e
+  # deve poter adottare normalmente le sue figlie. Anche da calda, pero', fa il
+  # polling e aggiorna la baseline: se tornasse prima, la prima figlia comparsa
+  # subito DOPO lo swap verrebbe scambiata per roba vecchia e persa per sempre.
+  local source_slot="${1:-}" source_is_warm=0
+  if [ -n "$source_slot" ] && [ "$(slot_get "$source_slot" warm)" = "1" ]; then
+    source_is_warm=1
+  fi
 
   # Solo le finestre COMPARSE DA POCO.
   #
@@ -2308,6 +2339,20 @@ adopt_orphans(){
     # Primo giro: si annota e basta. Quello che c'era gia' resta dov'e'.
     printf '%s\n' "$righe" | awk -F'\t' '{print $2}' >>"$visti" 2>/dev/null || true
     trace "figlie: primo giro, annotate $(printf '%s\n' "$righe" | grep -c . ) finestre gia' presenti"
+    return 0
+  fi
+
+  if [ "$source_is_warm" = 1 ]; then
+    # La scorta non adotta, ma ricorda ogni handle gia' presente. Al prossimo
+    # giro, se lo slot e' stato scambiato con un'app dell'utente, rimangono
+    # davvero nuove solo le finestre apparse dopo quest'ultimo polling.
+    local base_slot base_hw base_pid base_title
+    while IFS=$'\t' read -r base_slot base_hw base_pid base_title; do
+      [ "$base_slot" = "$source_slot" ] || continue
+      [ -n "$base_hw" ] || continue
+      grep -qx "$base_hw" "$visti" 2>/dev/null || printf '%s\n' "$base_hw" >>"$visti"
+    done <<<"$righe"
+    trace "figlie: slot $source_slot di scorta, baseline aggiornata senza adottare"
     return 0
   fi
 
@@ -2602,7 +2647,14 @@ cmd_open(){
     slot_held "$slot" && die "Un'altra apertura sta usando le finestre libere. Riprova fra qualche secondo."
     # La prenotazione va tolta comunque finisca: senza, un'apertura fallita
     # lascerebbe lo slot inutilizzabile fino alla scadenza.
-    trap 'slot_unhold "$slot"' RETURN
+    # RETURN resta installata anche dopo il ritorno dalla funzione. Si disarma
+    # al primo uso: senza, il return di cmd_ready la eseguiva fuori dallo scope
+    # di $slot e set -u uccideva l'agente lasciando vivi i figli staccati.
+    # La variabile locale viene anche letta da die(), per i rami che escono con
+    # exit da una funzione annidata - EXIT non e' usabile qui perche' cmd_ready
+    # ha gia' la propria trap che deve restare intatta.
+    local WF_SLOT_HOLD="$slot"
+    trap 'slot_unhold "${WF_SLOT_HOLD:-}"; unset WF_SLOT_HOLD; trap - RETURN' RETURN
 
     trace "slot scelto: $slot"
     # Il rifornitore c'e' ancora? Si guarda QUI, non solo in doctor.
@@ -2944,6 +2996,7 @@ cmd_open(){
     "$app" "$addr" "$kind" "${res:-nativa}" "$FPS" "$(( br / 1000 ))"
   nohup "$MOONLIGHT" "${args[@]}" >"$CONFIG_DIR/stream-$$.log" 2>&1 &
   local mpid=$!
+  direct_stream_save "$mpid"
   disown || true
 
   # Alla prima connessione impariamo la risoluzione dell'host dal log di
@@ -3016,8 +3069,82 @@ close_slot(){ # slot
   ok "finestra $(( $1 + 1 )) chiusa${app:+  ${c_dim}($app)${c_off}}"
 }
 
+# Le sessioni senza slot (SLOTS=0) usano il Moonlight normale, quindi dal nome
+# del processo non si distinguono da una sessione aperta fuori da WinFleet. Si
+# registra il pid e la sua data d'avvio al lancio: `stop` puo' chiudere solo
+# quelli nostri senza mai fare un pkill generico su Moonlight.
+direct_stream_started(){ # pid
+  # Uno stream che muore subito non deve far terminare `open` sotto pipefail:
+  # in quel caso semplicemente non c'e' nulla da registrare o da chiudere.
+  ps -p "$1" -o lstart= 2>/dev/null | awk '{$1=$1; print}' || true
+}
+
+direct_stream_save(){ # pid
+  local pid="$1" started
+  started="$(direct_stream_started "$pid")"
+  [ -n "$started" ] || return 0
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\t%s\n' "$pid" "$started" >> "$DIRECT_STREAMS"
+}
+
+stop_direct_streams(){ # 0 se ha chiuso almeno uno stream diretto nostro
+  [ -f "$DIRECT_STREAMS" ] || return 1
+  # Si prende uno snapshot atomico: un'apertura nuova puo' scrivere subito un
+  # nuovo registro senza che lo stop lo cancelli per sbaglio.
+  local snapshot="$CONFIG_DIR/.direct-streams-stop.${BASHPID:-$$}"
+  mv "$DIRECT_STREAMS" "$snapshot" 2>/dev/null || return 1
+
+  local found=1 pid started now command
+  while IFS=$'\t' read -r pid started; do
+    [ -n "$pid" ] && [ -n "$started" ] || continue
+    now="$(direct_stream_started "$pid")"
+    [ "$now" = "$started" ] || continue       # pid riciclato: non lo toccare
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if printf '%s\n' "$command" | grep -Fq "$MOONLIGHT" &&
+       printf '%s\n' "$command" | grep -Eq '(^|[[:space:]])stream([[:space:]]|$)'; then
+      found=0
+      kill "$pid" 2>/dev/null || true
+    fi
+  done < "$snapshot"
+  rm -f "$snapshot"
+  return "$found"
+}
+
+# I file di stato permettono di chiudere ordinatamente una finestra, ma non sono
+# una garanzia che ogni worker li abbia ancora: se il preparatore esce male, i
+# supervisori staccati restano vivi senza piu' slot registrato. `stop` deve
+# comunque spegnerli, altrimenti una chiusura riuscita a meta' lascia stream
+# nel Dock e sessioni Sunshine occupate.
+stop_untracked_winfleet(){ # 0 se ha trovato almeno un worker locale
+  local found=1 n
+  local sup_re='[w]infleet ready-supervise'
+  if pgrep -f "$sup_re" >/dev/null 2>&1; then
+    found=0
+    trace "stop: chiudo supervisori WinFleet senza stato"
+    pkill -TERM -f "$sup_re" 2>/dev/null || true
+    # Prima si lascia al supervisore il tempo di eseguire la sua trap: chiude
+    # anche la sessione lato host, non solo il processo locale.
+    for n in 1 2 3 4 5; do
+      pgrep -f "$sup_re" >/dev/null 2>&1 || break
+      sleep 0.2
+    done
+  fi
+
+  # Se un supervisor e' gia' morto, resta soltanto il suo Moonlight. Questo
+  # pattern e' ristretto ai bundle creati da WinFleet, cosi' non si tocca una
+  # sessione Moonlight aperta indipendentemente dall'utente.
+  local runners_re="${RUNNERS%runners}[r]unners/.*Contents/MacOS/Moonlight.*stream"
+  if pgrep -f "$runners_re" >/dev/null 2>&1; then
+    found=0
+    trace "stop: chiudo stream WinFleet senza supervisore"
+    pkill -TERM -f "$runners_re" 2>/dev/null || true
+  fi
+  if stop_direct_streams; then found=0; fi
+  return "$found"
+}
+
 cmd_stop(){
-  local i closed=0
+  local i closed=0 untracked=0
   if [ -n "${1:-}" ]; then
     # Anche per NOME, non solo per numero.
     #
@@ -3046,25 +3173,16 @@ cmd_stop(){
     slot_live "$i" || continue
     close_slot "$i"; closed=1
   done
-  [ "$closed" = 1 ] && return
-
-  need_config
-  read -r addr kind <<<"$(resolve_endpoint)"
-  # chiusura graceful della sessione lato host (meglio di uccidere il client:
-  # lascia Sunshine libero per la prossima connessione)
-  # Con un tetto di tempo e in secondo piano: "Moonlight quit" verso un host che non
-  # ha una sessione attiva non torna mai, e resta li' per sempre. Se ne accumulava
-  # uno per ogni "winfleet stop" chiamato a vuoto, e dal quinto in poi il comando si
-  # bloccava - il sintomo era winfleet che non rispondeva piu' senza motivo.
-  if [ -n "$addr" ]; then
-    ( "$MOONLIGHT" quit "$addr" >/dev/null 2>&1 & 
-      qp=$!
-      ( sleep 8; kill "$qp" 2>/dev/null ) >/dev/null 2>&1 &
-      wait "$qp" 2>/dev/null ) >/dev/null 2>&1 &
-    disown 2>/dev/null || true
+  # Non si torna subito dopo gli slot noti: puo' esserci un worker staccato
+  # senza file di stato, ed era proprio quello che continuava a ricreare stream
+  # dopo che `winfleet stop` aveva detto di averli chiusi.
+  if stop_untracked_winfleet; then untracked=1; fi
+  if [ "$closed" = 1 ] || [ "$untracked" = 1 ]; then
+    [ "$closed" = 1 ] || echo "Sessione chiusa."
+    return
   fi
-  pkill -f "Moonlight.*stream" 2>/dev/null || true
-  echo "Sessione chiusa."
+
+  info "nessuna sessione WinFleet aperta"
 }
 
 cmd_list(){

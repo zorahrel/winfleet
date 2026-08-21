@@ -55,5 +55,43 @@ else
   fail=1
 fi
 
+# --- 5. anche i supervisori senza stato vengono spenti ---------------------
+# Una chiusura precedente puo' aver rimosso lo slot ma non il figlio staccato.
+# Il test esegue il vero cmd_stop con i bordi finti: dopo uno slot regolare deve
+# comunque chiamare la spazzata, non fare return troppo presto.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+awk '/^stop_untracked_winfleet\(\)/{on=1} on && /^cmd_list\(\)/{exit} on{print}' \
+  bin/winfleet > "$TMP/stop-lib.sh"
+if [ -s "$TMP/stop-lib.sh" ] && /opt/homebrew/bin/bash -u -c '
+  . "$1"
+  SLOTS=1
+  slot_live(){ return 0; }
+  close_slot(){ closed_slot="$1"; }
+  stop_untracked_winfleet(){ swept=1; return 0; }
+  cmd_stop
+  [ "${closed_slot:-}" = 0 ] && [ "${swept:-}" = 1 ]
+' bash "$TMP/stop-lib.sh" >/dev/null 2>&1; then
+  echo "  ok   stop: dopo gli slot noti spazza anche i worker senza stato"
+else
+  echo "  NO   stop: ritorna prima di spegnere i worker senza stato"
+  fail=1
+fi
+
+# --- 6. non uccide Moonlight che non appartiene a WinFleet -----------------
+# Il vecchio fallback prendeva qualunque "Moonlight stream" del Mac. Le
+# sessioni dirette vengono ora registrate al lancio e fermate per pid+avvio,
+# mentre i runner hanno un pattern confinato alla cartella WinFleet.
+if grep -Fq 'pkill -f "Moonlight.*stream"' bin/winfleet; then
+  echo "  NO   stop: c'e' ancora un pkill generico che puo' chiudere Moonlight altrui"
+  fail=1
+elif grep -Fq 'direct_stream_save "$mpid"' bin/winfleet &&
+     grep -Fq 'stop_direct_streams' bin/winfleet; then
+  echo "  ok   stop: chiude solo PID registrati da WinFleet, non Moonlight altrui"
+else
+  echo "  NO   stop: manca il registro dei Moonlight diretti di WinFleet"
+  fail=1
+fi
+
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"

@@ -110,14 +110,67 @@ fi
 # quel trap non ci fosse, ogni apertura fallita lascerebbe uno slot bloccato per
 # 90 secondi, e il sintomo sarebbe "le finestre sono tutte occupate" con tutte
 # le finestre libere.
-if grep -q "trap 'slot_unhold" bin/winfleet; then
-  echo "  ok   rilascio: la prenotazione si toglie comunque finisca l'apertura"
+trap_body="$(sed -n "s/^[[:space:]]*trap '\\(slot_unhold.*\\)' RETURN$/\\1/p" bin/winfleet | tail -1)"
+if [ -n "$trap_body" ] && TRAP_BODY="$trap_body" /opt/homebrew/bin/bash -u -c '
+  released=""
+  slot_unhold(){ released="$1"; }
+  cmd_open(){ local slot=7; local WF_SLOT_HOLD="$slot"; trap "$TRAP_BODY" RETURN; }
+  cmd_ready(){ cmd_open; return 0; }
+  cmd_ready
+  another_return(){ return 0; }
+  another_return
+  [ "$released" = 7 ] && [ -z "$(trap -p RETURN)" ]
+'; then
+  echo "  ok   rilascio: il trap usa lo slot giusto e si disarma al ritorno"
 else
-  echo "  NO   rilascio: un'apertura fallita lascerebbe lo slot bloccato"
+  echo "  NO   rilascio: il trap resta fuori scope o non libera la prenotazione"
   fail=1
 fi
 
-# --- 6. il ripiego prenota anche lo slot di riserva -------------------------
+# RETURN non viene eseguito da exit. die deve quindi vedere la prenotazione
+# anche se arriva da una funzione annidata (il percorso refresh_vdd → need_ssh).
+awk '/^die\(\)/{on=1} on && /^need_config\(\)/{exit} on{print}' bin/winfleet > "$TMP/die.sh"
+die_out="$(/opt/homebrew/bin/bash -u -c '
+  c_red=""; c_off=""
+  slot_unhold(){ echo "release:$1"; }
+  . "$1"
+  nested(){ die "errore finto"; }
+  cmd_open(){ local slot=7; local WF_SLOT_HOLD="$slot"; nested; }
+  cmd_open
+' bash "$TMP/die.sh" 2>&1)"
+die_rc=$?
+if [ "$die_rc" = 1 ] && printf '%s\n' "$die_out" | grep -q '^release:7$'; then
+  echo "  ok   rilascio fatale: anche un die annidato libera lo slot"
+else
+  echo "  NO   rilascio fatale: die non ha liberato lo slot (rc=$die_rc, $die_out)"
+  fail=1
+fi
+
+# --- 7. un worker in background possiede davvero la sua prenotazione --------
+# Dentro una subshell Bash $$ resta il pid del padre. Se lo si registra nel
+# .hold, il padre puo' uscire mentre il worker e' vivo e il giro dopo lo ruba
+# come "orfano". BASHPID e $! devono invece coincidere.
+rm -f "$TMP/slot3.hold"
+if /opt/homebrew/bin/bash -u -c '
+  . "$1"
+  ( slot_hold 3; if slot_held 3; then exit 2; fi; sleep 1 ) &
+  worker=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -f "$WF_TEST_DIR/slot3.hold" ] && break
+    sleep 0.05
+  done
+  [ -f "$WF_TEST_DIR/slot3.hold" ] || exit 1
+  read -r owner _ < "$WF_TEST_DIR/slot3.hold"
+  [ "$owner" = "$worker" ] && kill -0 "$owner" 2>/dev/null || exit 1
+  wait "$worker"
+' bash "$TMP/lib.sh"; then
+  echo "  ok   owner: un worker sullo sfondo non perde ne' ruba il proprio slot"
+else
+  echo "  NO   owner: il .hold non appartiene al worker vivo"
+  fail=1
+fi
+
+# --- 8. il ripiego prenota anche lo slot di riserva -------------------------
 # cmd_open, se non riesce a prenotare lo slot scelto, ne cerca un altro: se quel
 # giro non prenotasse, due comandi tornerebbero a scontrarsi - solo un po' piu'
 # tardi. (Il controllo guarda che la prenotazione stia DENTRO il ciclo di
@@ -130,7 +183,7 @@ else
   fail=1
 fi
 
-# --- 7. il ripiego RIPROVA, non si arrende al primo scontro ----------------
+# --- 9. il ripiego RIPROVA, non si arrende al primo scontro ----------------
 # Con due comandi insieme un solo ripiego basta. Con quattro no: i perdenti
 # ripiegano tutti sullo stesso secondo slot, e chi perde di nuovo moriva
 # dicendo "un'altra apertura sta usando le finestre libere" mentre due finestre
@@ -143,7 +196,7 @@ else
   fail=1
 fi
 
-# --- 8. il messaggio di resa e' vero ---------------------------------------
+# --- 10. il messaggio di resa e' vero --------------------------------------
 # "sta usando le finestre libere" ha senso solo se le finestre sono davvero
 # tutte prenotate: si controlla lo stato invece di dedurlo dal fallimento.
 if grep -q 'slot_held "\$slot" && die' bin/winfleet; then

@@ -76,6 +76,37 @@ else
   fail=1
 fi
 
+# --- 3. una finestra calda non adotta finestre extra -----------------------
+# Il supervisore della scorta vede anche le finestre generate dalle app usate
+# per scaldarla. Adottarle trasformava WF_WARM=2 in quattro o cinque stream.
+# La scorta deve pero' aggiornare /orphans-visti: senza quella baseline, la
+# prima figlia nata subito dopo lo swap viene scambiata per roba vecchia e non
+# verra' mai mostrata. Qui old e' gia' presente mentre e' calda; new appare
+# dopo lo swap e deve arrivare fino al controllo di uno slot libero.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+{
+  printf '%s\n' 'SLOTS=1' 'AGENT_PORT=48088' 'CONFIG_DIR="$WF_TEST_DIR"' 'trace(){ :; }' \
+    'slot_get(){ [ "$2" = warm ] && printf "%s\n" "${WF_TEST_WARM:-1}"; }' 'agent_host(){ echo 127.0.0.1; }' \
+    'curl(){ printf "%b" "${WF_TEST_ORPHANS:-no}"; }' \
+    'slot_free_ish(){ : >"$WF_TEST_DIR/post-swap-visto"; return 1; }' \
+    'slot_paired(){ return 0; }' 'slot_live(){ return 1; }'
+  awk '/^adopt_orphans\(\){/{on=1} on && /^cmd_ready_missing\(\){/{exit} on{print}' bin/winfleet
+  printf '%s\n' "WF_TEST_ORPHANS=\$'0\\told\\t1\\tApp' WF_TEST_WARM=1 adopt_orphans 0" \
+    'grep -qx old "$WF_TEST_DIR/orphans-visti" || exit 1' \
+    "WF_TEST_ORPHANS=\$'0\\told\\t1\\tApp\\n0\\twarmnew\\t2\\tApp' WF_TEST_WARM=1 adopt_orphans 0" \
+    '[ ! -e "$WF_TEST_DIR/post-swap-visto" ] || exit 1' \
+    'grep -qx warmnew "$WF_TEST_DIR/orphans-visti" || exit 1' \
+    "WF_TEST_ORPHANS=\$'0\\told\\t1\\tApp\\n0\\twarmnew\\t2\\tApp\\n0\\tnew\\t3\\tApp' WF_TEST_WARM=0 adopt_orphans 0" \
+    '[ -e "$WF_TEST_DIR/post-swap-visto" ]'
+} > "$TMP/adopt.sh"
+if WF_TEST_DIR="$TMP" /opt/homebrew/bin/bash -u "$TMP/adopt.sh" >/dev/null 2>&1; then
+  echo "  ok   scorta: non apre extra, ma dopo lo swap vede subito le figlie utente"
+else
+  echo "  NO   scorta: il gate perde la prima figlia dopo lo swap o apre stream extra"
+  fail=1
+fi
+
 # --- 4. nessun «$var» senza graffe -----------------------------------------
 # I byte di » finiscono nel NOME della variabile, e con set -u il comando muore
 # con "unbound variable" a meta' lavoro. E' capitato tre volte in questo file,
