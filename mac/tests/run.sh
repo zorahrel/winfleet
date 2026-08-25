@@ -188,6 +188,19 @@ else
   fail=1
 fi
 
+# --- 9c. un nome che non risolve non e' un indirizzo -----------------------
+# Le istanze si indirizzano per nome mDNS perche' un IP nudo collide con
+# l'istanza di sistema. Ma quel nome puo' sparire (successo: steamwebhelper
+# aveva preso la porta 5353 sul PC), e allora ogni finestra si apriva VUOTA,
+# con l'unica spiegazione sepolta nel log di Moonlight.
+if /opt/homebrew/bin/bash mac/tests/host-name.sh > "$TMP/hostname.out" 2>&1; then
+  say "ok   indirizzo: il nome mDNS si usa se risolve, altrimenti si ripiega"
+else
+  say "NO   ripiego dal nome mDNS:"
+  sed 's/^/       /' "$TMP/hostname.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

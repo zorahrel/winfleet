@@ -714,7 +714,59 @@ slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
 # Moonlight cerca prima fra gli host che gia' conosce e li confronta per indirizzo
 # ignorando la porta: con "192.168.1.3:48089" finirebbe sull'istanza di sistema.
 # Il nome mDNS non collide con nulla, quindi indirizza l'istanza giusta.
-slot_addr(){ echo "$HOST_NAME:$(slot_port "$1")"; }
+#
+# Ma il nome puo' SPARIRE, e allora non indirizza piu' niente. Successo il
+# 25/08: steamwebhelper aveva preso la porta 5353 sul PC, il responder mDNS di
+# Windows non rispondeva piu' e "windowsatti.local" era diventato irrisolvibile
+# da questo Mac. Da fuori: la finestra si apriva ed era VUOTA per 88 secondi,
+# perche' Moonlight non trovava l'host - "Failed to connect to
+# WindowsAtti.local:48089" nel suo log, e nessun errore da nessun'altra parte.
+#
+# Quindi il nome si usa solo se risolve DAVVERO. Se non risolve si ripiega su un
+# indirizzo: la collisione con l'istanza di sistema e' un fastidio (si potrebbe
+# aprire la finestra sbagliata), una finestra vuota e' un guasto. Tailscale per
+# primo perche' e' un IP stabile che non cambia con il DHCP di casa - ed e'
+# proprio il DHCP che aveva anche spostato il PC da .2 a .9 nello stesso giorno.
+slot_addr(){
+  local h="$HOST_NAME"
+  [ -n "$h" ] && host_name_resolves || h="${HOST_TS:-${HOST_LAN:-$HOST_NAME}}"
+  echo "$h:$(slot_port "$1")"
+}
+
+# Il nome mDNS dell'host risolve, adesso?
+#
+# La risposta si ricorda per qualche minuto: la si chiede per ogni slot a ogni
+# apertura, e un nome che NON esiste costa il tetto pieno ogni volta (mDNS non
+# ha nessuno che risponda "no", aspetta e basta).
+HOST_NAME_TTL=300
+host_name_resolves(){
+  [ -n "${HOST_NAME:-}" ] || return 1
+  local memo="$CONFIG_DIR/host-name-ok"
+  if [ -f "$memo" ]; then
+    local age; age=$(( $(date +%s) - $(stat -f %m "$memo" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "$HOST_NAME_TTL" ]; then
+      [ "$(cat "$memo" 2>/dev/null)" = si ]
+      return $?
+    fi
+  fi
+  local ip
+  ip="$(WF_N="${HOST_NAME%.local}.local" perl -e '
+      eval {
+          local $SIG{ALRM} = sub { die };
+          alarm 2;
+          my $out = `dscacheutil -q host -a name $ENV{WF_N} 2>/dev/null`;
+          alarm 0;
+          print $1 if $out =~ /^ip_address:\s*(\S+)/m;
+      };
+  ' 2>/dev/null)"
+  # 127.x non e' l'host: e' il router di casa che risponde con il proprio
+  # dominio (visto con "windowsatti.homenet.telecomitalia.it" -> 127.0.0.1).
+  # Streamare li' vuol dire connettersi a se stessi.
+  case "$ip" in
+    ''|127.*) echo no > "$memo" 2>/dev/null || true; return 1;;
+    *)        echo si > "$memo" 2>/dev/null || true; return 0;;
+  esac
+}
 
 slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
   # Due secondi, non quattro, e --connect-timeout separato: quattro slot interrogati
@@ -4254,6 +4306,42 @@ cmd_doctor(){
     ok "agente sull'host: risponde  ${c_dim}(ridimensionamento immediato)${c_off}"
   else
     bad "agente sull'host non risponde: il ridimensionamento restera' indietro"
+  fi
+  # Il nome con cui si indirizzano le istanze esiste ancora?
+  #
+  # E' la domanda che il 25/08 e' costata un'ora: le finestre si aprivano VUOTE
+  # e ogni altro controllo era verde, perche' l'agente e le istanze rispondono
+  # per INDIRIZZO mentre Moonlight streama per NOME. Sul PC steamwebhelper
+  # aveva preso la porta 5353 e il responder mDNS di Windows era muto: da qui
+  # il nome sembrava sparito, e l'unica riga che lo diceva era sepolta nel log
+  # di Moonlight ("Failed to connect to WindowsAtti.local:48089").
+  if [ -n "${HOST_NAME:-}" ]; then
+    rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
+    if host_name_resolves; then
+      ok "nome dell'host: ${HOST_NAME} risolve"
+    else
+      bad "«${HOST_NAME}» non risolve: uso ${HOST_TS:-${HOST_LAN:-nessun indirizzo}} al suo posto"
+      info "  di solito e' mDNS sul PC: qualcuno gli ha preso la porta 5353"
+      info "  sul PC:   Get-NetUDPEndpoint -LocalPort 5353 | % { Get-Process -Id \$_.OwningProcess }"
+    fi
+  fi
+  # L'IP in config e' ancora quello del PC?
+  #
+  # Il DHCP di casa lo sposta senza avvisare (visto: da .2 a .9), e l'indirizzo
+  # vecchio non resta vuoto - se lo prende un altro dispositivo. Da li' winfleet
+  # parla con la lampadina invece che col PC. Si confronta l'uniqueid, non il
+  # semplice "risponde": e' l'unica cosa che dice che dall'altra parte c'e'
+  # davvero la nostra istanza.
+  if [ -n "${HOST_LAN:-}" ] && [ -n "${HOST_TS:-}" ] && [ "${SLOTS:-0}" -gt 0 ]; then
+    local uid_lan uid_ts
+    uid_lan="$(curl -s --max-time 3 --connect-timeout 1 "http://$HOST_LAN:$(slot_port 0)/serverinfo?uniqueid=winfleet" 2>/dev/null | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
+    uid_ts="$(curl -s --max-time 3 --connect-timeout 1 "http://$HOST_TS:$(slot_port 0)/serverinfo?uniqueid=winfleet" 2>/dev/null | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
+    if [ -n "$uid_ts" ] && [ -n "$uid_lan" ] && [ "$uid_lan" != "$uid_ts" ]; then
+      bad "HOST_LAN=$HOST_LAN non e' piu' il PC: risponde qualcun altro"
+      info "  rimedio:  winfleet setup    ${c_dim}(o correggi HOST_LAN in config.env)${c_off}"
+    elif [ -n "$uid_ts" ] && [ -z "$uid_lan" ]; then
+      info "HOST_LAN=$HOST_LAN non risponde: passo da Tailscale  ${c_dim}(IP cambiato?)${c_off}"
+    fi
   fi
   # Moonlight non raggiunge l'host mentre il resto del Mac ci parla benissimo.
   #
