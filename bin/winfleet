@@ -87,6 +87,30 @@ HOST_NAME=""        # nome mDNS dell'host (es. PCdiCasa.local): indirizza le ist
 SLOTS=0             # quante istanze WinFleet (monitor virtuali) ci sono sull'host
 SLOT_BASE=48089     # porta della prima istanza; le successive +100
 AGENT_PORT=48088    # agente sull'host: ridimensiona la finestra dell'app e conferma
+
+# Un python che funziona DAVVERO, non il primo che si trova nel PATH.
+#
+# Il guasto, 26/08: dal Dock ogni apertura moriva con "Tutte le 4 finestre sono
+# occupate" mentre "winfleet windows" ne elencava quattro libere, e da terminale
+# lo stesso comando funzionava. La differenza era l'AMBIENTE: il Dock lancia con
+# un PATH minimo, li' "python3" e' quello di Homebrew, e quel python ha un
+# pyexpat rotto ("Symbol not found: _XML_SetAllocTrackerActivationThreshold",
+# compilato contro un libexpat piu' nuovo di quello di sistema). Non riesce
+# nemmeno a fare "import plistlib": ogni controllo del pairing falliva, tutti e
+# quattro gli slot risultavano non accoppiati, e il messaggio incolpava
+# finestre occupate che non esistevano.
+#
+# /usr/bin/python3 e' quello di macOS: piu' lento a partire, ma non si rompe
+# quando Homebrew aggiorna una libreria. Si verifica il modulo che serve invece
+# di fidarsi della sola presenza del binario - era proprio la presenza a
+# ingannare.
+WF_PY="$(
+  for p in /usr/bin/python3 python3; do
+    command -v "$p" >/dev/null 2>&1 || continue
+    "$p" -c 'import plistlib, json' >/dev/null 2>&1 && { command -v "$p"; break; }
+  done
+)"
+WF_PY="${WF_PY:-python3}"
 SUN_PORT=47990
 TITLEBAR=28         # altezza barra titolo macOS, esclusa dall'area video
 
@@ -1340,7 +1364,7 @@ refresh_vdd(){
 
 vdd_field(){ # slot campo
   [ -s "$VDD_CACHE" ] || refresh_vdd
-  VDD_CACHE="$VDD_CACHE" WF_SLOT="$1" WF_FIELD="$2" python3 -c '
+  VDD_CACHE="$VDD_CACHE" WF_SLOT="$1" WF_FIELD="$2" $WF_PY -c '
 import json, os, sys
 try:
     for m in json.load(open(os.environ["VDD_CACHE"])):
@@ -1373,7 +1397,7 @@ except Exception:
 covering_mode(){ # slot larghezza altezza
   local modes; modes="$(vdd_field "$1" modes)"
   [ -n "$modes" ] || { echo ""; return; }
-  WF_MODES="$modes" WF_W="$2" WF_H="$3" python3 -c '
+  WF_MODES="$modes" WF_W="$2" WF_H="$3" $WF_PY -c '
 import os
 w, h = int(os.environ["WF_W"]), int(os.environ["WF_H"])
 best, area = None, None
@@ -1392,7 +1416,7 @@ print(best or "")
 nearest_mode(){ # slot larghezza altezza [maxLarghezza maxAltezza]
   local modes; modes="$(vdd_field "$1" modes)"
   [ -n "$modes" ] || { echo ""; return; }
-  WF_MODES="$modes" WF_W="$2" WF_H="$3" WF_MAXW="${4:-0}" WF_MAXH="${5:-0}" python3 -c '
+  WF_MODES="$modes" WF_W="$2" WF_H="$3" WF_MAXW="${4:-0}" WF_MAXH="${5:-0}" $WF_PY -c '
 import os
 w, h = int(os.environ["WF_W"]), int(os.environ["WF_H"])
 maxw, maxh = int(os.environ["WF_MAXW"]), int(os.environ["WF_MAXH"])
@@ -2559,7 +2583,7 @@ adopt_orphans(){ # [slot sorgente]
     # riconosciuta, l'apertura partiva, e un istante dopo spariva tutto.
     #
     # E' lo stesso motivo per cui le finestre calde nascono con setsid.
-    ( exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+    ( exec $WF_PY -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         /opt/homebrew/bin/bash -c \
         "$(printf 'PICKED_EXE=%q %q open %q' "adotta:$hw" "$0" "$nome")" ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
@@ -2907,7 +2931,7 @@ cmd_open(){
     # preparatore puo' finire il suo lavoro e uscire, pronto a ripartire fra due
     # minuti per rimpiazzare quelle consumate. macOS non ha il comando setsid,
     # ma la chiamata di sistema c'e' - la si raggiunge da python.
-    ( WF_SUP=1 exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+    ( WF_SUP=1 exec $WF_PY -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         /opt/homebrew/bin/bash -c \
         "$(printf 'WF_SUP=1 WF_READY_KEEP=%q %q ready-supervise %q %q %q %q %q %q' \
              "${WF_READY_KEEP:-0}" \
@@ -3457,7 +3481,7 @@ slot_paired_ask(){ # slot
   # 2 = l'istanza non ha risposto. Chi chiama non deve ricordarselo: e' uno
   # stato della rete, non una proprieta' dello slot.
   [ -n "$uid" ] || return 2
-  WF_UID_CHK="$uid" python3 -c '
+  WF_UID_CHK="$uid" $WF_PY -c '
 import os, plistlib, sys
 p = os.path.expanduser("~/Library/Preferences/com.moonlight-stream.Moonlight.plist")
 try:
@@ -3635,7 +3659,7 @@ build_icns(){ # nome exe destinazione.icns
       if [ "$f" = 2 ] && [ "$s" = 256 ]; then continue; fi
       local dest="$tmp/i.iconset/icon_${s}x${s}.png"
       if [ "$f" = 2 ]; then dest="$tmp/i.iconset/icon_${s}x${s}@2x.png"; fi
-      if [ -f "$WF_BADGE" ] && python3 "$WF_BADGE" "$tmp/src.png" "$dest" "$lato" 2>/dev/null; then
+      if [ -f "$WF_BADGE" ] && "$WF_PY" "$WF_BADGE" "$tmp/src.png" "$dest" "$lato" 2>/dev/null; then
         continue
       fi
       # Senza badge: almeno l'icona, ridimensionata come si puo'.
@@ -3683,8 +3707,8 @@ build_icns(){ # nome exe destinazione.icns
 # Si misura il BLU e non il bianco: il bianco c'e' anche quando il disegno si e'
 # impastato in una macchia chiara, che e' proprio il difetto da riconoscere.
 icns_badge_pct(){ # file.icns -> 0..100
-  command -v python3 >/dev/null 2>&1 || { echo 100; return 0; }
-  WF_ICNS="$1" python3 -c '
+  [ -n "$WF_PY" ] || { echo 100; return 0; }
+  WF_ICNS="$1" $WF_PY -c '
 import os, subprocess, tempfile
 try:
     from PIL import Image
@@ -4114,7 +4138,7 @@ cmd_clean(){
 
   cp "$MOON_PREFS" "$MOON_PREFS.winfleet-bak"
   local report
-  report="$(MOON_PREFS="$MOON_PREFS" python3 - <<'PY'
+  report="$(MOON_PREFS="$MOON_PREFS" $WF_PY - <<'PY'
 import os, plistlib, re, urllib.request
 
 path = os.environ["MOON_PREFS"]
@@ -4393,6 +4417,18 @@ cmd_doctor(){
       info "  di solito e' mDNS sul PC: qualcuno gli ha preso la porta 5353"
       info "  sul PC:   Get-NetUDPEndpoint -LocalPort 5353 | % { Get-Process -Id \$_.OwningProcess }"
     fi
+  fi
+  # Il python del PATH funziona, o stiamo andando avanti di ripiego?
+  #
+  # Un python3 rotto non da' un errore che si legge: da' "Tutte le 4 finestre
+  # sono occupate" con quattro finestre libere, e solo dal Dock - perche' da
+  # terminale il PATH e' un altro. Un'ora per arrivarci la prima volta; qui e'
+  # una riga.
+  local py_path; py_path="$(command -v python3 2>/dev/null || true)"
+  if [ -n "$py_path" ] && ! "$py_path" -c 'import plistlib, json' >/dev/null 2>&1; then
+    bad "$py_path e' rotto (non importa plistlib): uso $WF_PY"
+    info "  rimedio:  brew reinstall python@3.14    ${c_dim}(o brew reinstall expat)${c_off}"
+    info "  finche' resta cosi', chi lo usa senza ripiego vede errori senza senso"
   fi
   # L'IP in config e' ancora quello del PC?
   #

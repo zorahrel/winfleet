@@ -201,6 +201,19 @@ else
   fail=1
 fi
 
+# --- 9d. un python che c'e' non e' un python che funziona ------------------
+# Terza variante della stessa lezione. Dal Dock il PATH e' minimo, "python3" e'
+# quello di Homebrew, e con un pyexpat rotto non riusciva nemmeno a importare
+# plistlib: il controllo del pairing falliva per ogni slot e l'apertura moriva
+# con "Tutte le 4 finestre sono occupate" - da terminale, invece, funzionava.
+if /opt/homebrew/bin/bash mac/tests/python-rotto.sh > "$TMP/python.out" 2>&1; then
+  say "ok   interprete: si sceglie un python provandolo, non fidandosi del PATH"
+else
+  say "NO   scelta dell'interprete python:"
+  sed 's/^/       /' "$TMP/python.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app
