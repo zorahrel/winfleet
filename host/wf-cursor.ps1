@@ -20,14 +20,23 @@
   sia da "restore" sia automaticamente quando questo processo muore.
 
 .PARAMETER Action
-  hide | restore
+  hide | restore | guard
+
+  "guard" e' la rete di sicurezza: nascondere il cursore e' globale, e finche'
+  a rimetterlo era solo il Mac bastava un kill -9, un Mac che dorme o
+  un'apertura fallita per lasciare il PC senza puntatore a tempo indeterminato.
+  Successo davvero: quattro giorni, con il puntatore invisibile anche da Parsec
+  e davanti al monitor, e nessun indizio che portasse a winfleet. Il guardiano
+  guarda il file-battito che l'agente aggiorna finche' una finestra e' aperta:
+  se smette di essere aggiornato, rimette i cursori del tema e basta.
 
 .EXAMPLE
   powershell -File wf-cursor.ps1 -Action hide
   powershell -File wf-cursor.ps1 -Action restore
+  powershell -File wf-cursor.ps1 -Action guard
 #>
 [CmdletBinding()]
-param([ValidateSet('hide','restore')][string]$Action = 'hide')
+param([ValidateSet('hide','restore','guard')][string]$Action = 'hide')
 
 $ErrorActionPreference = 'Stop'
 $LOG = 'C:\winfleet\cursor.log'
@@ -52,9 +61,37 @@ public class WFCur {
 $IDS = @(32512,32513,32514,32515,32516,32642,32643,32644,32645,32646,32648,32649,32650,32651)
 $SPI_SETCURSORS = 0x0057
 
+# Il battito: l'agente lo aggiorna a ogni giro finche' una finestra e' viva.
+$BEAT = 'C:\winfleet\cursor-alive.txt'
+# Generoso di proposito: il Mac si fa vivo ogni 20 secondi, e un minuto di
+# silenzio non e' un singhiozzo di rete - e' qualcuno che se n'e' andato.
+$BEAT_MAX = 60
+
+# "L'ultimo ordine dato e' stato nascondi": e' cio' che permette al guardiano di
+# non ripristinare a vuoto ogni minuto quando non c'e' niente da ripristinare.
+$MARK = 'C:\winfleet\cursor-hidden.txt'
+
 if ($Action -eq 'restore') {
     [void][WFCur]::SystemParametersInfo($SPI_SETCURSORS, 0, [IntPtr]::Zero, 0)
+    Remove-Item $MARK -Force -EA SilentlyContinue
     Note 'cursori di sistema ripristinati'
+    return
+}
+
+if ($Action -eq 'guard') {
+    # Se il battito non c'e' o e' vecchio, nessuno sta piu' trasmettendo: si
+    # rimette il cursore. Se e' fresco non si tocca niente - il ripristino a
+    # meta' di uno stream farebbe ricomparire il doppio puntatore.
+    $eta = if (Test-Path $BEAT) {
+        ((Get-Date) - (Get-Item $BEAT).LastWriteTime).TotalSeconds
+    } else { [double]::MaxValue }
+    if ($eta -le $BEAT_MAX) { return }
+    # Si ripristina solo se serve davvero: SPI_SETCURSORS a vuoto ogni minuto
+    # riempirebbe il log di righe che non raccontano niente.
+    if (-not (Test-Path $MARK)) { return }
+    [void][WFCur]::SystemParametersInfo($SPI_SETCURSORS, 0, [IntPtr]::Zero, 0)
+    Remove-Item $MARK -Force -EA SilentlyContinue
+    Note "cursori rimessi dal guardiano (nessun battito da $([int]$eta)s)"
     return
 }
 
@@ -76,4 +113,10 @@ foreach ($id in $IDS) {
     $c = [WFCur]::CreateCursor([IntPtr]::Zero, 0, 0, $w, $h, $and, $xor)
     if ($c -ne [IntPtr]::Zero -and [WFCur]::SetSystemCursor($c, $id)) { $n++ }
 }
+# Da adesso c'e' qualcosa da ripristinare, e il guardiano deve saperlo.
+# Il battito parte da ora: se il Mac non si rifa' vivo entro un minuto -
+# perche' e' morto male, perche' lo stream non e' mai partito - il cursore
+# torna da solo invece di restare invisibile per giorni.
+[void](New-Item -Path $MARK -ItemType File -Force)
+[void](New-Item -Path $BEAT -ItemType File -Force)
 Note "cursore nascosto ($n cursori sostituiti)"

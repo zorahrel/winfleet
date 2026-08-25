@@ -389,6 +389,24 @@ while ($listener.IsListening) {
             } else { $body = 'no' }
         }
         elseif ($req.Url.AbsolutePath -eq '/windows') { $body = [A]::ListWindows() }
+        elseif ($req.Url.AbsolutePath -eq '/cursor-alive') {
+            # "Il Mac e' ancora qui, tieni pure il cursore nascosto."
+            #
+            # Nascondere il cursore e' un cambiamento GLOBALE su Windows, e
+            # rimetterlo dipendeva SOLO dal Mac: se il sorvegliante moriva male
+            # (kill -9, Mac che dorme, rete che cade, un'apertura fallita a
+            # meta') il puntatore restava invisibile su tutto il PC finche'
+            # qualcuno non lanciava winfleet doctor. Visto dal vivo: quattro
+            # giorni senza cursore, anche da Parsec e davanti al monitor, e
+            # nessuno che collegasse la cosa a winfleet.
+            #
+            # Ora chi nasconde deve anche farsi vivo. Questo endpoint aggiorna un
+            # file-battito; se smette di arrivare, wf-cursor-guard rimette i
+            # cursori del tema da solo. Un guasto sul Mac non lascia piu' il PC
+            # senza puntatore.
+            [void](New-Item -Path 'C:\winfleet\cursor-alive.txt' -ItemType File -Force)
+            $body = 'ok'
+        }
         elseif ($req.Url.AbsolutePath -eq '/orphans') {
             # Le finestre che stanno su uno schermo virtuale e che NESSUNO slot
             # sta mostrando.

@@ -135,6 +135,23 @@ foreach ($c in @('hide','restore')) {
         -Settings $settings -Force -EA SilentlyContinue | Out-Null
 }
 
+# Il guardiano: rimette il cursore se il Mac smette di farsi vivo.
+#
+# Serve perche' "hide" e' globale su Windows mentre il ripristino dipendeva solo
+# dal Mac: un kill -9, un Mac che dorme o uno stream mai partito lasciavano il PC
+# senza puntatore a tempo indeterminato. Misurato: quattro giorni, invisibile
+# anche da Parsec e davanti al monitor, senza nessun indizio che portasse qui.
+#
+# Ogni minuto, all'infinito: non fa nulla se il battito e' fresco o se non c'e'
+# niente da ripristinare, quindi il costo a regime e' un processo che parte e
+# muore subito.
+$gt = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration ([TimeSpan]::MaxValue)
+$ga = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action guard"
+Register-ScheduledTask -TaskName 'winfleet-cursor-guard' -Action $ga -Principal $principal `
+    -Settings $settings -Trigger $gt -Force -EA SilentlyContinue | Out-Null
+
 schtasks /run /tn "winfleet-sun$Slot" | Out-Null
 Start-Sleep 14
 & 'C:\winfleet\wf-inst-ctl.ps1' -Slot $Slot -Action stop | Out-Null

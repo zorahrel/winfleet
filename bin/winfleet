@@ -458,6 +458,17 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
   while kill -0 "$pid" 2>/dev/null; do
     __orph=$(( __orph + 1 ))
     if [ $(( __orph % 30 )) = 0 ]; then adopt_orphans "$slot"; fi
+    # Il battito del cursore: "sono ancora qui, tienilo pure nascosto".
+    #
+    # Nasconderlo e' globale su Windows, e finche' a rimetterlo era solo il Mac
+    # bastava un kill -9 o un Mac che dorme per lasciare il PC senza puntatore a
+    # tempo indeterminato - quattro giorni, misurati, anche da Parsec e davanti
+    # al monitor. Ora chi lo tiene nascosto deve farsi vivo: se questo ciclo
+    # muore comunque muoia, il guardiano sull'host se ne accorge e ripristina.
+    #
+    # Ogni 20 secondi (200 giri da 0.1s) e in secondo piano: e' una richiesta di
+    # rete dentro un ciclo che deve restare reattivo al trascinamento.
+    if [ $(( __orph % 200 )) = 0 ]; then cursor_beat; fi
     cur="$(win_size "$pid")"
     if [ -n "$cur" ] && [ "$cur" != "$sent" ]; then
       cw="${cur%x*}"; ch="${cur#*x}"
@@ -645,7 +656,22 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     # puo' fare macOS davvero. Da qui in poi il dato e' in config.
     usable_screen "$pid" >/dev/null
     hide_gui "$pid"
-    cursor_hide
+    # Solo se una finestra c'e' DAVVERO.
+    #
+    # Nasconderlo qui a scatola chiusa e' un cambiamento GLOBALE su Windows che
+    # sopravvive al fallimento: quando lo stream non parte (il 25/08: il nome
+    # mDNS dell'host non risolveva piu') si arrivava comunque a questa riga, la
+    # finestra non compariva mai, e il cursore restava invisibile su tutto il
+    # PC. Non solo per winfleet: chi si collegava con Parsec, o si sedeva
+    # davanti al monitor, non vedeva piu' il puntatore - e niente lo collegava
+    # a un'apertura fallita ore prima. Verificato: quattro giorni cosi', con
+    # 489 "nascosto" e nessun sorvegliante vivo a rimetterlo.
+    #
+    # win_size vuoto vuol dire che lo stream non ha mostrato niente: li' non
+    # c'e' nessun cursore doppio da evitare, e quindi niente da nascondere.
+    # (if e non "&& cursor_hide": con set -e un test falso come ultima
+    # espressione di un ramo puo' terminare il comando.)
+    if [ -n "$(win_size "$pid")" ]; then cursor_hide; fi
     if [ -z "$owned" ]; then
       # Senza libreria non c'e' modo di sapere chi ha ridimensionato, quindi si tiene
       # la misura per qualche secondo: tanto basta ad annullare la correzione all'80%
@@ -1459,6 +1485,18 @@ cursor_restore(){
       "schtasks /run /tn winfleet-cursor-restore" >/dev/null 2>&1 || true ) &
 }
 
+# "Sono ancora qui": finche' arriva, il cursore resta nascosto.
+#
+# Passa dall'agente e non da ssh perche' e' una richiesta ogni venti secondi e
+# ssh costa quasi un secondo a giro; l'agente risponde in millisecondi. In
+# secondo piano e senza mai bloccare: se non arriva, il guardiano sull'host
+# ripristina - che e' esattamente il comportamento voluto.
+cursor_beat(){
+  [ "${CURSOR:-hidden}" = "native" ] && return 0
+  ( curl -s --max-time 2 --connect-timeout 1 \
+      "http://$(agent_host):$AGENT_PORT/cursor-alive" >/dev/null 2>&1 || true ) &
+}
+
 place_stop(){ # slot
   [ -n "${HOST_SSH:-}" ] || return 0
   # In secondo piano e con un tetto complessivo. ConnectTimeout copre solo la
@@ -1838,12 +1876,43 @@ cmd_push(){
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path C:\\winfleet | Out-Null\"" >/dev/null 2>&1
   for f in "$src"/*.ps1; do
+    # Con un TETTO DI TEMPO, e non solo ConnectTimeout.
+    #
+    # ConnectTimeout copre la connessione, non quello che viene dopo, e qui il
+    # blocco e' proprio dopo: powershell legge stdin con [Console]::In.ReadToEnd(),
+    # che aspetta un EOF che a volte non arriva mai. Il file finisce scritto -
+    # verificato, 27403 byte identici all'originale - ma la sessione resta
+    # aperta e "winfleet push" si ferma li'. Misurato: venti minuti su un file,
+    # senza una riga di output, con meta' degli script rimasti indietro.
+    # (ServerAliveInterval non basta: il canale e' vivo, e' il comando a non
+    # tornare.)
     base64 < "$f" | tr -d '\n' | ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
       "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\$(basename "$f")', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" \
-      >/dev/null 2>&1 || { bad "$(basename "$f")"; continue; }
+      >/dev/null 2>&1 &
+    local sp=$! t=0
+    while kill -0 "$sp" 2>/dev/null && [ "$t" -lt 25 ]; do sleep 1; t=$(( t + 1 )); done
+    if kill -0 "$sp" 2>/dev/null; then kill -9 "$sp" 2>/dev/null || true; fi
+    wait "$sp" 2>/dev/null || true
     n=$(( n + 1 ))
   done
-  ok "$n script in C:\\winfleet sull'host"
+  # Non "quanti ne ho spediti": quanti sono ARRIVATI INTERI.
+  #
+  # Contare i comandi lanciati diceva sempre "tutto bene", anche quando un
+  # trasferimento veniva troncato: e uno script a meta' si scopre solo quando
+  # serve, di solito nel mezzo di qualcos'altro. Si confrontano le dimensioni,
+  # con una sola domanda per tutti invece di una per file.
+  local remote_sizes; remote_sizes="$(ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
+    'powershell -NoProfile -Command "Get-ChildItem C:\winfleet\*.ps1 | ForEach-Object { $_.Name + \" \" + $_.Length }"' \
+    2>/dev/null | tr -d '\r')"
+  local manca=0 ok_n=0 base loc rem
+  for f in "$src"/*.ps1; do
+    base="$(basename "$f")"
+    loc="$(wc -c <"$f" | tr -d ' ')"
+    rem="$(printf '%s\n' "$remote_sizes" | awk -v b="$base" '$1==b{print $2}')"
+    if [ "$rem" = "$loc" ]; then ok_n=$(( ok_n + 1 )); else bad "$base: $( [ -z "$rem" ] && echo "non arrivato" || echo "$rem byte invece di $loc" )"; manca=1; fi
+  done
+  ok "$ok_n script in C:\\winfleet sull'host"
+  [ "$manca" = 0 ] || return 1
 
   # Uno script caricato a meta' si scopre solo quando serve, di solito nel mezzo di
   # qualcos'altro: meglio saperlo adesso.
@@ -4385,6 +4454,29 @@ cmd_doctor(){
   if [ "$(slot_any_live)" = no ] && [ -n "${HOST_SSH:-}" ]; then
     cursor_restore
     info "cursore di Windows: rimesso visibile (nessuna finestra aperta)"
+  fi
+  # E il guardiano c'e'? E' lui che rende superfluo il rimedio qui sopra.
+  #
+  # Nascondere il cursore e' globale su Windows, e per un periodo a rimetterlo
+  # c'era solo il Mac: bastava un kill -9, un Mac che dorme o uno stream mai
+  # partito per lasciare il PC senza puntatore finche' qualcuno non lanciava
+  # questo comando. Quattro giorni, misurati, anche da Parsec e davanti al
+  # monitor. Il guardiano gira sull'host e ripristina da solo quando il Mac
+  # smette di farsi vivo - ma su un PC gia' installato non esiste finche' non lo
+  # si registra, e senza di lui il guasto puo' semplicemente tornare.
+  if [ -n "${HOST_SSH:-}" ]; then
+    if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+         'schtasks /query /fo csv 2>nul | findstr /i winfleet-cursor-guard' >/dev/null 2>&1; then
+      ok "cursore: il guardiano sull'host c'e'  ${c_dim}(lo rimette anche se il Mac muore male)${c_off}"
+    else
+      info "cursore: manca il guardiano sull'host, lo registro…"
+      if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=15 "$HOST_SSH" \
+           'schtasks /create /tn winfleet-cursor-guard /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action guard" /sc minute /mo 1 /f' >/dev/null 2>&1; then
+        ok "cursore: guardiano registrato sull'host"
+      else
+        bad "cursore: non riesco a registrare il guardiano  ${c_dim}(winfleet push, poi riprova)${c_off}"
+      fi
+    fi
   fi
   if [ "$CHROME" = native ]; then
     info "barra del titolo di macOS: mostrata (CHROME=native)"
