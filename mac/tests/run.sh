@@ -174,6 +174,20 @@ else
   fail=1
 fi
 
+# --- 9b. il silenzio non diventa un pairing perduto ------------------------
+# Stessa lezione, un livello piu' in la': slot_paired ricordava per cinque
+# minuti che un'istanza "non ci conosce" anche quando quella semplicemente non
+# aveva risposto - tipicamente perche' reap_stuck_slots l'aveva appena
+# riavviata. Risultato: "Tutte le 4 finestre sono occupate" con quattro
+# finestre libere, per ore.
+if /opt/homebrew/bin/bash mac/tests/paired-mute.sh > "$TMP/paired.out" 2>&1; then
+  say "ok   pairing: si ricorda cio' che l'istanza dice, non il suo silenzio"
+else
+  say "NO   pairing dal silenzio:"
+  sed 's/^/       /' "$TMP/paired.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

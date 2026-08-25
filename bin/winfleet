@@ -3302,12 +3302,27 @@ slot_paired(){ # slot
       return $?
     fi
   fi
-  if slot_paired_ask "$1"; then
-    echo si > "$memo" 2>/dev/null || true
-    return 0
-  fi
-  echo no > "$memo" 2>/dev/null || true
-  return 1
+  # Un'istanza MUTA non e' un'istanza non accoppiata, e confonderle costava
+  # cinque minuti di "Tutte le 4 finestre sono occupate" con quattro finestre
+  # libere. Il giro completo, ricostruito dai log del 25/08: reap_stuck_slots
+  # riavvia le istanze dichiarate BUSY, il pick_slot subito dopo le interroga
+  # mentre stanno ancora ripartendo, il serverinfo non risponde, e quel
+  # silenzio finiva scritto come "no" - valido per SLOT_PAIRED_TTL. Da li' in
+  # poi ogni apertura scartava tutti gli slot per un pairing che c'era
+  # eccome: quattro tentativi falliti di fila, e nessuno che spiegasse perche'.
+  #
+  # Si memorizza solo cio' che l'istanza ha DETTO: "accoppiata" o "non ti
+  # conosco". Il silenzio non si ricorda - lo slot non e' utilizzabile adesso
+  # (e slot_state lo scarta comunque), ma fra un secondo puo' esserlo.
+  # L'esito si cattura, non si legge dopo: con "set -e" una chiamata nuda che
+  # torna non-zero termina lo script prima ancora di arrivare al case.
+  local esito=0
+  slot_paired_ask "$1" || esito=$?
+  case "$esito" in
+    0) echo si > "$memo" 2>/dev/null || true; return 0;;
+    2) rm -f "$memo" 2>/dev/null || true; return 1;;   # muta: non si ricorda
+    *) echo no > "$memo" 2>/dev/null || true; return 1;;
+  esac
 }
 
 slot_paired_ask(){ # slot
@@ -3318,7 +3333,9 @@ slot_paired_ask(){ # slot
   # secondi solo per scoprire che non c'e' nessuno, su quattro finestre.
   uid="$(curl -s --max-time 3 --connect-timeout 1 "http://$(agent_host):$(slot_port "$1")/serverinfo?uniqueid=winfleet" 2>/dev/null \
          | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
-  [ -n "$uid" ] || return 1
+  # 2 = l'istanza non ha risposto. Chi chiama non deve ricordarselo: e' uno
+  # stato della rete, non una proprieta' dello slot.
+  [ -n "$uid" ] || return 2
   WF_UID_CHK="$uid" python3 -c '
 import os, plistlib, sys
 p = os.path.expanduser("~/Library/Preferences/com.moonlight-stream.Moonlight.plist")
