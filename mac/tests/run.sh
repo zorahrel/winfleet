@@ -253,6 +253,19 @@ else
   fail=1
 fi
 
+# --- 9h. non inseguire una finestra che non esiste piu' -------------------
+# Windows risponde "ok" a SetWindowPos anche quando la finestra non si sposta.
+# Arc, uscendo, lascia un residuo di 160x28 attaccato allo slot: winfleet lo
+# inseguiva per ore, tenendo occupato uno slot con una finestra che sul Mac non
+# mostrava niente e senza un errore da nessuna parte.
+if /opt/homebrew/bin/bash mac/tests/finestra-fantasma.sh > "$TMP/fantasma.out" 2>&1; then
+  say "ok   misura: «ok» che non sposta niente e' un rifiuto, e dopo tre si molla"
+else
+  say "NO   finestra fantasma:"
+  sed 's/^/       /' "$TMP/fantasma.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

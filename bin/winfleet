@@ -4860,6 +4860,25 @@ cmd_doctor(){
       info "C:\\winfleet: $sporchi_n script estranei  ${c_dim}(winfleet host-clean per toglierli)${c_off}"
     fi
   fi
+  # Quanti monitor virtuali ci sono davvero?
+  #
+  # Ne servono esattamente SLOTS. Di piu' vuol dire che il processo che li tiene
+  # e' stato avviato piu' volte, e non e' un dettaglio estetico: ogni monitor in
+  # piu' e' uno schermo che la GPU disegna sul serio. Successo il 26/08 - tre
+  # istanze di wf-vdd, otto monitor al posto di quattro - e il guardiano che
+  # avrebbe dovuto rimetterli era proprio quello che li moltiplicava.
+  if [ "${SLOTS:-0}" -gt 0 ]; then
+    local n_mon
+    n_mon="$(curl -s --max-time 4 --connect-timeout 2 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
+             | grep -c '"slot"' || true)"
+    if [ -n "$n_mon" ] && [ "$n_mon" -gt "$SLOTS" ] 2>/dev/null; then
+      bad "$n_mon monitor virtuali invece di $SLOTS: il processo e' partito piu' volte"
+      info "  ogni monitor in piu' e' uno schermo che la GPU disegna davvero"
+      info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
+    elif [ -n "$n_mon" ] && [ "$n_mon" = "$SLOTS" ]; then
+      ok "$n_mon monitor virtuali  ${c_dim}(uno per finestra, nessuno di troppo)${c_off}"
+    fi
+  fi
   # Il cursore di Windows: chi sta usando quel PC lo vede?
   #
   # "Non riesco a usare il PC" e' il modo in cui viene segnalato, e da fuori non
