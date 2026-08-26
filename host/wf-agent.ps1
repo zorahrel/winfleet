@@ -476,6 +476,59 @@ while ($listener.IsListening) {
                     break
                 }
             }
+            # Il prompt UAC: nasce sul monitor FISICO, quindi nessun ciclo qui
+            # sopra puo' vederlo - quelli guardano dentro i monitor virtuali.
+            #
+            # Si azzera a ogni richiesta: senza, il valore del giro precedente
+            # sopravvive nella sessione dell'agente e il file resterebbe li'
+            # anche dopo che l'utente ha risposto al prompt.
+            $uac_visto = $false
+            #
+            # E' il guasto peggiore fra quelli visti, perche' non somiglia a un
+            # guasto: Windows chiede "consenti a questa app di apportare
+            # modifiche", il prompt e' modale per TUTTO il sistema, e da qui in
+            # poi non si clicca piu' niente - ne' nelle finestre winfleet, ne'
+            # in Parsec. Nessuna finestra mostra la domanda, quindi non c'e'
+            # niente da collegare al blocco: sembra che il PC si sia impiantato.
+            # (Il 26/08 il prompt stava a (1492,532), sul monitor fisico, con
+            # quattro finestre winfleet aperte che non rispondevano ai click.)
+            #
+            # Non si sposta e non si adotta: si SEGNALA, e basta.
+            #
+            # Le due vie ovvie sono state provate entrambe, e nessuna funziona.
+            #
+            # Adottarlo come orfano: il Mac risponde aprendo una finestra nuova
+            # per mostrarlo, ma il prompt e' modale per tutto il sistema e
+            # l'apertura si ferma subito ("cmd_open: inizio" e poi piu' niente,
+            # misurato). Il sistema che dovrebbe aprire la finestra e' bloccato
+            # proprio da cio' che quella finestra dovrebbe mostrare.
+            #
+            # Spostarlo sul monitor virtuale: SetWindowPos torna False con
+            # errore 5, ACCESS_DENIED, anche dall'agente che gira con RunLevel
+            # Highest nella sessione interattiva. E' UIPI: Windows protegge di
+            # proposito la finestra di consenso da qualunque manipolazione
+            # esterna, ed e' giusto cosi' - un prompt UAC spostabile da un
+            # programma non sarebbe piu' una garanzia di niente.
+            #
+            # Quindi non si fa niente QUI: la domanda "c'e' un prompt aperto?"
+            # la risponde /uac, che guarda direttamente il processo consent.exe
+            # ed e' vero anche quando nessuno chiama /orphans. Il Mac la usa per
+            # avvisare con parole sue - sapere perche' tutto e' fermo vale piu'
+            # che restare a cliccare a vuoto su finestre che non rispondono.
+            #
+            # Resta solo l'ESCLUSIONE: il prompt non e' una finestra da adottare.
+            # Il Mac ci prova - "figlia Controllo dell'account utente: la apro",
+            # misurato - e l'apertura muore subito, perche' il sistema che
+            # dovrebbe aprirla e' bloccato proprio da lei.
+            $tenute = New-Object Text.StringBuilder
+            foreach ($riga in ($out.ToString() -split "`n")) {
+                if (-not $riga) { continue }
+                $cc = $riga -split "`t"
+                if ($cc.Count -ge 4 -and ($cc[3] -eq 'Controllo dell''account utente' -or
+                                          $cc[3] -eq 'User Account Control')) { continue }
+                [void]$tenute.Append("$riga`n")
+            }
+            $out = $tenute
             $body = $out.ToString()
             if (-not $body) { $body = '' }
         }
@@ -488,6 +541,33 @@ while ($listener.IsListening) {
             }
         }
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
+        elseif ($req.Url.AbsolutePath -eq '/appsize') {
+            # Quanto e' grande ADESSO la finestra dell'app di questo slot.
+            #
+            # Il Mac non puo' saperlo da solo: la sua finestra di Moonlight
+            # resta della misura giusta anche quando l'app dall'altra parte si
+            # e' rimpicciolita, e in mezzo resta un ritaglio che mostra
+            # desktop. Successo con Arc: portata a 1209x806, tornata da sola a
+            # 500x500, e sul Mac si vedeva lo sfondo di Windows con ogni
+            # controllo verde.
+            $slot = [int]$req.QueryString['slot']
+            $hwnd = Get-Hwnd $slot
+            if ($hwnd -ne [IntPtr]::Zero -and [A]::IsWindow($hwnd)) {
+                $r = New-Object A+RECT
+                if ([A]::GetWindowRect($hwnd, [ref]$r)) {
+                    $body = "$($r.R - $r.L)x$($r.B - $r.T)"
+                }
+            }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/uac') {
+            # "C'e' un prompt UAC aperto adesso?"
+            #
+            # Si guarda il processo, non il file scritto da /orphans: il file
+            # dipende da chi chiama /orphans, questo e' vero anche se nessuno
+            # lo ha chiamato. E' la domanda che il Mac fa quando vuole spiegare
+            # perche' i click non funzionano piu' da nessuna parte.
+            $body = if (Get-Process -Name consent -EA SilentlyContinue) { 'si' } else { 'no' }
+        }
     } catch { $body = 'no' }
 
     # La risposta si chiude SEMPRE, anche se scriverla fallisce.

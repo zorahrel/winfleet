@@ -34,8 +34,41 @@ $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGo
 # arrivare la sessione grafica: il driver dei monitor virtuali chiede un desktop.
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
 $trigger.Delay = 'PT10S'
+# E un secondo trigger, ogni minuto, perche' il logon copre solo il riavvio.
+#
+# I monitor virtuali esistono finche' QUESTO processo vive, e il processo puo'
+# morire: basta un aggiornamento del driver, una sessione che si riduce, o un
+# kill andato male. Quando succede il task torna "Pronta" e nessuno lo rilancia
+# - visto due volte in una sera, a distanza di un'ora.
+#
+# Il sintomo e' il piu' ingannevole di tutti: le finestre continuano ad aprirsi,
+# winfleet dice "Arc -> finestra 1", ogni controllo e' verde, e sul Mac si vede
+# il DESKTOP di Windows invece dell'app - perche' il monitor su cui l'app
+# dovrebbe stare non esiste piu' e la finestra finisce altrove. Nessun errore da
+# nessuna parte.
+#
+# MultipleInstances=IgnoreNew: se il processo e' ancora vivo, il giro successivo
+# non fa niente. Quindi a regime il costo e' zero, e quando serve il ripristino
+# arriva entro un minuto invece che al prossimo riavvio.
+$settings.MultipleInstances = 'IgnoreNew'
 Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $principal `
     -Settings $settings -Trigger $trigger -Force | Out-Null
+
+# La risurrezione sta in un task A PARTE, e la registra schtasks.
+#
+# Due strade provate e fallite entrambe con HRESULT 0x80041318: passare due
+# trigger insieme a Register-ScheduledTask, e mettere una Repetition su un
+# trigger -AtLogOn. schtasks /sc minute invece funziona (lo usa gia' il
+# guardiano del cursore).
+#
+# Lancia "schtasks /run" sul task vero: se il processo e' ancora vivo,
+# MultipleInstances=IgnoreNew fa si' che non succeda niente. Quindi a regime il
+# costo e' un processo che parte e muore subito, e quando i monitor virtuali
+# cadono tornano entro un minuto invece che al prossimo riavvio.
+schtasks /create /tn winfleet-vdd-guard `
+    /tr "schtasks /run /tn winfleet-vdd" `
+    /sc minute /mo 1 /f | Out-Null
+Write-Host "Task 'winfleet-vdd-guard' registrato: rimette i monitor se cadono"
 
 Write-Host "Task 'winfleet-vdd' registrato: $Slots monitor virtuali" -ForegroundColor Green
 Write-Host "Avvia con:  schtasks /run /tn winfleet-vdd     (stato in C:\winfleet\vdd.json)"

@@ -493,6 +493,11 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
     # Ogni 20 secondi (200 giri da 0.1s) e in secondo piano: e' una richiesta di
     # rete dentro un ciclo che deve restare reattivo al trascinamento.
     if [ $(( __orph % 200 )) = 0 ]; then cursor_beat; fi
+    # E ogni tre secondi: Windows sta chiedendo un permesso? Se si', i click
+    # non funzionano da nessuna parte e nessuna finestra lo spiega. Stesso
+    # ritmo del controllo degli orfani, che e' il momento in cui l'utente si
+    # accorge che "non succede niente".
+    if [ $(( __orph % 30 )) = 0 ]; then uac_warn; fi
     cur="$(win_size "$pid")"
     if [ -n "$cur" ] && [ "$cur" != "$sent" ]; then
       cw="${cur%x*}"; ch="${cur#*x}"
@@ -520,6 +525,37 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
       idle=0
     else
       idle=$(( idle + 1 ))
+    fi
+    # E la finestra su WINDOWS e' ancora grande quanto crediamo?
+    #
+    # Tutto il ciclo qui sopra reagisce a cio' che cambia sul MAC: si trascina
+    # il bordo, e Windows segue. Ma il contrario non era sorvegliato da
+    # nessuno, e succede: Arc, dopo essere stata portata a 1209x806, e' tornata
+    # da sola a 500x500 sul monitor virtuale (misurato: GetWindowRect diceva
+    # (3440,0)-(3940,500) mentre ack e crop dicevano 1209x806).
+    #
+    # Il sintomo e' quello che un utente descrive come "non esce davvero Arc":
+    # la finestra sul Mac c'e', ha la misura giusta, non e' nera - ma mostra il
+    # ritaglio di un'area dove l'app non c'e' piu', cioe' desktop di Windows.
+    # Nessun errore da nessuna parte, e ogni controllo che guardi solo i numeri
+    # del Mac risulta verde. (E' costato un intero giro di diagnosi prima di
+    # guardare l'immagine invece dei log.)
+    #
+    # Ogni tre secondi, come gli orfani: il costo e' una richiesta HTTP, e la
+    # correzione e' la stessa rect_set che si usa all'apertura.
+    if [ $(( __orph % 30 )) = 0 ]; then
+      local vero; vero="$(win_size_host "$slot")"
+      if [ -n "$vero" ] && [ "$vero" != "${aw}x${ah}" ]; then
+        trace "slot $slot: la finestra su Windows e' $vero invece di ${aw}x${ah}, la rimetto"
+        got="$(rect_set "$slot" "$aw" "$ah")"
+        case "$got" in
+          "ok "*)
+            aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')"
+            printf '%sx%s\n' "$aw" "$ah" >"$ackf"
+            printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
+            ;;
+        esac
+      fi
     fi
     # Trenta letture al secondo servono solo MENTRE si trascina. Il resto del tempo
     # sono trenta processi al secondo per sentirsi rispondere che non e' cambiato
@@ -1521,6 +1557,34 @@ cursor_beat(){
       "http://$(agent_host):$AGENT_PORT/cursor-alive" >/dev/null 2>&1 || true ) &
 }
 
+# Windows sta chiedendo un permesso, e finche' non si risponde e' tutto fermo.
+#
+# Il prompt UAC nasce sul monitor FISICO del PC e Windows lo protegge da
+# qualunque manipolazione esterna: non si puo' spostare (SetWindowPos ->
+# ACCESS_DENIED, provato anche con privilegi elevati), non lo si puo' mostrare
+# in una finestra nuova (il sistema e' bloccato proprio da lui, quindi
+# l'apertura non parte). Quello che si PUO' fare e' dire che c'e'.
+#
+# Senza questo il sintomo e' il peggiore possibile: i click smettono di
+# funzionare - in winfleet e in Parsec insieme - e niente sullo schermo dice
+# perche'. Visto dal vivo il 26/08: due prompt aperti e mezz'ora persa a
+# cercare il guasto altrove.
+#
+# Si avvisa una volta sola per prompt: una notifica ogni tre secondi sarebbe
+# solo un altro modo di essere fermi.
+uac_warn(){
+  local memo="$CONFIG_DIR/uac-avvisato"
+  if [ "$(curl -s --max-time 2 --connect-timeout 1 \
+            "http://$(agent_host):$AGENT_PORT/uac" 2>/dev/null)" != si ]; then
+    rm -f "$memo" 2>/dev/null || true
+    return 0
+  fi
+  [ -f "$memo" ] && return 0
+  : >"$memo" 2>/dev/null || true
+  trace "UAC: Windows chiede un permesso sul monitor del PC - tutto bloccato finche' non si risponde"
+  osascript -e 'display notification "Windows chiede un permesso sul monitor del PC. Finche'\'' non rispondi, i click non funzionano da nessuna parte." with title "WinFleet" sound name "Basso"' >/dev/null 2>&1 || true
+}
+
 place_stop(){ # slot
   [ -n "${HOST_SSH:-}" ] || return 0
   # In secondo piano e con un tetto complessivo. ConnectTimeout copre solo la
@@ -1643,6 +1707,17 @@ agent_host(){
 
 rect_set(){ # slot larghezza altezza -> stampa la misura DAVVERO applicata
   curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/rect?slot=$1&w=$2&h=$3" 2>/dev/null
+}
+
+# Quanto e' grande DAVVERO la finestra dell'app, su Windows.
+#
+# Non e' la stessa cosa di win_size, che misura la finestra di Moonlight sul
+# Mac: quella puo' restare perfetta mentre l'app dall'altra parte si e'
+# rimpicciolita, e in mezzo resta il ritaglio - che a quel punto mostra desktop.
+# Serve per accorgersene, perche' nessun numero sul Mac lo rivela.
+win_size_host(){ # slot -> LARGHEZZAxALTEZZA, o vuoto
+  curl -s --max-time 2 --connect-timeout 1 \
+    "http://$(agent_host):$AGENT_PORT/appsize?slot=$1" 2>/dev/null
 }
 
 
@@ -4429,6 +4504,17 @@ cmd_doctor(){
     bad "$py_path e' rotto (non importa plistlib): uso $WF_PY"
     info "  rimedio:  brew reinstall python@3.14    ${c_dim}(o brew reinstall expat)${c_off}"
     info "  finche' resta cosi', chi lo usa senza ripiego vede errori senza senso"
+  fi
+  # Windows sta aspettando una risposta che nessuno puo' vedere?
+  #
+  # E' la prima cosa da guardare quando "i click non funzionano": il prompt UAC
+  # blocca l'input di TUTTO il sistema, winfleet e Parsec insieme, e nasce sul
+  # monitor fisico del PC dove nessuno lo sta guardando.
+  if [ "$(curl -s --max-time 3 --connect-timeout 1 \
+            "http://$(agent_host):$AGENT_PORT/uac" 2>/dev/null)" = si ]; then
+    bad "Windows sta chiedendo un permesso (UAC): i click non funzionano da nessuna parte"
+    info "  e' sul monitor del PC, non nello stream: rispondi li', o da Parsec"
+    info "  non si puo' portare nello stream: Windows lo protegge apposta"
   fi
   # L'IP in config e' ancora quello del PC?
   #
