@@ -154,12 +154,24 @@ reachable(){ # host port timeout
   nc -z -G "$t" "$h" "$p" >/dev/null 2>&1
 }
 
-# Sceglie l'endpoint: LAN se risponde sulla porta Sunshine, altrimenti Tailscale.
+# Sceglie l'endpoint: LAN se risponde, altrimenti Tailscale.
 # La LAN nuda evita l'incapsulamento WireGuard → più banda utile per lo stream.
+#
+# Si guarda la porta della PRIMA ISTANZA (SLOT_BASE), non quella del Sunshine di
+# sistema (47990). Sono due programmi diversi: quello di sistema e' un
+# installazione a parte, con la sua icona nella barra e le sue notifiche, e
+# winfleet non lo usa per niente - le sue istanze ascoltano su 48089 e
+# successive. Legarsi alla sua porta significava dire "il PC non c'e'" ogni
+# volta che qualcuno spegneva un servizio che non ci riguarda.
+#
+# Se SLOTS e' 0 non ci sono istanze e si ripiega su 47990: e' la
+# configurazione senza finestre, dove il Sunshine di sistema e' l'unico che c'e'.
 resolve_endpoint(){
-  if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$SUN_PORT" 1; then
+  local porta="$SUN_PORT"
+  [ "${SLOTS:-0}" -gt 0 ] && porta="$SLOT_BASE"
+  if [ -n "$HOST_LAN" ] && reachable "$HOST_LAN" "$porta" 1; then
     echo "$HOST_LAN lan"
-  elif [ -n "$HOST_TS" ] && reachable "$HOST_TS" "$SUN_PORT" 2; then
+  elif [ -n "$HOST_TS" ] && reachable "$HOST_TS" "$porta" 2; then
     echo "$HOST_TS tailscale"
   else
     # Una riga vuota, non un segnaposto: "read addr kind" salta gli spazi iniziali,
@@ -1487,10 +1499,16 @@ agent_revive(){
   # problema: solo la PRIMA apertura era lenta, le successive no, quindi
   # misurandone due di fila sembrava tutto sano.
   #
-  # Un colpo da un secondo sulla porta di Sunshine separa i due casi. Se il PC
+  # Un colpo da un secondo su una porta che risponde separa i due casi. Se il PC
   # non c'e', non c'e' nessun agente da rimettere in piedi e chi ha chiamato
   # dira' da solo che il PC e' spento.
-  reachable "$(agent_host)" "$SUN_PORT" 1 2>/dev/null || return 1
+  #
+  # Si bussa alla PRIMA ISTANZA, non al Sunshine di sistema: quello e'
+  # un'installazione a parte che winfleet non usa, e spegnerlo non deve far
+  # credere che il PC sia sparito.
+  local porta_viva="$SUN_PORT"
+  [ "${SLOTS:-0}" -gt 0 ] && porta_viva="$SLOT_BASE"
+  reachable "$(agent_host)" "$porta_viva" 1 2>/dev/null || return 1
   local marca="$CONFIG_DIR/agent-revived"
   # Non piu' di una volta al minuto: se l'agente muore appena riavviato, il
   # problema non e' quello che questa funzione cura.
@@ -3496,7 +3514,9 @@ cmd_open(){
       local raggiungibile=0 h
       for h in "${HOST_LAN:-}" "${HOST_TS:-}"; do
         [ -n "$h" ] || continue
-        if reachable "$h" "$AGENT_PORT" 1 2>/dev/null || reachable "$h" "$SUN_PORT" 1 2>/dev/null; then
+        # SLOT_BASE e non SUN_PORT: la porta del Sunshine di sistema non dice
+        # niente su winfleet, e spegnerlo non deve far credere il PC spento.
+        if reachable "$h" "$AGENT_PORT" 1 2>/dev/null || reachable "$h" "${SLOT_BASE:-$SUN_PORT}" 1 2>/dev/null; then
           raggiungibile=1; break
         fi
       done
@@ -5010,8 +5030,12 @@ cmd_doctor(){
   fi
   if [ -n "$HOST_TS$HOST_LAN" ]; then
     printf "${c_bold}Percorso${c_off}\n"
-    if [ -n "$HOST_LAN" ]; then reachable "$HOST_LAN" "$SUN_PORT" 2 && ok "LAN $HOST_LAN:$SUN_PORT" || info "LAN $HOST_LAN non raggiungibile"; fi
-    if [ -n "$HOST_TS" ]; then reachable "$HOST_TS" "$SUN_PORT" 3 && ok "Tailscale $HOST_TS:$SUN_PORT" || info "Tailscale $HOST_TS non raggiungibile"; fi
+    # La stessa porta che usa resolve_endpoint: mostrare "non raggiungibile" per
+    # il Sunshine di sistema, mentre le istanze rispondono benissimo, e' un
+    # allarme falso su un servizio che winfleet non usa.
+    local pv="$SUN_PORT"; [ "${SLOTS:-0}" -gt 0 ] && pv="$SLOT_BASE"
+    if [ -n "$HOST_LAN" ]; then reachable "$HOST_LAN" "$pv" 2 && ok "LAN $HOST_LAN:$pv" || info "LAN $HOST_LAN non raggiungibile"; fi
+    if [ -n "$HOST_TS" ]; then reachable "$HOST_TS" "$pv" 3 && ok "Tailscale $HOST_TS:$pv" || info "Tailscale $HOST_TS non raggiungibile"; fi
     read -r addr kind <<<"$(resolve_endpoint)"
     [ -n "$addr" ] && printf "  → userei: ${c_bold}%s${c_off} (%s)\n" "$addr" "$kind" || bad "host irraggiungibile"
   else
