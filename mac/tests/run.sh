@@ -266,6 +266,18 @@ else
   fail=1
 fi
 
+# --- 9i. non scaldare con un'app gia' aperta ------------------------------
+# Le app a istanza singola non ne aprono una seconda: se la Calcolatrice e' gia'
+# aperta sul PC, scaldare con lei lascia il monitor vuoto. Misurato: 73 secondi
+# per accorgersene, uno slot bruciato, e l'app bandita per un guasto non suo.
+if /opt/homebrew/bin/bash mac/tests/scorta-app-aperta.sh > "$TMP/scorta.out" 2>&1; then
+  say "ok   scorta: si scalda con un'app che non e' gia' aperta sull'host"
+else
+  say "NO   scelta dell'app di scorta:"
+  sed 's/^/       /' "$TMP/scorta.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

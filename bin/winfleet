@@ -2614,6 +2614,20 @@ cmd_ready(){
   # ripartire dal Blocco note non apre niente e brucia uno slot per trenta
   # secondi. Il primo candidato libero e' il primo che vale.
   if [ -z "$app" ]; then
+    # Le finestre gia' aperte SULL'HOST, non solo quelle nei nostri slot.
+    #
+    # Un'app a istanza singola gia' aperta da qualche parte su Windows - la
+    # Calcolatrice lasciata li' da chiunque - non ne apre una nuova quando la si
+    # lancia: lo stream parte, il monitor resta vuoto, e il rifornitore aspetta
+    # invano. Misurato: 73 secondi per scoprirlo, uno slot bruciato, e l'app
+    # bandita per un guasto che non era suo.
+    #
+    # L'elenco arriva dall'agente in una richiesta sola. Se non risponde si
+    # procede lo stesso: al massimo si ricasca nel caso di prima, che e' lento
+    # ma non rompe niente.
+    local aperte_host
+    aperte_host="$(curl -s --max-time 3 --connect-timeout 1 \
+      "http://$(agent_host):$AGENT_PORT/windows" 2>/dev/null | cut -f2- || true)"
     local c0 s0 busy
     for c0 in "${WARM_APPS[@]}"; do
       busy=0
@@ -2621,6 +2635,13 @@ cmd_ready(){
         slot_live "$s0" 2>/dev/null || continue
         if [ "$(slot_get "$s0" app)" = "$c0" ]; then busy=1; fi
       done
+      # E se una finestra con quel nome c'e' gia' su Windows, l'app e' gia'
+      # aperta: scaldare con lei non aprirebbe niente.
+      if [ "$busy" = 0 ] && [ -n "$aperte_host" ] && \
+         printf '%s\n' "$aperte_host" | grep -qxF "$c0"; then
+        trace "ready: «${c0}» e' gia' aperta sull'host, non la uso per scaldare"
+        busy=1
+      fi
       if [ "$busy" = 0 ]; then app="$c0"; break; fi
     done
     [ -n "$app" ] || app="${WARM_APPS[0]:-}"
