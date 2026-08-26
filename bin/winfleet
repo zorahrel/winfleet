@@ -734,7 +734,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \
-      --absolute-mouse --no-vsync --quit-after --resolution "$smode" \
+      --absolute-mouse --no-vsync --video-decoder hardware --quit-after --resolution "$smode" \
       >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
     pid=$!
     # Se la libreria iniettata non e' caricabile dyld ammazza il processo subito,
@@ -752,13 +752,26 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
         owned=""; pre=(); TITLEBAR=28
         "$bin" stream "$addr" Desktop --display-mode windowed \
           --fps "$FPS" --bitrate "$br" \
-          --absolute-mouse --no-vsync --quit-after --resolution "$smode" \
+          --absolute-mouse --no-vsync --video-decoder hardware --quit-after --resolution "$smode" \
           >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
         pid=$!
       fi
     fi
     slot_save "$slot" "$app" "$wsize" "$pid" "$sup_pid"
-    for i in $(seq 1 60); do sleep 0.5; [ -n "$(win_size "$pid")" ] && break; done
+    # A passi di 50 ms per il primo paio di secondi, poi si rallenta.
+    #
+    # Con un passo fisso da mezzo secondo si paga in media un quarto di secondo
+    # di attesa inutile ogni volta, e la finestra compare quando vuole lei: se
+    # e' pronta a 1.2s la si vede a 1.5s. Il primo tratto e' quello che conta -
+    # li' la finestra sta nascendo - e trenta letture al secondo per due secondi
+    # non pesano su niente. Dopo, se non e' ancora comparsa, non e' questione di
+    # millisecondi e si torna a mezzo secondo per non fare rumore a vuoto.
+    local att_i
+    for att_i in $(seq 1 160); do
+      [ -n "$(win_size "$pid")" ] && break
+      if [ "$att_i" -lt 40 ]; then sleep 0.05; else sleep 0.5; fi
+    done
+    trace "finestra comparsa sul Mac"
     # Prima finestra della vita: e' l'unica occasione per sapere quanto grande la
     # puo' fare macOS davvero. Da qui in poi il dato e' in config.
     usable_screen "$pid" >/dev/null
@@ -3294,14 +3307,38 @@ cmd_open(){
       # stata trovata cancellata, e da quel momento winfleet non apriva piu'
       # niente senza dire perche' - la si registra di nuovo. Registrarla quando
       # c'e' gia' non fa danni (-Force la sovrascrive uguale).
-      ssh "${SSH_OPTS[@]}" -o ConnectTimeout=15 "$HOST_SSH" \
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Get-ScheduledTask -TaskName winfleet-vdd -EA SilentlyContinue)) { & C:\\winfleet\\setup-vdd.ps1 -Slots $SLOTS } ; schtasks /end /tn winfleet-vdd ; schtasks /run /tn winfleet-vdd\"" \
-        >/dev/null 2>&1 || true
-      sleep 14
+      # Niente "/end" prima di "/run": quello UCCIDE un processo che potrebbe
+      # essere vivo e sano, e con lui tutti i monitor - poi si aspetta che
+      # rinascano. Misurato: 17 secondi per un'apertura, quando il problema era
+      # solo una cache vecchia di vdd.json.
+      #
+      # Si riparte dal caso piu' economico: rileggere lo stato. Se i monitor
+      # c'erano davvero, il costo e' una richiesta HTTP invece di diciassette
+      # secondi.
       refresh_vdd
       mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
       [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
-      [ -n "$mode" ] && trace "monitor virtuali ripristinati: $mode"
+      if [ -n "$mode" ]; then
+        trace "monitor virtuali c'erano gia': era la cache vecchia ($mode)"
+      else
+        # Solo ADESSO sono spariti davvero. Si rilancia il task - senza /end,
+        # perche' se un processo fosse vivo lo vedrebbe il guardiano e qui non
+        # ci saremmo - e si aspetta il tempo che serve, non un tempo fisso.
+        ssh "${SSH_OPTS[@]}" -o ConnectTimeout=15 "$HOST_SSH" \
+          "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Get-ScheduledTask -TaskName winfleet-vdd -EA SilentlyContinue)) { & C:\\winfleet\\setup-vdd.ps1 -Slots $SLOTS } ; schtasks /run /tn winfleet-vdd\"" \
+          >/dev/null 2>&1 || true
+        # Si CHIEDE se sono pronti invece di dormire quattordici secondi a
+        # scatola chiusa: quando lo sono, di solito bastano quattro o cinque.
+        local att
+        for att in $(seq 1 20); do
+          sleep 1
+          refresh_vdd
+          mode="$(covering_mode "$slot" "${cap%x*}" "${cap#*x}")"
+          [ -n "$mode" ] || mode="$(nearest_mode "$slot" "${cap%x*}" "${cap#*x}" "${cap%x*}" "${cap#*x}")"
+          [ -n "$mode" ] && break
+        done
+        [ -n "$mode" ] && trace "monitor virtuali ripristinati in ${att}s: $mode"
+      fi
     fi
     [ -n "$mode" ] || die "Il monitor virtuale non espone modalita': l'host ha winfleet-vdd attivo?"
     local ww="${want%x*}"
@@ -3544,7 +3581,7 @@ cmd_open(){
   local args=( stream "$addr" "$app"
     --display-mode windowed
     --fps "$FPS" --bitrate "$br"
-    --absolute-mouse --no-vsync --quit-after )
+    --absolute-mouse --no-vsync --video-decoder hardware --quit-after )
   [ -n "$res" ] && args+=( --resolution "$res" )
 
   printf "${c_bold}%s${c_off} → finestra sul Mac  ${c_dim}(%s, %s, %s, %d fps, %s Mbps)${c_off}\n" \

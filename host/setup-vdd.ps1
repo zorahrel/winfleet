@@ -75,9 +75,17 @@ Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $prin
 # Lo script sta in host/ come tutti gli altri e sale con "winfleet push": uno
 # generato qui verrebbe portato via da "winfleet host-clean", che tiene solo i
 # file del repo - e il guardiano sparirebbe senza che nessuno se ne accorga.
+#
+# Con -Count: il guardiano conta gli SCHERMI, non i processi, e deve sapere
+# quanti aspettarsene. Un processo vivo che non tiene su nessun monitor e'
+# esattamente il caso che ci e' costato diciassette secondi per apertura.
+#
+# E come utente interattivo: gli schermi si contano solo da dentro la sessione
+# grafica - da sessione 0 se ne vede uno solo, e il guardiano rifarebbe il VDD
+# ogni minuto per sempre.
 schtasks /create /tn winfleet-vdd-guard `
-    /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1" `
-    /sc minute /mo 1 /f | Out-Null
+    /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1 -Count $Slots" `
+    /sc minute /mo 1 /ru $User /it /f | Out-Null
 Write-Host "Task 'winfleet-vdd-guard' registrato: rimette i monitor se cadono"
 
 Write-Host "Task 'winfleet-vdd' registrato: $Slots monitor virtuali" -ForegroundColor Green
