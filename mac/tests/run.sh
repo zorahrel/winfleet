@@ -310,6 +310,20 @@ else
   fail=1
 fi
 
+# --- 9j. i monitor si contano chiedendo a Windows, non leggendo un file ----
+# Il doctor contava le voci di vdd.json - la MEMORIA di cosa il pinger aveva
+# agganciato - e quel file resta sul disco anche quando i monitor sono spariti.
+# Uccidendo il pinger, gli schermi veri scendevano a uno e il doctor diceva
+# ancora «4 monitor virtuali, nessuno di troppo»: la riga piu' rassicurante
+# mentre le finestre si aprono nere.
+if /opt/homebrew/bin/bash mac/tests/monitor-veri.sh > "$TMP/monveri.out" 2>&1; then
+  say "ok   monitor: contati da Windows adesso, non dedotti da un file"
+else
+  say "NO   conteggio dei monitor:"
+  sed 's/^/       /' "$TMP/monveri.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

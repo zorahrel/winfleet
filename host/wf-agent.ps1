@@ -388,6 +388,53 @@ while ($listener.IsListening) {
             # Su un'apertura si legge piu' volte, e li' la differenza si sente.
             try { $body = Get-Content 'C:\winfleet\vdd.json' -Raw -EA Stop } catch { $body = 'no' }
         }
+        elseif ($req.Url.AbsolutePath -eq '/schermi') {
+            # Quanti schermi vede Windows ADESSO.
+            #
+            # Diverso da /vdd, e la differenza e' il punto: vdd.json e' la
+            # MEMORIA di cosa il pinger aveva agganciato, un file che resta sul
+            # disco anche quando i monitor non ci sono piu'. Il 26/08, uccidendo
+            # il pinger e disattivando il guardiano, gli schermi veri erano UNO
+            # e il doctor continuava a dire «4 monitor virtuali, nessuno di
+            # troppo» leggendo quel file: la diagnosi piu' rassicurante proprio
+            # nel momento peggiore.
+            #
+            # Sono due domande diverse - "cosa avevamo agganciato" e "cosa c'e'
+            # ora" - e servono entrambe: e' confrontandole che si scopre il
+            # guasto.
+            # NON si usa [Windows.Forms.Screen]::AllScreens: e' una CACHE.
+            #
+            # .NET la riempie al primo accesso e non la aggiorna piu' per tutta
+            # la vita del processo. Questo agente vive per giorni, quindi
+            # risponderebbe con la fotografia di com'era il PC quando e' partito.
+            #
+            # Costato un'ora il 26/08, e nel modo peggiore: il controllo nuovo
+            # gridava «i monitor sono STACCATI, le finestre si aprono nere»
+            # mentre le finestre si aprivano benissimo. Un allarme falso che
+            # descrive un guasto vero e spaventoso e' peggio di nessun allarme:
+            # manda a cercare dove non c'e' niente. La prova che era una cache:
+            # riavviando l'agente, senza toccare altro, la stessa chiamata e'
+            # passata da 1 a 5.
+            #
+            # EnumDisplayMonitors invece chiede a Windows adesso, ogni volta.
+            try {
+                if (-not ('Mon' -as [type])) {
+                    Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class Mon {
+  public delegate bool Proc(IntPtr h, IntPtr dc, IntPtr r, IntPtr d);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, Proc cb, IntPtr data);
+  public static int Count() {
+    int n = 0;
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate(IntPtr h, IntPtr dc, IntPtr r, IntPtr d) { n++; return true; }, IntPtr.Zero);
+    return n;
+  }
+}
+'@ -EA Stop
+                }
+                $body = "$([Mon]::Count())"
+            } catch { $body = 'no' }
+        }
         elseif ($req.Url.AbsolutePath -eq '/mode') {
             # La misura ATTUALE del monitor virtuale di uno slot, per chi deve
             # aspettare che un cambio di risoluzione sia andato a buon fine senza

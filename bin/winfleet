@@ -5169,7 +5169,40 @@ cmd_doctor(){
       info "  ogni monitor in piu' e' uno schermo che la GPU disegna davvero"
       info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
     elif [ -n "$n_mon" ] && [ "$n_mon" = "$SLOTS" ]; then
-      ok "$n_mon monitor virtuali  ${c_dim}(uno per finestra, nessuno di troppo)${c_off}"
+      # vdd.json dice cosa avevamo AGGANCIATO, non cosa c'e' ADESSO.
+      #
+      # E' un file sul disco: resta li' anche quando i monitor non ci sono piu'.
+      # Provato il 26/08 uccidendo il pinger e disattivando il guardiano: gli
+      # schermi veri erano UNO e il doctor diceva «4 monitor virtuali, nessuno
+      # di troppo». La riga piu' rassicurante nel momento peggiore, ed e' il
+      # modo in cui un guasto diventa invisibile.
+      #
+      # Si chiede quindi anche a Windows quanti schermi vede. Uno solo dei due
+      # numeri non basta: /vdd senza /schermi non si accorge che sono spariti,
+      # /schermi senza /vdd non sa quanti dovrebbero essercene.
+      local n_scr
+      n_scr="$(curl -s --max-time 4 --connect-timeout 2 "http://$(agent_host):$AGENT_PORT/schermi" 2>/dev/null | tr -d '\r')"
+      if [ "$n_scr" = no ] || [ -z "$n_scr" ] || ! [ "$n_scr" -eq "$n_scr" ] 2>/dev/null; then
+        # L'agente non sa rispondere (versione vecchia): si dice cio' che si sa,
+        # senza fingere di aver controllato piu' di quanto si sia controllato.
+        ok "$n_mon monitor virtuali in elenco  ${c_dim}(schermi veri non verificabili: agente da aggiornare)${c_off}"
+      elif [ "$n_scr" -lt "$SLOTS" ] 2>/dev/null; then
+        # Il confronto e' "MENO di SLOTS", non "diverso da SLOTS".
+        #
+        # Gli schermi che Windows vede sono i virtuali PIU' quelli fisici, e
+        # quanti siano i fisici non lo sappiamo: su questo PC uno, su un altro
+        # tre. Quindi "5 schermi con 4 slot" e' normale, mentre "2 schermi con 4
+        # slot" e' impossibile senza che qualcuno si sia staccato.
+        #
+        # Un controllo di uguaglianza qui avrebbe gridato al guasto su qualsiasi
+        # PC con piu' di un monitor vero: e' il tipo di allarme che si impara a
+        # ignorare, e allora tanto vale non averlo.
+        bad "l'elenco dice $n_mon monitor, ma Windows ne vede solo $n_scr: sono STACCATI"
+        info "  le finestre si aprono nere: il processo che li tiene in vita non gira"
+        info "  rimedio:  schtasks /run /tn winfleet-vdd    ${c_dim}(e controlla winfleet-vdd-guard)${c_off}"
+      else
+        ok "$n_mon monitor virtuali, $n_scr schermi visti da Windows  ${c_dim}(nessuno di troppo)${c_off}"
+      fi
     fi
   fi
   # Il cursore di Windows: chi sta usando quel PC lo vede?
