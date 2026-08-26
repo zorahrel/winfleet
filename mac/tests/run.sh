@@ -564,4 +564,28 @@ else
   say "ok   nessun test orfano: tutti i file di mac/tests girano"
 fi
 
+# --- 15. quanti test hanno DAVVERO provato qualcosa ------------------------
+# Un test che esce con SKIP esce con zero, e qui sopra diventa un "ok" come
+# tutti gli altri: il conto finale dice 38 verdi e non distingue fra "provato"
+# e "non ho potuto provare". E' il modo piu' facile per credersi coperti.
+#
+# Successo il 26/08 con due test insieme: pair-auto e stop-libera saltano
+# quando ci sono finestre aperte (giustamente: non sequestrano il PC per fare
+# una prova), e cmdw-live saltava sempre perche' cercava l'esito nel posto
+# sbagliato. Tre regole scoperte, zero segnali.
+#
+# Non si trasforma in errore - saltare per prudenza e' la scelta giusta - ma si
+# DICE, perche' "38 verdi con 3 saltati" e "38 verdi" sono due frasi diverse.
+saltati=0
+for f in "$TMP"/*.out; do
+  [ -f "$f" ] || continue
+  if grep -q 'SKIP' "$f" 2>/dev/null; then
+    saltati=$(( saltati + 1 ))
+    say "     ${c_dim:-}saltato: $(basename "$f" .out) — $(grep -m1 'SKIP' "$f" | sed 's/^ *//')${c_off:-}"
+  fi
+done
+if [ "$saltati" -gt 0 ]; then
+  say "     $saltati test hanno saltato la parte dal vivo (host occupato o assente)"
+fi
+
 exit "$fail"
