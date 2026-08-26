@@ -3967,6 +3967,28 @@ cmd_stop(){
   # senza file di stato, ed era proprio quello che continuava a ricreare stream
   # dopo che `winfleet stop` aveva detto di averli chiusi.
   if stop_untracked_winfleet; then untracked=1; fi
+
+  # E le sessioni rimaste appese SULL'HOST.
+  #
+  # Chiudere il Moonlight sul Mac non sempre chiude la sessione dal lato di
+  # Sunshine: se il client muore male - ed e' il caso normale quando si chiude
+  # tutto insieme - l'istanza resta convinta che qualcuno stia guardando. Da
+  # fuori il sintomo e' assurdo: zero processi Moonlight sul Mac e "winfleet
+  # windows" che mostra quattro finestre «in uso (da un altro client)».
+  #
+  # Misurato il 26/08: dopo uno "stop" con quattro finestre aperte, tutti e
+  # quattro gli slot risultavano occupati con nessun client vivo. Da li' la
+  # prossima apertura diceva "tutte le finestre sono occupate" - il sintomo da
+  # cui e' partita l'intera giornata.
+  #
+  # Il recupero esisteva gia' (reap_stuck_slots) ma lo chiamavano solo il
+  # rifornitore e l'apertura: chi spegne e se ne va lasciava il PC in quello
+  # stato fino al giro successivo. Costa una decina di secondi, e li paga
+  # adesso chi ha appena finito invece di chi arriva dopo.
+  if [ "$closed" = 1 ] || [ "$untracked" = 1 ]; then
+    reap_stuck_slots >/dev/null 2>&1 || true
+  fi
+
   if [ "$closed" = 1 ] || [ "$untracked" = 1 ]; then
     [ "$closed" = 1 ] || echo "Sessione chiusa."
     return

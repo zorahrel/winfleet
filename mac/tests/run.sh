@@ -447,6 +447,21 @@ else
   fail=1
 fi
 
+# --- 10c-quater. dopo stop gli slot sono LIBERI, non solo chiusi -----------
+# Chiudere il Moonlight sul Mac non chiude la sessione dal lato di Sunshine: se
+# il client muore male - il caso normale quando si chiude tutto insieme -
+# l'istanza resta convinta che qualcuno stia guardando. Misurato il 26/08: zero
+# processi Moonlight e quattro slot su quattro «in uso (da un altro client)»,
+# quindi "tutte le finestre sono occupate" alla prossima apertura. Lo stesso
+# sintomo da cui e' partita l'intera giornata.
+if /opt/homebrew/bin/bash mac/tests/stop-libera.sh > "$TMP/stoplib.out" 2>&1; then
+  say "ok   stop: gli slot tornano liberi, non restano appesi sull'host"
+else
+  say "NO   stop lascia sessioni appese:"
+  sed 's/^/       /' "$TMP/stoplib.out"
+  fail=1
+fi
+
 # --- 10d. il comando che chiude -------------------------------------------
 # "winfleet stop Paint" moriva con «Paint: unbound variable» e non chiudeva
 # niente: l'argomento finiva in un'espressione aritmetica. Era li' dal primo
