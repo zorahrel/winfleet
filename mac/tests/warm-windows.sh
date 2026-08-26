@@ -137,5 +137,38 @@ else
   fail=1
 fi
 
+
+# --- 6. pronto solo se la finestra sul MAC mostra qualcosa -----------------
+# Un handle su Windows dice che l'app ha aperto una finestra LA'. Non dice che
+# lo stream l'abbia mostrata: puo' esserci un hwnd vivo e sul Mac nessuna
+# misura, ed e' proprio il caso che la traccia chiama "VUOTA".
+#
+# Misurato il 26/08: lo slot 1 era VUOTA, e' stato marcato pronto lo stesso, e
+# l'apertura "a caldo" che l'ha riusato e' costata 18,1s contro i 9,3s del
+# percorso a freddo. Una scorta che RALLENTA, con il log che diceva "riusato
+# slot pronto 1" come se fosse andata bene.
+marcabile(){ # hwnd_vivo misura_mac -> si/no
+  local hwnd="$1" misura="$2"
+  if [ -n "$hwnd" ] && [ -n "$misura" ]; then echo si; else echo no; fi
+}
+for caso in "1234:1209x806:si" "1234::no" "::no" ":1209x806:no"; do
+  hw="${caso%%:*}"; resto="${caso#*:}"; mi="${resto%%:*}"; att="${resto#*:}"
+  got="$(marcabile "$hw" "$mi")"
+  if [ "$got" = "$att" ]; then
+    echo "  ok   hwnd='${hw:-(nessuno)}' misura='${mi:-(vuota)}' -> ${got}"
+  else
+    echo "  NO   hwnd='${hw:-(nessuno)}' misura='${mi:-(vuota)}': atteso ${att}, ottenuto ${got}"
+    fail=1
+  fi
+done
+
+# E la regola dev'essere nel programma, non solo qui.
+if grep -q 'WF_SIZE_FILE="$CONFIG_DIR/slot$s.size" win_size' bin/winfleet; then
+  echo "  ok   winfleet marca pronto solo con una misura vera sul Mac"
+else
+  echo "  NO   winfleet marca pronto senza guardare la finestra sul Mac"
+  fail=1
+fi
+
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"

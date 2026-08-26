@@ -86,10 +86,37 @@ verifica "tutti i candidati gia' aperti" \
 #
 # I titoli di Windows sono "documento - Applicazione", quindi il nome dell'app
 # ci finisce sempre dentro: basta che il titolo lo CONTENGA.
+ok_riga(){ printf "  \033[32mok\033[0m   %s\n" "$1"; }
+ko_riga(){ printf "  \033[31mNO\033[0m   %s\n" "$1"; fail=1; }
+
 verifica "titolo con un documento dentro" \
   "*wwwwww - Blocco note|NVIDIA Overlay" \
   "Blocco note|Memo" \
   "Memo"
+
+# --- 5b. tutti occupati: si RINUNCIA, non si ripiega sul primo -------------
+# Il caso 4 sopra dice che la scelta torna "nessuno". Restava da verificare
+# cosa se ne fa il programma, ed e' li' che il filtro veniva annullato: la riga
+# «[ -n "$app" ] || app="${WARM_APPS[0]}"» riprendeva comunque il primo
+# candidato - proprio un'app gia' aperta.
+#
+# Visto due volte di fila il 26/08: il log scartava Memo, Fotocamera e
+# Calcolatrice una per una, poi diceva "scaldo con Blocco note" (gia' aperto),
+# e 47 secondi dopo usciva con zero finestre pronte. Uno slot bruciato per una
+# finestra che non poteva nascere.
+if grep -q 'tutte le app per scaldare sono gia. aperte sull.host, rinuncio' bin/winfleet; then
+  ok_riga "quando sono tutte occupate, rinuncia invece di ripiegare"
+else
+  ko_riga "ripiega su un'app gia' aperta: il filtro non serve a niente"
+fi
+
+# E il ripiego vecchio non deve tornare: e' una riga sola, facile da rimettere
+# "per sicurezza", e annulla in silenzio tutto il lavoro qui sopra.
+if grep -q 'app="${WARM_APPS\[0\]:-}"' bin/winfleet; then
+  ko_riga "il ripiego su WARM_APPS[0] e' tornato: riapre il buco"
+else
+  ok_riga "nessun ripiego cieco sul primo candidato"
+fi
 
 # --- 6. la regola e' davvero nel codice ------------------------------------
 # Le regole sopra sono la copia di quella in cmd_ready: se qualcuno la toglie,

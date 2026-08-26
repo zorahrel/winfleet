@@ -2460,7 +2460,22 @@ ready_mark_settled(){
         trace "ready: slot $s non e' arrivato a una finestra, lo lascio"
         continue
       fi
-      if [ -n "$(slot_get "$s" pid)" ] && [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ]; then
+      # Servono TRE cose, e la terza mancava.
+      #
+      # Un handle su Windows dice che l'app ha aperto una finestra LA'. Non dice
+      # che sul Mac si vede qualcosa: lo stream puo' non aver mostrato niente, e
+      # in quel caso la traccia scrive "VUOTA: ... nessuna misura". Marcare
+      # pronto uno slot cosi' vuol dire tenere in scorta una finestra vuota, e
+      # chi la riusa non risparmia: deve rifare la strada da capo.
+      #
+      # Misurato il 26/08, ed e' il motivo per cui questo controllo esiste: lo
+      # slot 1 era VUOTA, e' stato marcato pronto lo stesso, e l'apertura
+      # "a caldo" successiva ha impiegato 18,1s - PIU' del percorso a freddo
+      # (9,3s). Una scorta che rallenta e' peggio di nessuna scorta, e dal log
+      # sembrava tutto a posto: "riusato slot pronto 1".
+      local pid_s; pid_s="$(slot_get "$s" pid)"
+      if [ -n "$pid_s" ] && [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ] &&
+         [ -n "$(WF_SIZE_FILE="$CONFIG_DIR/slot$s.size" win_size "$pid_s" 2>/dev/null || true)" ]; then
         sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
       else
         mancano=$(( mancano + 1 ))
@@ -2728,7 +2743,23 @@ cmd_ready(){
       fi
       if [ "$busy" = 0 ]; then app="$c0"; break; fi
     done
-    [ -n "$app" ] || app="${WARM_APPS[0]:-}"
+    # E se sono TUTTI occupati non si ripiega sul primo: si rinuncia.
+    #
+    # Il ripiego "prendi comunque WARM_APPS[0]" annullava il filtro appena
+    # applicato. Il ciclo qui sopra scartava a uno a uno Memo, Fotocamera e
+    # Calcolatrice perche' gia' aperte sull'host, poi la riga successiva
+    # sceglieva il Blocco note - che era gia' aperto anche lui, e infatti non
+    # ha aperto nulla: 47 secondi bruciati, zero finestre pronte, e nel log la
+    # riga tranquilla "ready: scaldo con Blocco note". Visto due volte di fila
+    # il 26/08 mentre indagavo su tutt'altro.
+    #
+    # Non avere una scorta e' un peccato veniale: si pagano sei secondi in piu'
+    # alla prossima apertura. Bruciare uno slot per un minuto con una finestra
+    # che non nascera' mai e' peggio, perche' quello slot serve all'utente.
+    if [ -z "$app" ]; then
+      trace "ready: tutte le app per scaldare sono gia' aperte sull'host, rinuncio a questo giro"
+      return 0
+    fi
   fi
   [ -n "$app" ] || app="$(awk -F'\t' 'NR==1{print $1}' "$HOST_APPS" 2>/dev/null)"
   [ -n "$app" ] || { bad "catalogo app vuoto: winfleet scan"; return 1; }
