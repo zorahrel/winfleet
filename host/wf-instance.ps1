@@ -49,6 +49,17 @@ New-Item -ItemType Directory -Force -Path $dir | Out-Null
 # Start once with a bare config, read the id matching our \\.\DISPLAYn, then write
 # the real config.
 function Write-Conf($outputName) {
+    # system_tray = disabled: niente icona e niente notifiche di Sunshine.
+    #
+    # Sunshine mette un'icona nella barra di Windows e annuncia ogni sessione
+    # che si apre o si chiude. Con QUATTRO istanze diventano quattro icone e un
+    # avviso per ogni finestra aperta - e per chi guarda quelle notifiche
+    # arrivano da un programma che non ha mai lanciato: Sunshine e' un dettaglio
+    # di come winfleet e' fatto dentro, non qualcosa con cui si interagisce.
+    #
+    # Non e' solo estetica: un avviso che non porta nessuna informazione
+    # utilizzabile insegna a ignorare gli avvisi, e il giorno che ne arriva uno
+    # che conta viene ignorato anche quello.
     $conf = @"
 sunshine_name = WinFleet $($Slot + 1)
 port = $port
@@ -60,6 +71,7 @@ min_fps_factor = 1
 fps = [30,60,90,120]
 channels = 2
 gamepad = disabled
+system_tray = disabled
 log_path = $dir\sunshine.log
 file_state = $dir\state.json
 pkey = $dir\pkey.pem
