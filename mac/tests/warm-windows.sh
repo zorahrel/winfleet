@@ -113,12 +113,18 @@ fi
 # l'ultima uccidendo il preparatore dopo la prima finestra calda: la scorta
 # restava a uno e ogni seconda apertura pagava la via lunga. Un errore che il
 # controllo di sintassi NON vede, perche' e' valido finche' non lo si esegue.
-if grep -n '«\$[a-zA-Z_]' bin/winfleet | grep -v '^\s*[0-9]*:\s*#' | grep -qv '#'; then
+#
+# I TEST si controllano come il programma. Il 26/08 la trappola e' scattata
+# proprio in un file di test appena scritto (scorta-ritenta.sh): moriva in
+# silenzio a meta', exit 1 e nessun output, e per un minuto e' sembrato che
+# fosse il codice a essere rotto invece del test. Guardare solo bin/ lasciava
+# scoperta meta' del repo.
+if grep -rn '«\$[a-zA-Z_]' bin/winfleet mac/tests/*.sh 2>/dev/null | grep -v ':[0-9]*: *#' | grep -q .; then
   echo "  NO   c'e' un «\$var» senza graffe: con set -u muore a runtime"
-  grep -n '«\$[a-zA-Z_]' bin/winfleet | grep -v '#' | sed 's/^/       /'
+  grep -rn '«\$[a-zA-Z_]' bin/winfleet mac/tests/*.sh 2>/dev/null | grep -v ':[0-9]*: *#' | sed 's/^/       /'
   fail=1
 else
-  echo "  ok   nessun «\$var» senza graffe fuori dai commenti"
+  echo "  ok   nessun «\$var» senza graffe, ne' nel programma ne' nei test"
 fi
 
 # --- 5. il marchio richiede una finestra vera ------------------------------

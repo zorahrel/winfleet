@@ -39,7 +39,7 @@ for coppia in "1209x806:1209x806" "no:" ":" "160x28:160x28" "errore:" "12x:12x";
   if [ "$got" = "$atteso" ]; then
     echo "  ok   «${ingresso:-(vuoto)}» -> «${got:-(scartata)}»"
   else
-    echo "  NO   «$ingresso» doveva dare «${atteso:-(scartata)}», ha dato «${got:-(scartata)}»"
+    echo "  NO   «${ingresso}» doveva dare «${atteso:-(scartata)}», ha dato «${got:-(scartata)}»"
     fail=1
   fi
 done

@@ -54,7 +54,7 @@ verifica(){ # descrizione risposta atteso
   if [ "${got:-x}" = "$atteso" ]; then
     echo "  ok   $desc: $got"
   else
-    echo "  NO   $desc: atteso «$atteso», ottenuto «${got:-(niente)}»"
+    echo "  NO   $desc: atteso «${atteso}», ottenuto «${got:-(niente)}»"
     fail=1
   fi
 }

@@ -812,6 +812,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     local misura; misura="$(win_size "$pid")"
     if [ -n "$misura" ]; then
       trace "aperta: stream=$smode finestra=$misura (chiesta $wsize)"
+      trace "PRONTA: app=$app slot=$slot via=freddo"
     else
       trace "VUOTA: stream=$smode nessuna misura (chiesta $wsize) - lo stream non ha mostrato niente"
     fi
@@ -2437,6 +2438,80 @@ cmd_endpoint(){
 # finestra nasceva e spariva subito). Va quindi lanciato da qualcosa fatto per
 # ospitare processi lunghi - l'agente launchd in mac/com.winfleet.ready.plist -
 # oppure a mano in un terminale che si lascia aperto.
+ready_mark_settled(){
+  # Aspetta che gli slot di scorta arrivino a una finestra vera e li marca
+  # pronti. Estratta da cmd_ready perche' serve DUE volte: al primo tentativo
+  # e alla ritentata dopo un'app che non apre niente. Finche' era in linea, la
+  # "seconda occasione" annunciata nel log non avveniva mai - detto e non fatto,
+  # visto il 26/08: la Calcolatrice falliva e il preparatore usciva a mani vuote.
+  local secondi="${1:-30}"
+  local s deadline
+  deadline=$(( $(date +%s) + secondi ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    local mancano=0
+    for s in $(seq 0 $(( SLOTS - 1 ))); do
+      [ "$(slot_get "$s" warm)" = "1" ] || continue
+      if [ "$(slot_get "$s" app)" = "$READY_MARK" ]; then continue; fi
+      # Uno slot il cui stream e' MORTO non diventera' mai pronto: aspettarlo
+      # vuol dire tenere occupato il preparatore mezzo minuto per niente, a ogni
+      # giro, mentre le finestre da rimpiazzare restano da rimpiazzare. Si
+      # dimentica e si va avanti - lo slot torna libero per il prossimo.
+      if ! slot_live "$s" 2>/dev/null; then
+        trace "ready: slot $s non e' arrivato a una finestra, lo lascio"
+        continue
+      fi
+      if [ -n "$(slot_get "$s" pid)" ] && [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ]; then
+        sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
+      else
+        mancano=$(( mancano + 1 ))
+      fi
+    done
+    if [ "$mancano" = 0 ]; then break; fi
+    sleep 1
+  done
+}
+
+ready_collect_broken(){
+  # Registra le app che non hanno aperto niente e libera i loro slot.
+  # Torna 0 se ne ha trovata almeno una (cioe': c'e' motivo di riprovare),
+  # 1 se tutto e' andato bene. Estratta da cmd_ready insieme all'attesa.
+  local scarti="$CONFIG_DIR/warm-scarti" trovate=0
+  # Chi non ce l'ha fatta finisce fra le scartate.
+  #
+  # Uno slot ancora vivo, marcato come scorta, che dopo tutta l'attesa non ha
+  # una finestra: quell'app non apre niente su questa macchina. La Calcolatrice
+  # qui fa esattamente questo - il processo parte e MainWindowHandle resta 0,
+  # verificato lanciandola a mano - e senza ricordarselo il rifornitore ci
+  # riprova a ogni giro, bruciando uno slot per mezzo minuto ogni volta.
+  #
+  # Si scrive il nome, non lo slot: e' l'app a essere rotta, non la finestra.
+  local s2 rotta
+  for s2 in $(seq 0 $(( SLOTS - 1 ))); do
+    [ "$(slot_get "$s2" warm)" = "1" ] || continue
+    [ "$(slot_get "$s2" app)" != "$READY_MARK" ] || continue
+    slot_live "$s2" 2>/dev/null || continue
+    [ -z "$(slot_hwnd_live "$s2" 2>/dev/null || true)" ] || continue
+    rotta="$(slot_get "$s2" app)"
+    [ -n "$rotta" ] || continue
+    # Si annota SEMPRE, anche se c'e' gia': e' il conteggio a decidere, e la
+    # seconda bocciatura e' proprio l'informazione che serve. Con "aggiungi solo
+    # se manca" il conto sarebbe rimasto a uno per sempre e nessuna app sarebbe
+    # mai stata scartata davvero.
+    printf '%s\t%s\n' "$(date +%s)" "$rotta" >>"$scarti" 2>/dev/null || true
+    local bocciature
+    bocciature="$(awk -F'\t' -v n="$rotta" 'NF==2 && $2==n' "$scarti" 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$bocciature" -ge 2 ]; then
+      trace "ready: «${rotta}» non apre finestre qui (2a volta), la scarto per le prossime volte"
+    else
+      trace "ready: «${rotta}» non ha aperto finestre: le do' un'altra occasione"
+    fi
+    # E lo slot si libera: tenerlo occupato da una finestra che non mostra
+    # niente e' peggio che non averla.
+    close_slot "$s2" >/dev/null 2>&1 || true
+    trovate=$(( trovate + 1 ))
+  done
+  [ "$trovate" -gt 0 ]
+}
 cmd_ready(){
   # Scorta disattivata: si esce prima di toccare qualunque cosa.
   #
@@ -2637,8 +2712,17 @@ cmd_ready(){
       done
       # E se una finestra con quel nome c'e' gia' su Windows, l'app e' gia'
       # aperta: scaldare con lei non aprirebbe niente.
+      #
+      # Il confronto NON e' esatto, ed e' la cosa che il primo tentativo aveva
+      # sbagliato: il Blocco note con un file aperto si chiama "*wwwwww - Blocco
+      # note", non "Blocco note". Cercando il nome esatto non lo si trovava, si
+      # sceglieva proprio l'app gia' aperta, e la scorta non nasceva - due
+      # finestre "Blocco note" e nessuna marcata pronta, visto dal vivo.
+      #
+      # Basta che il titolo CONTENGA il nome dell'app: i titoli di Windows sono
+      # "documento - Applicazione", quindi il nome ci finisce sempre dentro.
       if [ "$busy" = 0 ] && [ -n "$aperte_host" ] && \
-         printf '%s\n' "$aperte_host" | grep -qxF "$c0"; then
+         printf '%s\n' "$aperte_host" | grep -qiF -- "$c0"; then
         trace "ready: «${c0}» e' gia' aperta sull'host, non la uso per scaldare"
         busy=1
       fi
@@ -2799,66 +2883,46 @@ cmd_ready(){
   # sperare che il guardiano faccia in tempo. Senza, le finestre restavano vive
   # ma con il nome dell'app usata per scaldarle, cioe' invisibili a chi cerca una
   # finestra calda - preparate e mai usate.
-  local s deadline
-  deadline=$(( $(date +%s) + 30 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    local mancano=0
-    for s in $(seq 0 $(( SLOTS - 1 ))); do
-      [ "$(slot_get "$s" warm)" = "1" ] || continue
-      if [ "$(slot_get "$s" app)" = "$READY_MARK" ]; then continue; fi
-      # Uno slot il cui stream e' MORTO non diventera' mai pronto: aspettarlo
-      # vuol dire tenere occupato il preparatore mezzo minuto per niente, a ogni
-      # giro, mentre le finestre da rimpiazzare restano da rimpiazzare. Si
-      # dimentica e si va avanti - lo slot torna libero per il prossimo.
-      if ! slot_live "$s" 2>/dev/null; then
-        trace "ready: slot $s non e' arrivato a una finestra, lo lascio"
-        continue
-      fi
-      if [ -n "$(slot_get "$s" pid)" ] && [ -n "$(slot_hwnd_live "$s" 2>/dev/null || true)" ]; then
-        sed -i '' "s|^app=.*|app=$READY_MARK|" "$(slot_file "$s")" 2>/dev/null || true
-      else
-        mancano=$(( mancano + 1 ))
-      fi
-    done
-    if [ "$mancano" = 0 ]; then break; fi
-    sleep 1
-  done
+  ready_mark_settled 30
   kill "${WF_MARKER_PID:-0}" 2>/dev/null || true
   trap - EXIT
 
-  # Chi non ce l'ha fatta finisce fra le scartate.
+  # Le app che non hanno aperto niente si registrano e i loro slot si liberano.
+  # Se ce n'e' stata almeno una, la scorta e' rimasta a mani vuote: si RIPROVA
+  # subito con un'altra app, invece di annunciare "un'altra occasione" e uscire.
   #
-  # Uno slot ancora vivo, marcato come scorta, che dopo tutta l'attesa non ha
-  # una finestra: quell'app non apre niente su questa macchina. La Calcolatrice
-  # qui fa esattamente questo - il processo parte e MainWindowHandle resta 0,
-  # verificato lanciandola a mano - e senza ricordarselo il rifornitore ci
-  # riprova a ogni giro, bruciando uno slot per mezzo minuto ogni volta.
+  # Senza questa ritentata il preparatore usciva dicendo "finestre preparate"
+  # con zero finestre pronte, e la prossima apertura pagava la via lunga. Visto
+  # il 26/08: la Calcolatrice non apre finestre su questo PC, veniva scelta, il
+  # log diceva "le do' un'altra occasione", e li' finiva.
   #
-  # Si scrive il nome, non lo slot: e' l'app a essere rotta, non la finestra.
-  local s2 rotta
-  for s2 in $(seq 0 $(( SLOTS - 1 ))); do
-    [ "$(slot_get "$s2" warm)" = "1" ] || continue
-    [ "$(slot_get "$s2" app)" != "$READY_MARK" ] || continue
-    slot_live "$s2" 2>/dev/null || continue
-    [ -z "$(slot_hwnd_live "$s2" 2>/dev/null || true)" ] || continue
-    rotta="$(slot_get "$s2" app)"
-    [ -n "$rotta" ] || continue
-    # Si annota SEMPRE, anche se c'e' gia': e' il conteggio a decidere, e la
-    # seconda bocciatura e' proprio l'informazione che serve. Con "aggiungi solo
-    # se manca" il conto sarebbe rimasto a uno per sempre e nessuna app sarebbe
-    # mai stata scartata davvero.
-    printf '%s\t%s\n' "$(date +%s)" "$rotta" >>"$scarti" 2>/dev/null || true
-    local bocciature
-    bocciature="$(awk -F'\t' -v n="$rotta" 'NF==2 && $2==n' "$scarti" 2>/dev/null | wc -l | tr -d ' ')"
-    if [ "$bocciature" -ge 2 ]; then
-      trace "ready: «${rotta}» non apre finestre qui (2a volta), la scarto per le prossime volte"
+  # Un solo altro tentativo, non un ciclo: la lista di candidati e' corta e un
+  # secondo fallimento significa che le app buone sono finite. Insistere
+  # terrebbe occupato uno slot per minuti.
+  if ready_collect_broken && [ "$(ready_count)" -lt "$want" ]; then
+    local rimasta="" c3 s3 presa
+    for c3 in "${WARM_APPS[@]}"; do
+      presa=0
+      for s3 in $(seq 0 $(( SLOTS - 1 ))); do
+        slot_live "$s3" 2>/dev/null || continue
+        [ "$(slot_get "$s3" app)" = "$c3" ] && presa=1
+      done
+      # E nemmeno quelle appena bocciate: sono la ragione per cui siamo qui.
+      if [ -f "$CONFIG_DIR/warm-scarti" ] &&
+         awk -F'\t' -v n="$c3" 'NF==2 && $2==n' "$CONFIG_DIR/warm-scarti" 2>/dev/null | grep -q .; then
+        presa=1
+      fi
+      [ "$presa" = 0 ] && { rimasta="$c3"; break; }
+    done
+    if [ -n "$rimasta" ]; then
+      trace "ready: riprovo davvero, con $rimasta"
+      WF_READY_KEEP=1 cmd_open "$rimasta" &
+      ready_mark_settled 45
+      ready_collect_broken || true
     else
-      trace "ready: «${rotta}» non ha aperto finestre: le do' un'altra occasione"
+      trace "ready: nessun'altra app da provare, la scorta resta vuota"
     fi
-    # E lo slot si libera: tenerlo occupato da una finestra che non mostra
-    # niente e' peggio che non averla.
-    close_slot "$s2" >/dev/null 2>&1 || true
-  done
+  fi
 
   # E qui si ESCE, invece di restare ad aspettare.
   #
@@ -3120,6 +3184,12 @@ cmd_open(){
   fi
     if [ -n "$ready" ] && swap_app "$ready" "$app"; then
       trace "riusato slot pronto $ready"
+      # Marcatore comune ai DUE percorsi (caldo e freddo): senza, misurare
+      # un'apertura voleva dire sapere in anticipo quale strada aveva preso, e
+      # cercare "aperta:" dopo un'apertura a caldo restituiva la riga di
+      # QUELLA PRIMA - un tempo vecchio scambiato per quello nuovo. Successo
+      # il 26/08 durante una riverifica.
+      trace "PRONTA: app=$app slot=$ready via=caldo"
       # Si chiede SUBITO all'agente di rifornire, invece di aspettare il suo giro.
       # Le finestre calde sono due e si consumano in due click: al terzo, senza
       # questo, si aspettavano fino a due minuti - e il terzo click e' proprio

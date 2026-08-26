@@ -278,6 +278,20 @@ else
   fail=1
 fi
 
+# --- 9i-bis. la seconda occasione va PRESA, non annunciata ----------------
+# Il rifornitore scriveva nel log "«Calcolatrice» non ha aperto finestre: le do'
+# un'altra occasione" e poi usciva. Nessuna ritentata, zero finestre pronte, e
+# l'apertura successiva pagava nove secondi invece di tre. Un messaggio che
+# descriveva un'intenzione mai eseguita e' peggio del silenzio: leggendo il log
+# sembrava tutto sotto controllo.
+if /opt/homebrew/bin/bash mac/tests/scorta-ritenta.sh > "$TMP/ritenta.out" 2>&1; then
+  say "ok   scorta: dopo un'app che non apre, ne prova davvero un'altra"
+else
+  say "NO   ritentata della scorta:"
+  sed 's/^/       /' "$TMP/ritenta.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app
@@ -493,6 +507,28 @@ else
   say "NO   finestre figlie:"
   sed 's/^/       /' "$TMP/orph.out"
   fail=1
+fi
+
+# --- 14. ogni test del repo e' davvero in questa lista ---------------------
+# I test si registrano A MANO qui sopra, e un file dimenticato non fallisce:
+# semplicemente non gira, e la sua regola smette di essere protetta senza che
+# niente lo dica. Successo il 26/08 con scorta-ritenta.sh, scritto e non
+# registrato: la suite restava a 34 verdi e sembrava che coprisse tutto.
+#
+# Il controllo va in FONDO perche' e' sul repo, non sul programma: se scatta,
+# la risposta e' aggiungere due righe qui, non correggere winfleet.
+orfani=""
+for t in mac/tests/*.sh; do
+  base="$(basename "$t")"
+  # run.sh e' questo file; gli helper senza "verifica" dentro non sono suite.
+  [ "$base" = "run.sh" ] && continue
+  grep -q "$base" "$0" || orfani="$orfani $base"
+done
+if [ -n "$orfani" ]; then
+  say "NO   test scritti e mai eseguiti (aggiungili a run.sh):$orfani"
+  fail=1
+else
+  say "ok   nessun test orfano: tutti i file di mac/tests girano"
 fi
 
 exit "$fail"

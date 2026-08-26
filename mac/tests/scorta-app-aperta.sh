@@ -32,7 +32,7 @@ scegli(){ # "finestre host separate da |" "candidati separati da |"
   local aperte="$1" cands="$2" c
   local IFS='|'
   for c in $cands; do
-    printf '%s\n' "$aperte" | tr '|' '\n' | grep -qxF "$c" && continue
+    printf '%s\n' "$aperte" | tr '|' '\n' | grep -qiF -- "$c" && continue
     echo "$c"; return 0
   done
   echo ""
@@ -77,20 +77,25 @@ verifica "tutti i candidati gia' aperti" \
   "Blocco note|Calcolatrice|Memo" \
   ""
 
-# --- 5. il confronto e' sul nome INTERO -----------------------------------
-# "Blocco note" non deve essere escluso da una finestra che si chiama
-# "*wwwwww - Blocco note" (un documento aperto): quella e' l'app con un file
-# dentro, ma il titolo non e' il nome dell'app. Il grep e' -x apposta.
-verifica "titolo che contiene il nome" \
+# --- 5. il titolo con un documento dentro conta come "gia' aperta" --------
+# Il primo tentativo asseriva il CONTRARIO - "il confronto e' sul nome intero" -
+# e la realta' l'ha smentito il 26/08: il Blocco note con un file aperto si
+# chiama "*wwwwww - Blocco note", il confronto esatto non lo trovava, e la
+# scorta sceglieva proprio l'app gia' aperta. Risultato: due finestre "Blocco
+# note" e nessuna pronta.
+#
+# I titoli di Windows sono "documento - Applicazione", quindi il nome dell'app
+# ci finisce sempre dentro: basta che il titolo lo CONTENGA.
+verifica "titolo con un documento dentro" \
   "*wwwwww - Blocco note|NVIDIA Overlay" \
   "Blocco note|Memo" \
-  "Blocco note"
+  "Memo"
 
 # --- 6. la regola e' davvero nel codice ------------------------------------
 # Le regole sopra sono la copia di quella in cmd_ready: se qualcuno la toglie,
 # questo file continuerebbe a passare senza accorgersene.
 if grep -q "e' gia' aperta sull'host, non la uso per scaldare" bin/winfleet &&
-   grep -q 'grep -qxF "\$c0"' bin/winfleet; then
+   grep -q 'grep -qiF -- "\$c0"' bin/winfleet; then
   echo "  ok   winfleet contiene il filtro sulle finestre dell'host"
 else
   echo "  NO   il filtro non e' piu' in bin/winfleet"
