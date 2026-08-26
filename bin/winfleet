@@ -734,7 +734,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     fi
     ${pre[@]+"${pre[@]}"} "$bin" stream "$addr" Desktop --display-mode windowed \
       --fps "$FPS" --bitrate "$br" \
-      --absolute-mouse --no-vsync --video-decoder hardware --quit-after --resolution "$smode" \
+      --absolute-mouse --no-vsync --video-decoder hardware --video-codec HEVC --quit-after --resolution "$smode" \
       >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
     pid=$!
     # Se la libreria iniettata non e' caricabile dyld ammazza il processo subito,
@@ -752,7 +752,7 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
         owned=""; pre=(); TITLEBAR=28
         "$bin" stream "$addr" Desktop --display-mode windowed \
           --fps "$FPS" --bitrate "$br" \
-          --absolute-mouse --no-vsync --video-decoder hardware --quit-after --resolution "$smode" \
+          --absolute-mouse --no-vsync --video-decoder hardware --video-codec HEVC --quit-after --resolution "$smode" \
           >"$CONFIG_DIR/stream-slot$slot.log" 2>&1 &
         pid=$!
       fi
@@ -3581,7 +3581,7 @@ cmd_open(){
   local args=( stream "$addr" "$app"
     --display-mode windowed
     --fps "$FPS" --bitrate "$br"
-    --absolute-mouse --no-vsync --video-decoder hardware --quit-after )
+    --absolute-mouse --no-vsync --video-decoder hardware --video-codec HEVC --quit-after )
   [ -n "$res" ] && args+=( --resolution "$res" )
 
   printf "${c_bold}%s${c_off} → finestra sul Mac  ${c_dim}(%s, %s, %s, %d fps, %s Mbps)${c_off}\n" \
