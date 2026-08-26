@@ -240,6 +240,19 @@ else
   fail=1
 fi
 
+# --- 9g. fissare il nome non deve rompere /etc/hosts ----------------------
+# Quando mDNS sul PC muore, il nome si fissa in /etc/hosts - che pero' e' un
+# file di SISTEMA, pieno di voci che non c'entrano con winfleet. Riscriverlo
+# male non da' errori: rompe la risoluzione di altri nomi, e lo si scopre
+# giorni dopo su tutt'altro.
+if /opt/homebrew/bin/bash mac/tests/hosts-pin.sh > "$TMP/hostspin.out" 2>&1; then
+  say "ok   /etc/hosts: la voce si sostituisce e le altre restano intatte"
+else
+  say "NO   scrittura in /etc/hosts:"
+  sed 's/^/       /' "$TMP/hostspin.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

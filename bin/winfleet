@@ -895,12 +895,18 @@ hosts_pin(){ # -> 0 se la voce e' a posto
   # spiega cosa serve.
   local ha_sudo=0
   sudo -n true >/dev/null 2>&1 && ha_sudo=1
-  if [ "$ha_sudo" = 0 ] && [ ! -t 0 ]; then
+  # "C'e' qualcuno che puo' digitare?" si chiede con tty, non con "-t 0":
+  # stdin puo' essere una pipe anche quando una persona sta guardando, e
+  # infatti "winfleet host-name" lanciato a mano rispondeva "da terminale:
+  # winfleet host-name". ("-c /dev/tty" non serve: quel file esiste sempre.)
+  local c_e_qualcuno=0
+  tty -s <&2 2>/dev/null && c_e_qualcuno=1
+  if [ "$ha_sudo" = 0 ] && [ "$c_e_qualcuno" = 0 ]; then
     info "  il nome si puo' fissare in /etc/hosts, ma serve la password del Mac"
     info "  ${c_dim}da terminale:  winfleet host-name${c_off}"
     return 1
   fi
-  info "  scrivo «$ip $nome» in /etc/hosts  ${c_dim}(serve la password del Mac)${c_off}"
+  info "  scrivo «${ip} ${nome}» in /etc/hosts  ${c_dim}(serve la password del Mac)${c_off}"
   # Prima si toglie la voce vecchia per lo stesso NOME - se il PC ha cambiato
   # IP, lasciarla accanto a quella nuova fa risolvere l'indirizzo sbagliato.
   sudo sh -c "grep -vE '[[:space:]]$nome([[:space:]]|\$)' /etc/hosts > /tmp/wf-hosts && printf '%s %s\n' '$ip' '$nome' >> /tmp/wf-hosts && cat /tmp/wf-hosts > /etc/hosts && rm -f /tmp/wf-hosts" 2>/dev/null || {
@@ -922,10 +928,10 @@ cmd_host_name(){
   [ -n "${HOST_NAME:-}" ] || die "Nessun HOST_NAME in config: non c'e' un nome da fissare."
   rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
   if host_name_resolves; then
-    ok "«$HOST_NAME» risolve gia'  ${c_dim}(niente da fare)${c_off}"
+    ok "«${HOST_NAME}» risolve gia'  ${c_dim}(niente da fare)${c_off}"
     return 0
   fi
-  info "«$HOST_NAME» non risolve: mDNS sul PC non risponde"
+  info "«${HOST_NAME}» non risolve: mDNS sul PC non risponde"
   host_name_repair
   rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
   if host_name_resolves; then
