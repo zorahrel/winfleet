@@ -408,6 +408,21 @@ else
   fail=1
 fi
 
+# --- 10c-quinquies. i push appesi non si accumulano ------------------------
+# "winfleet push" manda base64 in ssh, e di la' un powershell legge stdin. Se
+# ssh muore male quel processo resta ad aspettare un EOF che non arrivera' mai:
+# uccidere l'ssh dal lato Mac non lo tocca. Trovati VENTUNO il 26/08, i piu'
+# vecchi appesi da quattro ore - e siccome la loro riga di comando contiene il
+# nome del file caricato, sembravano processi di winfleet: un quarto d'ora
+# speso a inseguire un pinger dei monitor che non si stava moltiplicando.
+if /opt/homebrew/bin/bash mac/tests/push-appeso.sh > "$TMP/pushapp.out" 2>&1; then
+  say "ok   push appesi: chiusi anche sull'host, non solo dal lato Mac"
+else
+  say "NO   push appesi sull'host:"
+  sed 's/^/       /' "$TMP/pushapp.out"
+  fail=1
+fi
+
 # --- 10c-bis. col PC spento ------------------------------------------------
 # "winfleet open" con l'host irraggiungibile usciva con codice ZERO e senza una
 # riga di output: una pipe con pipefail (curl esce 28) terminava il comando a

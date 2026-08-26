@@ -33,6 +33,7 @@ $STATE   = 'C:\winfleet\vdd.json'
 $REQUEST = 'C:\winfleet\vdd-request.txt'
 $LOG   = 'C:\winfleet\vdd.log'
 function Note($m) { "$(Get-Date -f 'HH:mm:ss')  $m" | Add-Content $LOG; Write-Host $m }
+
 # ATTENZIONE: "break" qui usciva dal CICLO PRINCIPALE, cioe' terminava il
 # processo - e questo processo e' l'unico che tiene vivi i monitor virtuali (il
 # driver li stacca se smette di ricevere il ping). Un errore banale e
@@ -291,9 +292,38 @@ try {
     # richiesta e lo schermo di quello slot cambia forma. E' cosi' che una finestra
     # ridimensionata sul Mac ridimensiona davvero la finestra su Windows, invece di
     # limitarsi a scalare l'immagine.
+    # Un solo pinger alla volta: i predecessori si spengono DOPO il primo ping.
+    #
+    # Questo script resta vivo per pingare il driver, quindi ogni riavvio del
+    # task ne lascia dietro un altro che pinga lo stesso driver. Trovati QUATTRO
+    # processi insieme il 26/08 - 17:39, 19:33, 19:34, 21:18 - per 213 MB, di
+    # cui tre inerti (0,2-0,3s di CPU contro i 2,4s di quello vero). E' lo
+    # stesso difetto gia' visto nell'agente HTTP: "schtasks /end" chiude il
+    # task, non il processo.
+    #
+    # La pulizia va QUI e non in testa allo script, ed e' il punto delicato: il
+    # driver stacca i monitor se non riceve un ping per piu' di 100 ms, e in
+    # testa si sarebbe ucciso l'unico pinger vivo PRIMA di aver agganciato -
+    # cioe' tutte le finestre nere per il tempo dell'avvio. Da qui in poi
+    # pingiamo noi, quindi non resta scoperto nessun istante.
+    #
+    # Il filtro e' sulla riga di comando: "powershell.exe" e basta ucciderebbe
+    # qualunque script di chi sta usando il PC.
+    $pulito = $false
     $tick = 0
     while ($true) {
         [Vdd]::Ping($h)
+        if (-not $pulito) {
+            $pulito = $true
+            try {
+                $vecchi = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
+                            Where-Object { $_.CommandLine -like '*wf-vdd.ps1*' -and $_.ProcessId -ne $PID })
+                foreach ($v in $vecchi) {
+                    Note "spengo un pinger precedente (pid $($v.ProcessId))"
+                    Stop-Process -Id $v.ProcessId -Force -EA SilentlyContinue
+                }
+            } catch { Note "non sono riuscito a cercare pinger vecchi: $_" }
+        }
         Start-Sleep -Milliseconds 50
         # Ogni giro, non ogni sei: mentre si trascina una finestra il ritardo di
         # trecento millisecondi si sente tutto.

@@ -596,6 +596,42 @@ while ($listener.IsListening) {
                 } catch { $body = 'no' }
             }
         }
+        elseif ($req.Url.AbsolutePath -eq '/push-clean') {
+            # Chiude i "push" rimasti appesi ad aspettare stdin.
+            #
+            # "winfleet push" carica gli script cosi': base64 sul Mac, pipe in
+            # ssh, e di la' un powershell che legge stdin con
+            # [Console]::In.ReadToEnd(). Quando ssh muore male - e succede,
+            # perche' sshd si satura - quel processo resta ad aspettare un EOF
+            # che non arrivera' mai. Uccidere l'ssh dalla parte del Mac non lo
+            # tocca.
+            #
+            # Trovati TRE il 26/08, appesi da quattro ore, due e due, per 129 MB
+            # fermi a non fare niente. E la cosa peggiore non e' la memoria: la
+            # loro riga di comando contiene il nome del file caricato, quindi
+            # cercando "chi tocca wf-vdd.ps1" ne saltavano fuori tre e sembrava
+            # che il pinger dei monitor si stesse moltiplicando. Un quarto d'ora
+            # speso a inseguire un guasto che non esisteva.
+            #
+            # Perche' una rotta e non uno script generico: questo agente ascolta
+            # su tutta la rete locale, e un endpoint che esegue quello che gli si
+            # dice sarebbe una porta aperta sul PC. Qui il bersaglio e' scritto
+            # nel codice e non arriva da fuori.
+            $morti = 0
+            try {
+                $appesi = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
+                            Where-Object { $_.CommandLine -like '*Console*In*ReadToEnd*' -and $_.ProcessId -ne $PID })
+                foreach ($a in $appesi) {
+                    Stop-Process -Id $a.ProcessId -Force -EA SilentlyContinue
+                    Note "push appeso chiuso (pid $($a.ProcessId))"
+                    $morti++
+                }
+                $body = "$morti"
+            } catch {
+                Note "push-clean fallito: $($_.Exception.Message)"
+                $body = 'no'
+            }
+        }
         elseif ($req.Url.AbsolutePath -eq '/ssh-revive') {
             # Riavvia il server SSH di Windows.
             #

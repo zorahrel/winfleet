@@ -2265,7 +2265,23 @@ cmd_push(){
         >/dev/null 2>&1 &
       sp=$!; t=0
       while kill -0 "$sp" 2>/dev/null && [ "$t" -lt 25 ]; do sleep 1; t=$(( t + 1 )); done
-      if kill -0 "$sp" 2>/dev/null; then kill -9 "$sp" 2>/dev/null || true; fi
+      if kill -0 "$sp" 2>/dev/null; then
+        kill -9 "$sp" 2>/dev/null || true
+        # Uccidere l'ssh QUI non chiude il powershell LA'.
+        #
+        # Quel processo aspetta un EOF su stdin che non arrivera' mai piu', e
+        # resta cosi' finche' qualcuno non lo ferma: trovati TRE il 26/08,
+        # appesi da quattro ore, due e due, per 129 MB fermi a non fare niente.
+        # E la loro riga di comando contiene il nome del file caricato, quindi
+        # sembrano processi di winfleet: cercando "chi tocca wf-vdd.ps1" ne
+        # saltavano fuori tre, e per un quarto d'ora ho creduto che il pinger
+        # dei monitor si stesse moltiplicando.
+        #
+        # Si passa dall'AGENTE: se siamo qui e' perche' ssh non risponde, e
+        # usarlo per rimediare a se stesso e' il cane che si morde la coda gia'
+        # annotato qui sotto.
+        curl -s --max-time 8 "http://$(agent_host):$AGENT_PORT/push-clean" >/dev/null 2>&1 || true
+      fi
       if wait "$sp" 2>/dev/null; then fatto=1; break; fi
       # Al secondo fallimento non e' sfortuna: e' sshd che non accetta piu'
       # nessuno. Lo si rianima dall'AGENTE, che parla HTTP e quindi risponde
