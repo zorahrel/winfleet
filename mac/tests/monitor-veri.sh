@@ -83,6 +83,47 @@ else
   ko "il confronto non e' '-lt': un PC con due monitor veri urlerebbe al guasto"
 fi
 
+# --- anche il GUARDIANO deve vedere davvero --------------------------------
+# La stessa cache che ha ingannato il doctor rendeva cieco il guardiano dei
+# monitor: il 26/08 sono rimasti staccati per otto minuti - winfleet non apriva
+# piu' niente, l'apertura si fermava a "risoluzione chiesta" - e nel suo log non
+# c'era una sola riga "rifaccio il VDD". Guardava, e vedeva sempre la stessa
+# fotografia.
+if grep -vE '^\s*#' host/wf-vdd-guard.ps1 | grep -q 'AllScreens'; then
+  ko "il guardiano usa AllScreens: e' una cache, non vedra' mai i monitor cadere"
+else
+  ok "il guardiano non usa la cache"
+fi
+
+if grep -q 'EnumDisplayMonitors' host/wf-vdd-guard.ps1; then
+  ok "il guardiano chiede a Windows quanti schermi ci sono adesso"
+else
+  ko "il guardiano non interroga Windows: non puo' accorgersi di niente"
+fi
+
+# E zero schermi non deve far scattare la riparazione: vuol dire che stiamo
+# guardando da una sessione senza desktop (via ssh e' la sessione 0), non che i
+# monitor siano caduti. Rifare il VDD li' spegnerebbe monitor funzionanti.
+if grep -q 'totale -le 0' host/wf-vdd-guard.ps1; then
+  ok "zero schermi = sessione senza desktop, non un guasto"
+else
+  ko "zero schermi fa scattare la riparazione: spegnerebbe monitor sani"
+fi
+
+# Il log del pinger non deve cancellare la storia degli interventi.
+#
+# "Set-Content $LOG ''" azzerava tutto a ogni avvio, e chi riavvia il pinger e'
+# proprio il guardiano: la sua riga «solo N monitor virtuali su 4: rifaccio il
+# VDD», scritta un istante prima, spariva insieme al resto. Il 26/08 questo mi
+# ha fatto concludere che il guardiano non fosse MAI intervenuto, mentre stava
+# funzionando - i monitor tornavano su e nel log non c'era traccia del perche'.
+# Una diagnosi sbagliata costruita da noi, cancellando la nostra unica prova.
+if grep -qE "^Set-Content \\\$LOG ''" host/wf-vdd.ps1; then
+  ko "il pinger azzera il log all'avvio: cancella gli interventi del guardiano"
+else
+  ok "il log del pinger si tronca, non si azzera"
+fi
+
 # --- la prova dal vivo ------------------------------------------------------
 CONFIG="$HOME/.config/winfleet/config.env"
 [ -f "$CONFIG" ] || { echo "  SKIP: nessuna configurazione"; [ "$fail" = 0 ] && echo PASS || echo FAIL; exit "$fail"; }

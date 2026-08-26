@@ -47,7 +47,24 @@ function Note($m) { "$(Get-Date -f 'HH:mm:ss')  $m" | Add-Content $LOG; Write-Ho
 # di tutti i monitor persi. Gli errori veri, quelli in fase di avvio, escono
 # comunque perche' li' il ciclo non e' ancora partito.
 trap { Note "ERRORE (continuo): $_"; continue }
-Set-Content $LOG ''
+
+# Il log si TRONCA, non si azzera, ed e' una differenza che si paga.
+#
+# "Set-Content $LOG ''" cancellava tutto a ogni avvio, e chi ci riavvia e' il
+# guardiano: la sua riga "solo N monitor virtuali su 4: rifaccio il VDD" -
+# scritta un istante prima - spariva insieme al resto. Il 26/08 questo mi ha
+# fatto concludere che il guardiano non fosse MAI intervenuto, mentre stava
+# funzionando: i monitor tornavano su e nel log non c'era traccia del perche'.
+#
+# Si tengono le ultime 200 righe: bastano a vedere gli ultimi interventi e non
+# lasciano crescere il file all'infinito.
+if (Test-Path $LOG) {
+    try {
+        $coda = @(Get-Content $LOG -Tail 200 -EA Stop)
+        Set-Content $LOG ($coda -join "`r`n")
+        Add-Content $LOG ''
+    } catch { Set-Content $LOG '' }
+} else { Set-Content $LOG '' }
 
 $sig = @'
 using System; using System.Runtime.InteropServices; using System.Collections.Generic;

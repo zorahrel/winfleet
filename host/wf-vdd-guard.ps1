@@ -31,10 +31,42 @@ param([int]$Count = 4)
 # compila piu'. Stessa famiglia di «${var}» in bash: un carattere attaccato
 # al nome cambia cosa viene letto.)
 
-Add-Type -AssemblyName System.Windows.Forms
-$schermi = @([System.Windows.Forms.Screen]::AllScreens)
+# NON [Windows.Forms.Screen]::AllScreens: e' una CACHE.
+#
+# .NET la riempie al primo accesso e non la aggiorna piu' per la vita del
+# processo. Qui il processo dura un istante, quindi sembrerebbe innocuo - e
+# invece questo guardiano NON E' MAI INTERVENUTO: il 26/08 i monitor sono
+# rimasti staccati per otto minuti, con winfleet che non apriva piu' niente
+# (l'apertura si fermava a "risoluzione chiesta"), e nel log non c'e' una sola
+# riga "rifaccio il VDD". Il guardiano guardava e vedeva sempre la stessa
+# fotografia.
+#
+# Lo stesso identico difetto ha ingannato ME per un'ora dall'altra parte, nel
+# doctor: e' il motivo per cui questa nota e' cosi' lunga. Una cache che mente
+# non da' errori, da' rassicurazioni.
+#
+# EnumDisplayMonitors chiede a Windows adesso, ogni volta.
+if (-not ('MonG' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public class MonG {
+  public delegate bool Proc(IntPtr h, IntPtr dc, IntPtr r, IntPtr d);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, Proc cb, IntPtr data);
+  public static int Count() {
+    int n = 0;
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate(IntPtr h, IntPtr dc, IntPtr r, IntPtr d) { n++; return true; }, IntPtr.Zero);
+    return n;
+  }
+}
+'@
+}
+$totale = [MonG]::Count()
+# Zero schermi non vuol dire "tutti staccati": vuol dire che stiamo guardando
+# da una sessione senza desktop (via ssh e' la sessione 0, e li' non si vede
+# niente). Rifare il VDD in quel caso spegnerebbe monitor funzionanti.
+if ($totale -le 0) { return }
 # Il monitor fisico c'e' sempre: gli altri sono i nostri.
-$virtuali = $schermi.Count - 1
+$virtuali = $totale - 1
 if ($virtuali -ge $Count) { return }
 
 "$(Get-Date -f 'HH:mm:ss')  solo $virtuali monitor virtuali su ${Count}: rifaccio il VDD" |
