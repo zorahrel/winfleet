@@ -687,6 +687,57 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
   trace "rinominata"
   local first=1
   while true; do
+    # Uno schermo a misura ZERO non e' uno schermo: si controlla PRIMA di
+    # chiedergli una risoluzione.
+    #
+    # Windows impiega qualche istante ad assegnare una misura a un monitor
+    # appena agganciato, e in quell'istante vdd.json dice 0x0. Avviare lo stream
+    # li' significa che Sunshine rifiuta: dal lato Mac si legge «Control stream
+    # connection failed: 4», che non nomina i monitor. Il 26/08, dopo un avvio a
+    # freddo, due aperture di fila sono fallite e ho cercato nel pairing, nel
+    # firewall e nelle istanze prima di guardare la geometria.
+    #
+    # Il controllo sta QUI e non piu' in basso, e la posizione e' il punto: dopo
+    # vdd_set il pinger ha appena riscritto vdd.json (Publish-State gira a ogni
+    # richiesta di modalita'), quindi il file si autoripara e questo if non
+    # scatta MAI - provato forzando il file a zero con il pinger vivo:
+    # l'apertura filava liscia e la difesa sembrava attiva senza esserlo.
+    # Prima di vdd_set invece si legge lo stato vero.
+    #
+    # Le virgolette annidate qui dentro sono una trappola, e ci sono cascato.
+    #
+    # La prima versione usava una f-string con dei "" dentro, passata a python
+    # con -c dentro una stringa di bash dentro una sostituzione di comando:
+    # quattro livelli di quoting. Non dava errore - stampava "?" - e "?" passava
+    # il controllo, quindi la difesa era SPENTA e sembrava attiva. Verificato
+    # forzando vdd.json a 0x0: l'apertura filava liscia.
+    #
+    # Niente f-string, niente virgolette doppie: solo apici singoli e print con
+    # la virgola. Meno elegante e leggibile a colpo d'occhio, che qui vale di
+    # piu'.
+    local geo gtent
+    for gtent in 1 2 3 4 5 6 7 8 9 10; do
+      geo="$(curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
+             | "$WF_PY" -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("?"); raise SystemExit
+s = [x for x in d if x.get("slot") == '"$slot"']
+print(str(s[0].get("width", 0)) + "x" + str(s[0].get("height", 0)) if s else "?")
+' 2>/dev/null || echo '?')"
+      case "$geo" in 0x0|0x*|*x0) sleep 0.5;; *) break;; esac
+    done
+    case "$geo" in
+      0x0|0x*|*x0)
+        trace "schermo dello slot $slot ancora $geo: lo stream non partirebbe"
+        bad "lo schermo virtuale della finestra $(( slot + 1 )) non ha una misura ($geo)"
+        info "  Sunshine rifiuterebbe la connessione senza spiegare perche'"
+        info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
+        return 1
+        ;;
+    esac
     vdd_set "$slot" "$smode"
     trace "risoluzione chiesta"
     # Si aspetta che il monitor virtuale sia DAVVERO alla misura chiesta, invece
@@ -707,26 +758,6 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     #
     # Un'attesa breve e un messaggio chiaro: se dopo cinque secondi lo schermo
     # non c'e' ancora, il problema non e' il tempo.
-    local geo gtent
-    for gtent in 1 2 3 4 5 6 7 8 9 10; do
-      geo="$(curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
-             | "$WF_PY" -c "
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: print('?'); raise SystemExit
-s=[x for x in d if x.get('slot')==$slot]
-print(f\"{s[0].get('width',0)}x{s[0].get('height',0)}\" if s else '?')" 2>/dev/null || echo '?')"
-      case "$geo" in 0x0|0x*|*x0) sleep 0.5;; *) break;; esac
-    done
-    case "$geo" in
-      0x0|0x*|*x0)
-        trace "schermo dello slot $slot ancora $geo: lo stream non partirebbe"
-        bad "lo schermo virtuale della finestra $(( slot + 1 )) non ha una misura ($geo)"
-        info "  Sunshine rifiuterebbe la connessione senza spiegare perche'"
-        info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
-        return 1
-        ;;
-    esac
     # L'app si avvia una volta sola: al cambio di risoluzione la rimette a misura il
     # task che la tiene sul suo schermo, quindi si ritrova ridimensionata invece che
     # ripartita da capo.
@@ -3806,6 +3837,19 @@ cmd_open(){
       if [ "$raggiungibile" = 0 ]; then
         bad "l'host non risponde: il PC è spento o la rete non c'è"
         info "  «${app}» non si è aperta per questo, non per un problema suo"
+      elif tail -20 "$CONFIG_DIR/trace.log" 2>/dev/null | grep -q "schermo dello slot $slot ancora"; then
+        # La causa e' gia' scritta nella traccia: si legge invece di ripetere
+        # una frase generica.
+        #
+        # Il controllo sullo schermo a misura zero gira dentro il processo che
+        # apre la finestra, e il suo "bad" finisce nell'output di QUEL processo,
+        # che nessuno guarda. Fuori restava «non si e' aperta. winfleet doctor»:
+        # la stessa frase che si vede per un PC spento, per un'app che non
+        # parte, per qualunque cosa. Sapere la causa e nasconderla e' peggio che
+        # non saperla, perche' manda a cercare da un'altra parte.
+        bad "lo schermo virtuale della finestra $(( slot + 1 )) non ha una misura"
+        info "  Sunshine rifiuta la connessione: e' il monitor, non l'app ne' la rete"
+        info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
       else
         bad "«${app}» non si e' aperta.  winfleet doctor"
       fi
