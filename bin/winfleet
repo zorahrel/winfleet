@@ -2166,7 +2166,13 @@ CHROME="${CHROME:-hidden}"   # "native" per riavere la barra del Mac
 CHROME_LIB="$CONFIG_DIR/wf-chrome.dylib"
 # Lo script che disegna il distintivo di Windows sulle icone. Si cerca accanto al
 # comando (uso dal repo) e poi in ~/.config (installazione via install.sh).
-WF_BADGE="${WF_BADGE:-$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/mac/wf-badge.py}"
+#
+# Da WF_ROOT, non da "$0": il comando in ~/.local/bin e' un SYMLINK, e li'
+# dirname "$0" da' ~/.local/bin - quindi si cercava ~/.local/mac/wf-badge.py,
+# che non esiste. Nessun errore: il badge semplicemente non veniva disegnato,
+# e le icone nuove arrivavano senza il distintivo di Windows. WF_ROOT risolve
+# il link e punta alla cartella vera del repo (lo fa gia' per host/ e mac/).
+WF_BADGE="${WF_BADGE:-$WF_ROOT/mac/wf-badge.py}"
 [ -f "$WF_BADGE" ] || WF_BADGE="$CONFIG_DIR/wf-badge.py"
 
 # Si compila di lato e si sposta a posto solo alla fine: dyld ammazza il processo
