@@ -214,6 +214,19 @@ else
   fail=1
 fi
 
+# --- 9e. il cursore non si toglie a chi non lo ha chiesto ------------------
+# Nascondere il cursore evita il doppio puntatore nelle finestre winfleet, ma
+# SetSystemCursor agisce su TUTTO Windows: sparisce anche per chi e' in Parsec
+# o seduto davanti al monitor. Segnalato con quattro parole: "non riesco a
+# usare il PC".
+if /opt/homebrew/bin/bash mac/tests/cursore-condiviso.sh > "$TMP/cursore.out" 2>&1; then
+  say "ok   cursore: non lo si nasconde se qualcun altro sta usando il PC"
+else
+  say "NO   cursore condiviso:"
+  sed 's/^/       /' "$TMP/cursore.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

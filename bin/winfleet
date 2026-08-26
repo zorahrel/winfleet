@@ -1535,8 +1535,37 @@ slot_any_live(){
 
 cursor_hide(){
   [ "${CURSOR:-hidden}" = "native" ] && return 0
+  # E non se qualcun ALTRO sta usando quel PC.
+  #
+  # Nascondere il cursore serve a evitare il doppio puntatore dentro le finestre
+  # winfleet, ma il cambiamento e' di SISTEMA: sparisce ovunque. Se in quel
+  # momento c'e' una sessione Parsec aperta, o qualcuno seduto davanti al
+  # monitor, quella persona si ritrova senza puntatore per un vantaggio che
+  # riguarda soltanto noi - e senza nessun indizio su chi glielo abbia tolto.
+  # Successo due volte nella stessa sera, la seconda con la sola frase "non
+  # riesco a usare il PC".
+  #
+  # Un puntatore doppio e' un fastidio; un PC senza puntatore non si usa. Fra i
+  # due si sceglie il fastidio.
+  if host_in_uso; then
+    trace "cursore: non lo nascondo, c'e' un'altra sessione sul PC"
+    return 0
+  fi
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
     "schtasks /run /tn winfleet-cursor-hide" >/dev/null 2>&1 || true
+}
+
+# Qualcuno sta usando il PC oltre a noi?
+#
+# Parsec e' il caso concreto: gira sull'host e disegna il cursore di sistema nel
+# proprio stream, esattamente come Sunshine. Se e' acceso, nasconderlo rompe
+# lui. La domanda passa dall'agente perche' e' gia' li' e risponde in
+# millisecondi; se non risponde si assume di si', che e' il lato prudente -
+# rinunciare a nascondere costa un puntatore in piu', sbagliare costa un PC
+# inutilizzabile.
+host_in_uso(){
+  [ "$(curl -s --max-time 2 --connect-timeout 1 \
+        "http://$(agent_host):$AGENT_PORT/altri-client" 2>/dev/null)" != no ]
 }
 
 cursor_restore(){
@@ -4515,6 +4544,20 @@ cmd_doctor(){
     bad "Windows sta chiedendo un permesso (UAC): i click non funzionano da nessuna parte"
     info "  e' sul monitor del PC, non nello stream: rispondi li', o da Parsec"
     info "  non si puo' portare nello stream: Windows lo protegge apposta"
+  fi
+  # Il cursore di Windows: chi sta usando quel PC lo vede?
+  #
+  # "Non riesco a usare il PC" e' il modo in cui viene segnalato, e da fuori non
+  # somiglia affatto a winfleet: il puntatore semplicemente non c'e', in Parsec
+  # come davanti al monitor. Qui si dice in una riga, con il rimedio accanto.
+  if [ -n "${HOST_SSH:-}" ] && ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+       'if exist C:\winfleet\cursor-hidden.txt (exit 0) else (exit 1)' >/dev/null 2>&1; then
+    if [ "$(slot_any_live)" = yes ]; then
+      info "cursore di Windows: nascosto  ${c_dim}(c'e' una finestra aperta; CURSOR=native per lasciarlo)${c_off}"
+    else
+      bad "cursore di Windows nascosto senza nessuna finestra aperta: lo rimetto"
+      cursor_restore
+    fi
   fi
   # L'IP in config e' ancora quello del PC?
   #

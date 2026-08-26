@@ -541,6 +541,21 @@ while ($listener.IsListening) {
             }
         }
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
+        elseif ($req.Url.AbsolutePath -eq '/altri-client') {
+            # "C'e' qualcun altro che sta usando questo PC?"
+            #
+            # Serve prima di nascondere il cursore, che e' un cambiamento di
+            # SISTEMA: se c'e' una sessione Parsec aperta, quella persona si
+            # ritrova senza puntatore per un vantaggio che riguarda solo le
+            # finestre winfleet. Successo due volte in una sera, la seconda
+            # segnalata con "non riesco a usare il PC".
+            #
+            # Parsec e' il caso concreto e l'unico rilevabile in modo
+            # affidabile: chi e' seduto davanti al monitor non lascia un
+            # processo da cercare. Va bene lo stesso - quello se ne accorge
+            # subito, mentre una sessione remota rotta non la nota nessuno.
+            $body = if (Get-Process -Name parsecd -EA SilentlyContinue) { 'si' } else { 'no' }
+        }
         elseif ($req.Url.AbsolutePath -eq '/appsize') {
             # Quanto e' grande ADESSO la finestra dell'app di questo slot.
             #
