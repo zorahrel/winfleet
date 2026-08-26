@@ -571,6 +571,25 @@ else
   fail=1
 fi
 
+# --- 13b. IL PERCORSO VERO: icona -> finestra che mostra qualcosa ----------
+# Tutti i test qui sopra guardano i file di stato di winfleet: dicono cosa
+# winfleet CREDE, non che l'utente veda un'immagine. Questo lancia il .app del
+# Dock (LaunchServices, PATH minimo - ha gia' rotto tutto una volta con un
+# python fallato) e poi controlla i DUE capi: che Moonlight abbia decodificato
+# frame, e che Sunshine catturi lo schermo GIUSTO.
+#
+# Va tenuto in fondo perche' e' lento e apre una finestra vera. Va tenuto,
+# punto: e' l'unico che ha colto il caso in cui video arriva, frame si
+# decodificano, la finestra ha la misura giusta - e dentro c'e' il desktop
+# fisico del PC invece dell'app.
+if /opt/homebrew/bin/bash mac/tests/percorso-utente.sh > "$TMP/percorso.out" 2>&1; then
+  say "ok   percorso utente: dall'icona a un'immagine vera nella finestra"
+else
+  say "NO   percorso utente (icona -> finestra):"
+  sed 's/^/       /' "$TMP/percorso.out"
+  fail=1
+fi
+
 # --- 14. ogni test del repo e' davvero in questa lista ---------------------
 # I test si registrano A MANO qui sopra, e un file dimenticato non fallisce:
 # semplicemente non gira, e la sua regola smette di essere protetta senza che
