@@ -240,6 +240,24 @@ else
   fail=1
 fi
 
+# --- 9f-bis. la pulizia non deve disinstallare cio' che tiene in piedi -----
+# host-clean puliva i file e ignorava i TASK pianificati: sull'host ne erano
+# rimasti otto dal 16/08, fra cui "wf-lock" (LockWorkStation), cioe' un task
+# che blocca la sessione - la condizione in cui i monitor virtuali smettono di
+# disegnare e ogni finestra si apre nera.
+#
+# Ma il rimedio ha fatto un danno peggiore del male: -Keep dichiarato [string]
+# mentre PowerShell tratta "a,b,c" come un ARRAY, e la conversione unisce con
+# spazi. Risultato: TUTTI e 23 i task disinstallati, i 15 veri compresi, con il
+# messaggio "23 task di diagnosi rimossi" che sembrava un successo.
+if /opt/homebrew/bin/bash mac/tests/host-clean-task.sh > "$TMP/taskclean.out" 2>&1; then
+  say "ok   pulizia task: toglie i residui e non tocca cio' che regge il sistema"
+else
+  say "NO   pulizia dei task pianificati:"
+  sed 's/^/       /' "$TMP/taskclean.out"
+  fail=1
+fi
+
 # --- 9g. fissare il nome non deve rompere /etc/hosts ----------------------
 # Quando mDNS sul PC muore, il nome si fissa in /etc/hosts - che pero' e' un
 # file di SISTEMA, pieno di voci che non c'entrano con winfleet. Riscriverlo

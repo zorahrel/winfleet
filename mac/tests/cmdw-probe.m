@@ -49,6 +49,23 @@ static void prova(void) {
     NSDate *t0 = [NSDate date];
     BOOL preso = [win performKeyEquivalent:e];
     NSLog(@"[wf-cmdw] CRONO inizio");
+
+    // L'istante dell'invio si scrive su un FILE, e non e' un dettaglio.
+    //
+    // Il timer qui sotto misura dall'interno del processo, ma quando Cmd+W
+    // FUNZIONA il processo muore: la riga con il tempo non viene mai scritta,
+    // e il test - che aspettava proprio quella - concludeva "SKIP: la sonda
+    // non ha riportato". Cioe' taceva esattamente nel caso di successo, e
+    // avrebbe taciuto allo stesso modo con Cmd+W rotto.
+    //
+    // Con l'istante su disco, chi guarda da fuori misura la differenza fra
+    // questo marcatore e la morte del processo: e' l'unico osservatore che
+    // sopravvive a cio' che sta misurando.
+    const char *segna = getenv("WF_CMDW_MARK");
+    if (segna) {
+        FILE *f = fopen(segna, "w");
+        if (f) { fprintf(f, "%.6f\n", [t0 timeIntervalSince1970]); fclose(f); }
+    }
     // Quanto ci mette la finestra a sparire, misurato DENTRO il processo.
     __block int giri2 = 0;
     __block NSTimer *tt = nil;

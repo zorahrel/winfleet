@@ -2369,9 +2369,79 @@ cmd_host_clean(){
       >/dev/null 2>&1 || true
     ok "$ne residui di diagnosi spostati nel cestino"
   fi
+
+  # E i TASK PIANIFICATI di diagnosi, che finora nessuno guardava.
+  #
+  # La pulizia si fermava ai file, ma una diagnosi su Windows lascia anche i
+  # task che li lanciavano: sull'host ce n'erano otto, fermi dal 16/08 e mai
+  # tolti - wf-probe, wf-shot, wf-why, wf-scr, wf-raise, wf-probe2, wf-nolock
+  # e wf-lock. Il file cancellato non li disarma: restano registrati, puntano a
+  # script che non esistono piu', e chi apre l'Utilita' di pianificazione vede
+  # un elenco che sembra roba di winfleet.
+  #
+  # E uno era wf-lock, che chiama LockWorkStation: un task rimasto in giro che
+  # BLOCCA la sessione del PC. Ha un trigger a data fissa gia' passata, quindi
+  # oggi non parte da solo - ma basta un "esegui" per sbaglio, e la sessione
+  # bloccata e' proprio la condizione in cui i monitor virtuali smettono di
+  # disegnare e ogni finestra si apre vuota.
+  #
+  # I task da TENERE si elencano per NOME, non si indovinano dal prefisso.
+  #
+  # Il primo tentativo diceva "togli tutto quello che comincia per wf-, i veri
+  # cominciano per winfleet-". Sbagliato, e di quelli che si scoprono in
+  # produzione: "wf-nolock" e' del repo (host/wf-nolock.ps1), lo lancia il
+  # doctor con "schtasks /run /tn wf-nolock", e serve a impedire che la sessione
+  # si blocchi da sola - cioe' proprio la condizione in cui i monitor virtuali
+  # smettono di disegnare e tutte le finestre diventano nere. Cancellarlo
+  # avrebbe rotto il sistema per pulire, con il danno visibile solo un'ora dopo
+  # e in tutt'altro posto.
+  #
+  # Un elenco esplicito e' piu' lungo da mantenere e non ha questo difetto: un
+  # task nuovo del repo che si dimentica qui viene solo SEGNALATO, mai tolto.
+  #
+  # E funziona nei due sensi: compilando questa lista si scopre che
+  # "winfleet-run" NON e' del repo - nessuno lo crea, punta a
+  # C:\winfleet\run-now.ps1 che non esiste piu' (verificato: Test-Path False).
+  # Aveva il prefisso giusto e per questo sembrava legittimo: un filtro sui
+  # prefissi l'avrebbe protetto per sempre.
+  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-vdd,winfleet-vdd-guard,wf-nolock"
+  #
+  # Il lavoro lo fa uno SCRIPT sull'host (host/wf-task-clean.ps1), non un
+  # "-Command" inline: il quoting di "-Confirm:$false" non sopravvive al giro
+  # ssh -> cmd -> PowerShell. Il backslash arrivava letterale e PowerShell
+  # rifiutava «Impossibile convertire System.String nel tipo SwitchParameter»,
+  # cioe' l'elenco era giusto e la rimozione falliva sempre. Gli script del
+  # repo si eseguono tutti da file, ed e' esattamente per questo.
+  local task
+  task="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=25 "$HOST_SSH" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-task-clean.ps1 -Keep $task_veri -WhatIfOnly" \
+    2>/dev/null | tr -d '\r' | sed -n 's/^toglierei: //p' | grep -v '^$' || true)"
+  if [ -n "$task" ]; then
+    local nt; nt="$(printf '%s\n' "$task" | wc -l | tr -d ' ')"
+    info "$nt task pianificati di diagnosi (non sono di winfleet):"
+    printf '%s\n' "$task" | sed 's/^/    /'
+    local esito
+    esito="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=40 "$HOST_SSH" \
+      "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-task-clean.ps1 -Keep $task_veri" \
+      2>/dev/null | tr -d '\r' || true)"
+    # Si conta cio' che e' stato tolto DAVVERO, invece di fidarsi del codice di
+    # uscita: togliere un task pianificato richiede i diritti giusti, e
+    # Unregister fallisce per uno solo senza far fallire il comando. Dire
+    # "rimossi" quando ne restano tre e' il tipo di bugia che si scopre al giro
+    # dopo, quando ricompaiono tutti.
+    local tolti; tolti="$(printf '%s\n' "$esito" | grep -c '^tolto: ' || true)"
+    if [ "$tolti" = "$nt" ]; then
+      ok "$nt task di diagnosi rimossi  ${c_dim}(quelli di winfleet restano)${c_off}"
+    else
+      bad "tolti $tolti su $nt:"
+      printf '%s\n' "$esito" | grep '^ERRORE' | sed 's/^/    /' | head -5
+      return 1
+    fi
+  fi
+
   # Se non c'era niente da togliere, lo si dice: un comando che non stampa nulla
   # lascia il dubbio di non aver funzionato.
-  [ -n "$elenco" ] || [ -n "$extra" ] || \
+  [ -n "$elenco" ] || [ -n "$extra" ] || [ -n "$task" ] || \
     ok "C:\\winfleet e' gia' pulita  ${c_dim}(solo gli script del repo e i suoi dati)${c_off}"
 }
 

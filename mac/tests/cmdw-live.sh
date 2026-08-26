@@ -48,27 +48,90 @@ bin="$HOME/.config/winfleet/runners/Paint.app/Contents/MacOS/Moonlight"
 port=$(( 48089 + slot * 100 ))
 DYLD_INSERT_LIBRARIES="$LIB:$TMP/probe.dylib" \
 WF_WIN=1209x806 WF_SIZE="$HOME/.config/winfleet/slot$slot.size" WF_SLOT="$slot" \
+WF_CMDW_MARK="$TMP/mark" \
   "$bin" stream "${NAME}:${port}" Desktop --display-mode windowed --fps 60 \
   --bitrate 50000 --absolute-mouse --no-vsync --quit-after --resolution 1800x1200 \
   >"$TMP/stream.log" 2>&1 &
 mpid=$!
 
-# Si aspetta l'esito della sonda, non un tempo fisso.
+# L'esito si legge dallo STDERR del processo, non dal log unificato.
+#
+# La sonda riporta con NSLog, che per un processo lanciato da terminale scrive
+# su stderr - qui gia' rediretto in stream.log. Il log unificato di macOS non
+# lo vede, quindi "log show" non trovava MAI la riga: in sei ore di sessione le
+# uniche occorrenze di "CRONO" erano i comandi log show stessi. Il test dava
+# SKIP a ogni esecuzione e sembrava un problema d'ambiente ("stream non
+# partito?"), mentre era CIECO: avrebbe detto SKIP anche con Cmd+W rotto.
+#
+# E il limite si guarda in SECONDI, non in giri: "60 giri con sleep 1" sembra
+# un minuto e non lo era, perche' ogni log show costava 4,7 secondi misurati -
+# fino a cinque minuti, abbastanza da far scadere l'intera suite.
 esito=""
-for i in $(seq 1 60); do
-  # process == "Moonlight": senza, "log show" cattura anche la PROPRIA riga di
-  # comando (che contiene il testo cercato) e il test legge quella invece
-  # dell'esito - visto succedere, con la sonda che aveva gia' riportato 0.14s.
-  riga="$(log show --predicate 'process == "Moonlight" AND eventMessage CONTAINS "CRONO finestra"' \
-          --last 2m --style compact 2>/dev/null | tail -1)"
+morto=0
+scadenza=$(( $(date +%s) + 45 ))
+while [ "$(date +%s)" -lt "$scadenza" ]; do
+  # La MORTE del processo e' il successo, non un imprevisto: Cmd+W chiude la
+  # finestra di stream e Moonlight esce. Si aspetta quella.
+  if ! kill -0 "$mpid" 2>/dev/null; then morto=1; break; fi
+  riga="$(grep 'CRONO finestra' "$TMP/stream.log" 2>/dev/null | tail -1)"
   case "$riga" in *"sparita dopo"*) esito="$riga"; break;; *"ancora li'"*) esito="$riga"; break;; esac
-  kill -0 "$mpid" 2>/dev/null || break
-  sleep 1
+  sleep 0.2
 done
+fine="$(date +%s.%N)"
 kill "$mpid" 2>/dev/null || true
+
+# Il tempo si calcola da FUORI: marcatore della sonda -> morte del processo.
+#
+# La sonda non puo' misurare la propria morte, ed e' proprio la morte il
+# successo: Cmd+W chiude la finestra, Moonlight esce, e la riga con il tempo
+# non viene mai scritta. Il test aspettava quella riga e concludeva "SKIP: la
+# sonda non ha riportato" - taceva nel caso di successo, e avrebbe taciuto
+# identico con Cmd+W rotto. Cieco in entrambi i sensi.
+#
+# Ora la sonda scrive su disco l'istante in cui manda Cmd+W (WF_CMDW_MARK), e
+# qui si misura fino a quando il processo sparisce: un osservatore che
+# sopravvive a cio' che osserva.
+if [ -z "$esito" ] && [ "$morto" = 1 ] && [ -s "$TMP/mark" ]; then
+  inizio="$(cat "$TMP/mark")"
+  secondi="$(awk -v a="$inizio" -v b="$fine" 'BEGIN{printf "%.2f", b-a}')"
+  # La morte del processo NON basta come prova, e questo test ci e' cascato.
+  #
+  # Moonlight parte con --quit-after e se ne va da solo dopo circa otto
+  # secondi, comunque vada. Misurando "quando muore" si misurava quello:
+  # sabotando ENTRAMBE le strade di chiusura nella libreria - la voce di menu
+  # e il monitor sugli eventi - il test continuava a dire «la finestra si
+  # chiude in 0.11s», PASS. Un test che approva anche il codice rotto non e'
+  # un test, e questo lo faceva da quando esiste.
+  #
+  # LIMITE NOTO, scritto qui perche' non venga scambiato per una garanzia.
+  #
+  # Il tempo separa la fine naturale (circa otto secondi) da una chiusura
+  # rapida, e tanto basta a non scambiare l'una per l'altra. NON basta a
+  # dimostrare che sia stato Cmd+W: sabotando entrambe le strade di chiusura
+  # nella libreria - la voce di menu e il monitor sugli eventi - la finestra
+  # sparisce comunque in 0.09s, perche' la sonda le ha appena mandato
+  # makeKeyAndOrderFront: e SDL reagisce per conto suo.
+  #
+  # Quindi questo test dice: "la finestra si e' chiusa in fretta dopo Cmd+W".
+  # Non dice: "si e' chiusa PERCHE' Cmd+W". Per quella prova servirebbe un
+  # tasto premuto davvero, che richiede il permesso Accessibilita' - il motivo
+  # per cui questa sonda esiste. Il valore che resta e' comunque reale: quando
+  # la catena e' rotta sul serio (menu assente, libreria non caricata) il test
+  # se ne accorge, ed e' l'unico posto dove Cmd+W viene esercitato in un
+  # Moonlight vero invece che in un processo di prova.
+  #
+  # Chi legge un PASS qui sappia esattamente cosa ha comprato.
+  if awk -v s="$secondi" 'BEGIN{exit !(s < 2.0)}'; then
+    esito="CRONO finestra sparita dopo ${secondi}s (misurato da fuori)"
+  else
+    echo "  SKIP: lo stream e' finito da solo dopo ${secondi}s (--quit-after), Cmd+W non isolato"
+    exit 0
+  fi
+fi
 
 if [ -z "$esito" ]; then
   echo "  SKIP: la sonda non ha riportato (stream non partito?)"
+  echo "  --- stream.log (ultime righe) ---"; tail -12 "$TMP/stream.log" 2>/dev/null | sed 's/^/      /'
   exit 0
 fi
 
