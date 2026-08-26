@@ -219,10 +219,29 @@ public class Vdd {
 Add-Type -TypeDefinition $sig
 
 function Publish-State($devices) {
+    # Windows impiega qualche istante ad assegnare una misura a un monitor
+    # appena agganciato, e in quell'istante Geometry() torna 0x0. Pubblicarlo
+    # cosi' e' peggio che non pubblicarlo: winfleet legge vdd.json, crede che
+    # lo schermo dello slot sia grande zero, avvia lo stream e Sunshine rifiuta
+    # la connessione - «Control stream connection failed: 4» dal lato Moonlight,
+    # cioe' un errore che non nomina i monitor e manda a cercare altrove.
+    #
+    # Visto il 26/08 simulando un avvio a freddo: lo slot 0 restava a 0x0, e due
+    # aperture di fila sono fallite senza che niente lo spiegasse. Bastano pochi
+    # decimi di attesa, e sono decimi spesi una volta all'avvio.
+    for ($tent = 0; $tent -lt 20; $tent++) {
+        $zeri = 0
+        foreach ($d in $devices) { $gg = [Vdd]::Geometry($d); if ($gg[0] -le 0 -or $gg[1] -le 0) { $zeri++ } }
+        if ($zeri -eq 0) { break }
+        Start-Sleep -Milliseconds 200
+    }
     $modes = if ($devices.Count) { [Vdd]::Modes($devices[0]) } else { '' }
     $out = @()
     for ($i = 0; $i -lt $devices.Count; $i++) {
         $g = [Vdd]::Geometry($devices[$i])
+        if ($g[0] -le 0 -or $g[1] -le 0) {
+            Note "slot ${i}: lo schermo e' ancora 0x0 dopo quattro secondi, lo pubblico comunque"
+        }
         $out += [pscustomobject]@{
             slot = $i; device = $devices[$i]
             width = $g[0]; height = $g[1]; x = $g[2]; y = $g[3]

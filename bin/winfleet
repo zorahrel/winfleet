@@ -695,6 +695,38 @@ supervise_window(){ # slot app risoluzione-di-negoziazione chiave exe misura-fin
     # aspettare e quei due secondi erano regalati a ogni apertura.
     wait_vdd_mode "$slot" "$smode" 3
     trace "risoluzione pronta"
+    # Uno schermo a misura ZERO non e' uno schermo, e lo si dice ADESSO.
+    #
+    # Windows impiega qualche istante ad assegnare una misura a un monitor
+    # appena agganciato: in quella finestra di tempo lo slot risulta 0x0, e
+    # avviare lo stream li' significa che Sunshine rifiuta la connessione. Dal
+    # lato Mac si legge «Control stream connection failed: 4», che non nomina i
+    # monitor: il 26/08, simulando un avvio a freddo, due aperture di fila sono
+    # fallite e ho cercato nel pairing, nel firewall e nelle istanze prima di
+    # guardare la geometria.
+    #
+    # Un'attesa breve e un messaggio chiaro: se dopo cinque secondi lo schermo
+    # non c'e' ancora, il problema non e' il tempo.
+    local geo gtent
+    for gtent in 1 2 3 4 5 6 7 8 9 10; do
+      geo="$(curl -s --max-time 2 "http://$(agent_host):$AGENT_PORT/vdd" 2>/dev/null \
+             | "$WF_PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print('?'); raise SystemExit
+s=[x for x in d if x.get('slot')==$slot]
+print(f\"{s[0].get('width',0)}x{s[0].get('height',0)}\" if s else '?')" 2>/dev/null || echo '?')"
+      case "$geo" in 0x0|0x*|*x0) sleep 0.5;; *) break;; esac
+    done
+    case "$geo" in
+      0x0|0x*|*x0)
+        trace "schermo dello slot $slot ancora $geo: lo stream non partirebbe"
+        bad "lo schermo virtuale della finestra $(( slot + 1 )) non ha una misura ($geo)"
+        info "  Sunshine rifiuterebbe la connessione senza spiegare perche'"
+        info "  rimedio:  schtasks /end /tn winfleet-vdd  e poi  schtasks /run /tn winfleet-vdd"
+        return 1
+        ;;
+    esac
     # L'app si avvia una volta sola: al cambio di risoluzione la rimette a misura il
     # task che la tiene sul suo schermo, quindi si ritrova ridimensionata invece che
     # ripartita da capo.
