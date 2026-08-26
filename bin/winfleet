@@ -23,6 +23,7 @@ fi
 #   winfleet windows           quali finestre sono aperte e su cosa
 #   winfleet scan              rilegge l'elenco delle app installate sul PC
 #   winfleet push              carica gli script host sul PC (C:\winfleet)
+#   winfleet host-clean        toglie dal PC gli script che non sono del repo
 #   winfleet fit               riporta le finestre a filo dei pixel che ricevono
 #   winfleet stop [n]          chiude una finestra, o tutte
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
@@ -1749,6 +1750,23 @@ win_size_host(){ # slot -> LARGHEZZAxALTEZZA, o vuoto
     "http://$(agent_host):$AGENT_PORT/appsize?slot=$1" 2>/dev/null
 }
 
+# Rianima il server SSH dell'host.
+#
+# sshd si stanca: dopo una sessione fitta di comandi comincia a chiudere le
+# connessioni sul nascere - "kex_exchange_identification: Connection reset by
+# peer" - in modo intermittente, tre volte su cinque. Da fuori sembra il PC
+# morto, e invece l'agente HTTP risponde in millisecondi.
+#
+# Il rimedio passa dall'AGENTE proprio per questo: usare ssh per riparare ssh
+# non porta da nessuna parte. Mai fatale - se non funziona si e' punto e a capo,
+# non peggio.
+ssh_revive(){
+  trace "ssh non risponde: rianimo sshd dall'agente"
+  curl -s --max-time 20 --connect-timeout 3 \
+    "http://$(agent_host):$AGENT_PORT/ssh-revive" >/dev/null 2>&1 || true
+  sleep 4
+}
+
 
 vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
@@ -2014,14 +2032,30 @@ cmd_push(){
     # senza una riga di output, con meta' degli script rimasti indietro.
     # (ServerAliveInterval non basta: il canale e' vivo, e' il comando a non
     # tornare.)
-    base64 < "$f" | tr -d '\n' | ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
-      "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\$(basename "$f")', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" \
-      >/dev/null 2>&1 &
-    local sp=$! t=0
-    while kill -0 "$sp" 2>/dev/null && [ "$t" -lt 25 ]; do sleep 1; t=$(( t + 1 )); done
-    if kill -0 "$sp" 2>/dev/null; then kill -9 "$sp" 2>/dev/null || true; fi
-    wait "$sp" 2>/dev/null || true
-    n=$(( n + 1 ))
+    #
+    # E con TRE TENTATIVI, perche' sshd si stanca: dopo una sessione fitta di
+    # comandi comincia a chiudere le connessioni sul nascere
+    # ("kex_exchange_identification: Connection reset by peer") in modo
+    # intermittente - misurato: tre successi su cinque tentativi, alternati.
+    # Un solo tentativo per file trasformava quella intermittenza in "meta'
+    # degli script non sono saliti", senza che nulla lo spiegasse.
+    local tent sp t fatto=0
+    for tent in 1 2 3; do
+      base64 < "$f" | tr -d '\n' | ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST_SSH" \
+        "powershell -NoProfile -Command \"[IO.File]::WriteAllBytes('C:\\winfleet\\$(basename "$f")', [Convert]::FromBase64String([Console]::In.ReadToEnd()))\"" \
+        >/dev/null 2>&1 &
+      sp=$!; t=0
+      while kill -0 "$sp" 2>/dev/null && [ "$t" -lt 25 ]; do sleep 1; t=$(( t + 1 )); done
+      if kill -0 "$sp" 2>/dev/null; then kill -9 "$sp" 2>/dev/null || true; fi
+      if wait "$sp" 2>/dev/null; then fatto=1; break; fi
+      # Al secondo fallimento non e' sfortuna: e' sshd che non accetta piu'
+      # nessuno. Lo si rianima dall'AGENTE, che parla HTTP e quindi risponde
+      # anche quando ssh e' fuori uso - se si usasse ssh per rimediare a ssh
+      # non si andrebbe da nessuna parte.
+      [ "$tent" = 2 ] && ssh_revive
+      sleep 2
+    done
+    [ "$fatto" = 1 ] && n=$(( n + 1 ))
   done
   # Non "quanti ne ho spediti": quanti sono ARRIVATI INTERI.
   #
@@ -2049,6 +2083,77 @@ cmd_push(){
     'powershell -NoProfile -Command "foreach($f in Get-ChildItem C:\winfleet\*.ps1){ $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$null,[ref]$e); if($e.Count){ Write-Host $f.Name } }"' \
     2>/dev/null | tr -d '\r' | grep -v '^$' || true)"
   [ -z "$bad_files" ] && ok "sintassi verificata sull'host" || { printf '%s\n' "$bad_files" | while read -r b; do bad "$b non compila sull'host"; done; return 1; }
+}
+
+# Toglie da C:\winfleet quello che winfleet non ci ha messo.
+#
+# Quella cartella e' il posto dove finisce ogni script buttato li' per capire
+# qualcosa: una diagnosi al volo, una prova, un "wfdiag3.ps1". Nessuno li
+# cancella, e si accumulano - misurato il 26/08: 155 file, di cui 14 veri.
+#
+# Non e' solo disordine. Ogni push valida la SINTASSI di tutti i .ps1 presenti,
+# quindi un rottame rimasto indietro rallenta ogni caricamento e puo' far
+# fallire un controllo che riguarda ben altro. E chi apre quella cartella per
+# capire come funziona winfleet trova novanta file che non c'entrano.
+#
+# La regola e' semplice e non richiede giudizio: si tengono i .ps1 che esistono
+# in host/ nel repo, e si toglie il resto. I DATI non si toccano mai - vdd.json,
+# i log, i file di stato degli slot - perche' quelli winfleet li usa davvero.
+cmd_host_clean(){
+  need_ssh
+  local src="$WF_ROOT/host"
+  [ -d "$src" ] || die "Non trovo la cartella host/ in $WF_ROOT."
+
+  # L'elenco dei buoni si costruisce QUI, dal repo: e' l'unica fonte che dice
+  # cosa dovrebbe esserci. Passarlo all'host come una lista sola evita un giro
+  # di rete per file.
+  local buoni; buoni="$(ls "$src"/*.ps1 2>/dev/null | xargs -n1 basename | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$buoni" ] || die "Nessuno script in host/: non saprei cosa tenere."
+
+  local elenco
+  elenco="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"\$b='$buoni'.Split(','); Get-ChildItem C:\\winfleet\\*.ps1 | Where-Object { \$b -notcontains \$_.Name } | ForEach-Object { \$_.Name }\"" \
+    2>/dev/null | tr -d '\r' | grep -v '^$' || true)"
+
+  # Niente "return 0" quando non ci sono script estranei: i residui di diagnosi
+  # qui sotto vanno guardati comunque, e uscire prima li lasciava li' per sempre
+  # su una cartella che sembrava gia' pulita.
+  if [ -n "$elenco" ]; then
+    local quanti; quanti="$(printf '%s\n' "$elenco" | wc -l | tr -d ' ')"
+    info "$quanti script estranei in C:\\winfleet:"
+    printf '%s\n' "$elenco" | head -12 | sed 's/^/    /'
+    [ "$quanti" -gt 12 ] && info "    ${c_dim}… e altri $(( quanti - 12 ))${c_off}"
+
+    # In un CESTINO, non cancellati: la cartella e' piena di roba che qualcuno ha
+    # scritto per capire qualcosa, e "non serve piu'" e' un giudizio che si puo'
+    # sbagliare. Da C:\winfleet\_cestino si recupera; da un del /f no.
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=30 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"\$b='$buoni'.Split(','); \$d='C:\\winfleet\\_cestino'; New-Item -ItemType Directory -Force -Path \$d | Out-Null; Get-ChildItem C:\\winfleet\\*.ps1 | Where-Object { \$b -notcontains \$_.Name } | ForEach-Object { Move-Item \$_.FullName -Destination \$d -Force -EA SilentlyContinue }\"" \
+      >/dev/null 2>&1 || { bad "non riesco a spostarli"; return 1; }
+
+    ok "$quanti script spostati in C:\\winfleet\\_cestino  ${c_dim}(si recuperano da li')${c_off}"
+  fi
+
+  # E i residui che NON sono script: gli sfoghi di una diagnosi (".out", ".bak",
+  # ".tmp", i ".txt" di appoggio). Si toglie solo cio' che ha un nome da
+  # scarto, mai per esclusione: i file di stato degli slot si chiamano
+  # app0.txt, hwnd1.txt, pid2.txt e sono la memoria di winfleet - cancellarli
+  # significherebbe rompere le finestre aperte in quel momento.
+  local extra
+  extra="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST_SSH" \
+    "powershell -NoProfile -Command \"Get-ChildItem C:\\winfleet -File | Where-Object { \$_.Extension -in '.out','.bak','.tmp' } | ForEach-Object { \$_.Name }\"" \
+    2>/dev/null | tr -d '\r' | grep -v '^$' || true)"
+  if [ -n "$extra" ]; then
+    local ne; ne="$(printf '%s\n' "$extra" | wc -l | tr -d ' ')"
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"\$d='C:\\winfleet\\_cestino'; New-Item -ItemType Directory -Force -Path \$d | Out-Null; Get-ChildItem C:\\winfleet -File | Where-Object { \$_.Extension -in '.out','.bak','.tmp' } | ForEach-Object { Move-Item \$_.FullName -Destination \$d -Force -EA SilentlyContinue }\"" \
+      >/dev/null 2>&1 || true
+    ok "$ne residui di diagnosi spostati nel cestino"
+  fi
+  # Se non c'era niente da togliere, lo si dice: un comando che non stampa nulla
+  # lascia il dubbio di non aver funzionato.
+  [ -n "$elenco" ] || [ -n "$extra" ] || \
+    ok "C:\\winfleet e' gia' pulita  ${c_dim}(solo gli script del repo e i suoi dati)${c_off}"
 }
 
 cmd_scan(){
@@ -4545,6 +4650,23 @@ cmd_doctor(){
     info "  e' sul monitor del PC, non nello stream: rispondi li', o da Parsec"
     info "  non si puo' portare nello stream: Windows lo protegge apposta"
   fi
+  # C:\winfleet e' tornata una discarica?
+  #
+  # Ci si accumula ogni script scritto per capire qualcosa, e nessuno li
+  # cancella: 155 file la prima volta che si e' guardato, di cui 14 veri. Ogni
+  # push ne valida la sintassi, quindi il conto si paga a ogni caricamento.
+  # Qui si contano soltanto - la pulizia la fa "winfleet host-clean", che e'
+  # un'azione e non deve partire da sola dentro una diagnosi.
+  if [ -n "${HOST_SSH:-}" ] && [ -d "$WF_ROOT/host" ]; then
+    local puliti sporchi_n
+    puliti="$(ls "$WF_ROOT/host"/*.ps1 2>/dev/null | xargs -n1 basename | tr '\n' ',' | sed 's/,$//')"
+    sporchi_n="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+      "powershell -NoProfile -Command \"\$b='$puliti'.Split(','); (Get-ChildItem C:\\winfleet\\*.ps1 | Where-Object { \$b -notcontains \$_.Name }).Count\"" \
+      2>/dev/null | tr -d '\r' | head -1)"
+    if [ -n "$sporchi_n" ] && [ "$sporchi_n" -gt 0 ] 2>/dev/null; then
+      info "C:\\winfleet: $sporchi_n script estranei  ${c_dim}(winfleet host-clean per toglierli)${c_off}"
+    fi
+  fi
   # Il cursore di Windows: chi sta usando quel PC lo vede?
   #
   # "Non riesco a usare il PC" e' il modo in cui viene segnalato, e da fuori non
@@ -4733,6 +4855,7 @@ case "${1:-}" in
   search)   shift; cmd_search "$@";;
   scan)     cmd_scan;;
   push)     cmd_push;;
+  host-clean) cmd_host_clean;;
   fit)      cmd_fit;;
   stop)     shift; cmd_stop "$@";;
   list)     cmd_list;;

@@ -227,6 +227,19 @@ else
   fail=1
 fi
 
+# --- 9f. la cartella dell'host non e' una discarica -----------------------
+# C:\winfleet raccoglie ogni script buttato li' per una diagnosi: 155 file, di
+# cui 14 veri. Ogni push ne valida la sintassi, quindi il disordine si paga a
+# ogni caricamento. Qui si verifica la regola: tenere cio' che sta in host/,
+# spostare il resto, e non toccare MAI i file di stato di winfleet.
+if /opt/homebrew/bin/bash mac/tests/host-clean.sh > "$TMP/hostclean.out" 2>&1; then
+  say "ok   pulizia host: tiene gli script del repo, non tocca i dati"
+else
+  say "NO   pulizia della cartella host:"
+  sed 's/^/       /' "$TMP/hostclean.out"
+  fail=1
+fi
+
 # --- 10. nome della finestra ------------------------------------------------
 # Una finestra tenuta calda nasce col bundle dell'app usata per scaldarla: se il
 # nome non si aggiorna, nel Dock compaiono tre "Blocco note" che sono tre app

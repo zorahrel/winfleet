@@ -541,6 +541,57 @@ while ($listener.IsListening) {
             }
         }
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
+        elseif ($req.Url.AbsolutePath -eq '/put') {
+            # Scrivi un file in C:\winfleet, senza passare da ssh.
+            #
+            # Serve perche' ssh e' proprio la cosa che si rompe: quando sshd si
+            # satura, "winfleet push" non arriva piu' e da li' in poi nessuna
+            # correzione puo' essere caricata - compresa quella che
+            # rimetterebbe in sesto ssh. Un cane che si morde la coda, visto il
+            # 26/08 con un push fermo cinque minuti mentre questo agente
+            # rispondeva in millisecondi.
+            #
+            # Il perimetro e' stretto di proposito: solo dentro C:\winfleet,
+            # solo un nome di file semplice. Niente sottocartelle, niente ".."
+            # - questo agente ascolta su tutta la rete locale, e un endpoint
+            # che scrive dove gli si dice sarebbe una porta aperta sul PC.
+            $nome = "$($req.QueryString['nome'])"
+            $b64  = "$($req.QueryString['dati'])"
+            if (-not $nome -or -not $b64) { $body = 'no' }
+            elseif ($nome -match '[\\/:*?"<>|]' -or $nome -like '*..*') {
+                Note "put rifiutato: nome sospetto '$nome'"
+                $body = 'no'
+            } else {
+                try {
+                    [IO.File]::WriteAllBytes("C:\winfleet\$nome", [Convert]::FromBase64String($b64))
+                    $body = 'ok'
+                } catch { $body = 'no' }
+            }
+        }
+        elseif ($req.Url.AbsolutePath -eq '/ssh-revive') {
+            # Riavvia il server SSH di Windows.
+            #
+            # sshd si satura: dopo una sessione fitta di comandi - un push, una
+            # diagnosi lunga - accetta la connessione TCP e poi chiude senza
+            # completare il login ("Connection closed by ... port 22"), oppure
+            # resta appeso a tempo indeterminato. Da fuori sembra il PC morto,
+            # ma non lo e' affatto: questo agente, che parla HTTP, continua a
+            # rispondere benissimo. Successo il 26/08, con "winfleet push"
+            # fermo cinque minuti su quattordici file.
+            #
+            # E' proprio la situazione in cui NON si puo' usare ssh per
+            # rimediare, quindi il rimedio deve passare da qui. Un servizio che
+            # si riavvia e' reversibile e non tocca niente altro: nel peggiore
+            # dei casi cadono sessioni ssh che erano gia' inutilizzabili.
+            try {
+                Restart-Service -Name sshd -Force -EA Stop
+                Note 'sshd riavviato su richiesta'
+                $body = 'ok'
+            } catch {
+                Note "sshd: riavvio fallito - $($_.Exception.Message)"
+                $body = 'no'
+            }
+        }
         elseif ($req.Url.AbsolutePath -eq '/altri-client') {
             # "C'e' qualcun altro che sta usando questo PC?"
             #
