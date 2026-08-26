@@ -24,6 +24,7 @@ fi
 #   winfleet scan              rilegge l'elenco delle app installate sul PC
 #   winfleet push              carica gli script host sul PC (C:\winfleet)
 #   winfleet host-clean        toglie dal PC gli script che non sono del repo
+#   winfleet host-name         fissa il nome del PC in /etc/hosts (se mDNS non va)
 #   winfleet fit               riporta le finestre a filo dei pixel che ricevono
 #   winfleet stop [n]          chiude una finestra, o tutte
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
@@ -853,6 +854,115 @@ host_name_resolves(){
     ''|127.*) echo no > "$memo" 2>/dev/null || true; return 1;;
     *)        echo si > "$memo" 2>/dev/null || true; return 0;;
   esac
+}
+
+# Il nome dell'host, scritto a mano in /etc/hosts.
+#
+# mDNS su Windows e' fragile in un modo che non si ripara: la porta 5353 se la
+# prende il primo che la chiede - Steam, Arc, qualunque Chromium che voglia
+# WebRTC - e da quel momento il responder di sistema ascolta ma non annuncia
+# piu' niente. Verificato il 26/08: chiuso Steam, la porta e' passata ad Arc;
+# chiuso Arc, e' tornata a Steam; EnableMDNS=1, riavvio di Dnscache e regole
+# firewall aperte non hanno cambiato nulla.
+#
+# Il nome pero' serve: Moonlight confronta gli host per indirizzo ignorando la
+# porta, quindi con un IP nudo le quattro istanze sembrano la stessa e si
+# finisce sull'istanza sbagliata. Il ripiego su Tailscale funziona ma lascia il
+# plist con indirizzi misti - meta' istanze per nome, meta' per IP.
+#
+# /etc/hosts risolve alla radice e non dipende da nessun servizio: e' il file
+# che il Mac guarda PRIMA di chiedere a chiunque. Il prezzo e' che va aggiornato
+# se il PC cambia IP, ed e' esattamente quello che questo comando fa.
+hosts_pin(){ # -> 0 se la voce e' a posto
+  local ip="$1" nome="${HOST_NAME%.local}.local"
+  trace "hosts_pin: ip=$ip nome=$nome"
+  [ -n "$ip" ] && [ -n "$nome" ] || return 1
+  # Gia' giusta? Non si tocca: riscrivere /etc/hosts a ogni giro vuol dire
+  # chiedere la password a ogni giro.
+  if grep -qE "^[[:space:]]*$ip[[:space:]]+$nome([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+    return 0
+  fi
+  # Mai bloccare in attesa di una password che nessuno puo' digitare.
+  #
+  # Il doctor lo lancia anche il Dock, e li' non c'e' nessun terminale: un sudo
+  # che aspetta lascerebbe il comando appeso per sempre, con l'icona che gira e
+  # nessuna spiegazione. Se la password non c'e' gia' in cache si dice cosa
+  # fare e si va avanti - il ripiego su Tailscale funziona comunque.
+  #
+  # L'esito di sudo si CATTURA: con set -e un "sudo -n" che fallisce dentro una
+  # condizione composta puo' terminare il comando prima ancora di stampare
+  # qualcosa - e infatti il doctor usciva muto, senza nemmeno la riga che
+  # spiega cosa serve.
+  local ha_sudo=0
+  sudo -n true >/dev/null 2>&1 && ha_sudo=1
+  if [ "$ha_sudo" = 0 ] && [ ! -t 0 ]; then
+    info "  il nome si puo' fissare in /etc/hosts, ma serve la password del Mac"
+    info "  ${c_dim}da terminale:  winfleet host-name${c_off}"
+    return 1
+  fi
+  info "  scrivo «$ip $nome» in /etc/hosts  ${c_dim}(serve la password del Mac)${c_off}"
+  # Prima si toglie la voce vecchia per lo stesso NOME - se il PC ha cambiato
+  # IP, lasciarla accanto a quella nuova fa risolvere l'indirizzo sbagliato.
+  sudo sh -c "grep -vE '[[:space:]]$nome([[:space:]]|\$)' /etc/hosts > /tmp/wf-hosts && printf '%s %s\n' '$ip' '$nome' >> /tmp/wf-hosts && cat /tmp/wf-hosts > /etc/hosts && rm -f /tmp/wf-hosts" 2>/dev/null || {
+    bad "non riesco a scrivere /etc/hosts"
+    return 1
+  }
+  dscacheutil -flushcache 2>/dev/null || true
+  rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
+  return 0
+}
+
+# Fissa il nome dell'host in /etc/hosts, chiedendo la password se serve.
+#
+# Esiste come comando a se' perche' la password si puo' digitare solo da un
+# terminale: il doctor lanciato dal Dock non ha nessuno a cui chiederla, e li'
+# si limita a dire che questo comando esiste.
+cmd_host_name(){
+  need_config
+  [ -n "${HOST_NAME:-}" ] || die "Nessun HOST_NAME in config: non c'e' un nome da fissare."
+  rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
+  if host_name_resolves; then
+    ok "«$HOST_NAME» risolve gia'  ${c_dim}(niente da fare)${c_off}"
+    return 0
+  fi
+  info "«$HOST_NAME» non risolve: mDNS sul PC non risponde"
+  host_name_repair
+  rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
+  if host_name_resolves; then
+    return 0
+  fi
+  bad "il nome non risolve nemmeno ora"
+  info "  winfleet continua con l'indirizzo: le finestre funzionano lo stesso"
+  return 1
+}
+
+# Ripara il nome dell'host quando mDNS non lo risolve piu'.
+#
+# L'indirizzo si prende dall'ISTANZA, non da "chi risponde all'IP": si
+# confronta l'uniqueid, perche' sul vecchio indirizzo puo' esserci finito un
+# altro dispositivo - successo il 25/08, quando il DHCP ha spostato il PC da .2
+# a .9 e su .2 e' arrivato qualcun altro.
+#
+# Se la LAN e Tailscale rispondono con lo STESSO uuid, la LAN e' l'indirizzo
+# giusto ed e' anche il piu' veloce. Se solo Tailscale risponde, si usa quello:
+# funziona ovunque, e va bene anche fuori casa.
+host_name_repair(){
+  local uid_l uid_t ip_buono=""
+  uid_l="$(curl -s --max-time 3 --connect-timeout 1 "http://${HOST_LAN:-0.0.0.0}:$(slot_port 0)/serverinfo?uniqueid=winfleet" 2>/dev/null | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
+  uid_t="$(curl -s --max-time 3 --connect-timeout 1 "http://${HOST_TS:-0.0.0.0}:$(slot_port 0)/serverinfo?uniqueid=winfleet" 2>/dev/null | tr '<' '\n' | awk -F'>' '/^uniqueid/{print $2}')"
+  if [ -n "$uid_l" ] && [ "$uid_l" = "$uid_t" ]; then
+    ip_buono="$HOST_LAN"
+  elif [ -n "$uid_t" ]; then
+    ip_buono="$HOST_TS"
+  fi
+  trace "riparazione nome: lan=${uid_l:-muta} ts=${uid_t:-muta} scelgo=${ip_buono:-nessuno}"
+  [ -n "$ip_buono" ] || return 0
+  hosts_pin "$ip_buono" || return 0
+  rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
+  if host_name_resolves; then
+    ok "nome dell'host: riparato in /etc/hosts → $ip_buono"
+  fi
+  return 0
 }
 
 slot_state(){ # slot -> SUNSHINE_SERVER_FREE | ..._BUSY | vuoto
@@ -4625,6 +4735,18 @@ cmd_doctor(){
       bad "«${HOST_NAME}» non risolve: uso ${HOST_TS:-${HOST_LAN:-nessun indirizzo}} al suo posto"
       info "  di solito e' mDNS sul PC: qualcuno gli ha preso la porta 5353"
       info "  sul PC:   Get-NetUDPEndpoint -LocalPort 5353 | % { Get-Process -Id \$_.OwningProcess }"
+      # E lo si ripara, invece di limitarsi a dirlo.
+      #
+      # mDNS su Windows non si aggiusta: la 5353 se la prende il primo che la
+      # chiede (Steam, Arc, qualunque Chromium con WebRTC) e da li' il
+      # responder tace - provato a chiudere l'uno e l'altro, a forzare
+      # EnableMDNS, a riavviare Dnscache e ad aprire il firewall: niente.
+      # /etc/hosts non dipende da nessun servizio e funziona sempre.
+      #
+      # In una funzione a parte, non qui: dentro tre "if" annidati e con
+      # set -e, un "local" seguito da un test falso puo' terminare il comando
+      # senza dire niente - e infatti il ramo non stampava una riga.
+      host_name_repair
     fi
   fi
   # Il python del PATH funziona, o stiamo andando avanti di ripiego?
@@ -4856,6 +4978,7 @@ case "${1:-}" in
   scan)     cmd_scan;;
   push)     cmd_push;;
   host-clean) cmd_host_clean;;
+  host-name) cmd_host_name;;
   fit)      cmd_fit;;
   stop)     shift; cmd_stop "$@";;
   list)     cmd_list;;
