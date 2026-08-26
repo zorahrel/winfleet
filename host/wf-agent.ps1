@@ -45,6 +45,34 @@ function Note($m) { "$(Get-Date -f 'HH:mm:ss')  $m" | Add-Content $LOG }
 trap { Note "ERRORE: $_"; break }
 Set-Content $LOG ''
 
+# Un agente alla volta: gli altri si spengono ADESSO.
+#
+# "schtasks /end /tn winfleet-agent" chiude il task, non il processo
+# powershell che ci gira dentro: quello resta vivo e continua ad ascoltare.
+# Ogni riavvio ne lasciava quindi uno in piu' - trovati TRE agenti insieme il
+# 26/08, avviati alle 00:00, alle 12:39 e alle 19:19, tutti convinti di essere
+# l'agente.
+#
+# Non e' innocuo come sembra: solo uno tiene la porta, gli altri girano nel
+# ciclo "porta occupata, aspetto" oppure - peggio - rispondono a meta' dopo un
+# riavvio della porta, e da fuori l'agente sembra a tratti muto. E' proprio il
+# guasto che agent-revive.sh voleva provare e non riusciva a riprodurre: il
+# test spegneva il task, l'agente rispondeva lo stesso, e il test si arrendeva
+# con uno SKIP.
+#
+# Si guarda la riga di comando, non il nome: "powershell.exe" da solo
+# ucciderebbe qualsiasi script di chiunque.
+try {
+    $mio = $PID
+    $vecchi = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*wf-agent.ps1*' -and $_.ProcessId -ne $mio })
+    foreach ($v in $vecchi) {
+        Note "spengo un agente precedente (pid $($v.ProcessId))"
+        Stop-Process -Id $v.ProcessId -Force -EA SilentlyContinue
+    }
+    if ($vecchi.Count -gt 0) { Start-Sleep -Milliseconds 500 }
+} catch { Note "non sono riuscito a cercare agenti vecchi: $_" }
+
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
 public class A {
