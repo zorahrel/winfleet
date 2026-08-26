@@ -61,12 +61,22 @@ Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $prin
 # trigger -AtLogOn. schtasks /sc minute invece funziona (lo usa gia' il
 # guardiano del cursore).
 #
-# Lancia "schtasks /run" sul task vero: se il processo e' ancora vivo,
-# MultipleInstances=IgnoreNew fa si' che non succeda niente. Quindi a regime il
-# costo e' un processo che parte e muore subito, e quando i monitor virtuali
-# cadono tornano entro un minuto invece che al prossimo riavvio.
+# Il guardiano CONTROLLA prima di avviare, invece di lanciare e sperare.
+#
+# La prima versione faceva "schtasks /run" a ogni giro, fidandosi di
+# MultipleInstances=IgnoreNew per non duplicare. Non funziona: /run avvia
+# comunque, e in poche ore si erano accumulate TRE istanze di wf-vdd con OTTO
+# monitor virtuali al posto di quattro - il doppio degli schermi, il doppio del
+# lavoro per la GPU, e slot che winfleet non usera' mai.
+#
+# Ora si guarda se un processo wf-vdd e' gia' vivo: se c'e', non si fa niente.
+# Il costo a regime e' una query WMI al minuto.
+#
+# Lo script sta in host/ come tutti gli altri e sale con "winfleet push": uno
+# generato qui verrebbe portato via da "winfleet host-clean", che tiene solo i
+# file del repo - e il guardiano sparirebbe senza che nessuno se ne accorga.
 schtasks /create /tn winfleet-vdd-guard `
-    /tr "schtasks /run /tn winfleet-vdd" `
+    /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1" `
     /sc minute /mo 1 /f | Out-Null
 Write-Host "Task 'winfleet-vdd-guard' registrato: rimette i monitor se cadono"
 

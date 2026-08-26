@@ -464,6 +464,10 @@ trace(){
 # Windows la misura nuova appena la finestra si ferma per un istante.
 follow_resize(){ # pid slot misura-iniziale file-ritaglio
   local pid="$1" slot="$2" sent="$3" cropf="$4" cur cw ch got aw ah idle=0
+  # Quante volte di fila Windows ha detto "ok" senza pero' spostare niente.
+  # Serve a distinguere una correzione che non ha ancora fatto effetto da una
+  # finestra che non si lascia proprio ridimensionare.
+  local rifiuti=0
   local ackf="$CONFIG_DIR/slot$slot.ack"
   aw="${3%x*}"; ah="${3#*x}"
   trace "segui: slot=$slot misura iniziale=$sent"
@@ -547,14 +551,43 @@ follow_resize(){ # pid slot misura-iniziale file-ritaglio
     # correzione e' la stessa rect_set che si usa all'apertura.
     if [ $(( __orph % 30 )) = 0 ]; then
       local vero; vero="$(win_size_host "$slot")"
+      # "no" NON e' una misura: e' l'agente che dice "non ho trovato la
+      # finestra". Trattarlo come tale produceva la riga assurda "la finestra
+      # su Windows e' no invece di 160x28" - e faceva anche di peggio, perche'
+      # $aw e $ah venivano poi riscritti da una risposta che non conteneva
+      # numeri.
+      case "$vero" in
+        ''|no|*[!0-9x]*) vero="";;
+      esac
       if [ -n "$vero" ] && [ "$vero" != "${aw}x${ah}" ]; then
         trace "slot $slot: la finestra su Windows e' $vero invece di ${aw}x${ah}, la rimetto"
         got="$(rect_set "$slot" "$aw" "$ah")"
         case "$got" in
           "ok "*)
-            aw="$(echo "$got" | awk '{print $2}')"; ah="$(echo "$got" | awk '{print $3}')"
-            printf '%sx%s\n' "$aw" "$ah" >"$ackf"
-            printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
+            local rw rh
+            rw="$(echo "$got" | awk '{print $2}')"; rh="$(echo "$got" | awk '{print $3}')"
+            # Windows risponde "ok" anche quando la finestra NON si e' mossa:
+            # SetWindowPos riesce, ma l'app la rimette dov'era. Successo con
+            # Arc, che dopo essere uscita lascia un residuo di 160x28 attaccato
+            # allo slot: "ok 160 28" a ogni giro, per ore, senza che nulla
+            # cambiasse. Se la misura confermata non e' quella chiesta, non e'
+            # una correzione riuscita: e' un rifiuto, e insistere non serve.
+            if [ "$rw" = "$aw" ] && [ "$rh" = "$ah" ]; then
+              printf '%sx%s\n' "$aw" "$ah" >"$ackf"
+              printf '0 0 %s %s\n' "$aw" "$ah" >"$cropf"
+              rifiuti=0
+            else
+              rifiuti=$(( rifiuti + 1 ))
+              # Tre rifiuti di fila: quella non e' piu' la finestra dell'app.
+              # Di solito e' un residuo rimasto dopo che l'app e' uscita - Arc
+              # lascia sette processi senza nessuna finestra vera. Continuare a
+              # inseguirlo tiene occupato uno slot per sempre, e sul Mac si
+              # vede una finestra che non mostrera' mai niente.
+              if [ "$rifiuti" -ge 3 ]; then
+                trace "slot $slot: la finestra non si lascia ridimensionare ($rw x $rh), la lascio andare"
+                break
+              fi
+            fi
             ;;
         esac
       fi
@@ -1883,6 +1916,26 @@ ssh_revive(){
   sleep 4
 }
 
+# Carica un file in C:\winfleet passando dall'agente, non da ssh.
+#
+# E' la via veloce e quella che non si stanca: ssh su Windows, dopo una
+# sessione fitta di comandi, comincia a rifiutare connessioni in modo
+# intermittente, e un push intero puo' andare in timeout mentre l'agente
+# risponde in millisecondi.
+#
+# Torna non-zero se non ce la fa - agente spento, versione vecchia senza /put,
+# rete che non collabora - e allora chi chiama ripiega su ssh.
+put_file_http(){ # file -> 0 se caricato
+  local f="$1" nome dati
+  nome="$(basename "$f")"
+  # base64 su una riga, poi i tre caratteri che in una query string vogliono
+  # dire altro: senza questo un file su due arriva troncato o corrotto.
+  dati="$(base64 < "$f" | tr -d '\n' | sed 's/+/%2B/g; s|/|%2F|g; s/=/%3D/g')"
+  [ -n "$dati" ] || return 1
+  [ "$(curl -s --max-time 20 --connect-timeout 2 \
+        "http://$(agent_host):$AGENT_PORT/put?nome=$nome&dati=$dati" 2>/dev/null)" = ok ]
+}
+
 
 vdd_set(){ # slot LARGHEZZAxALTEZZA
   need_ssh
@@ -2138,6 +2191,18 @@ cmd_push(){
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path C:\\winfleet | Out-Null\"" >/dev/null 2>&1
   for f in "$src"/*.ps1; do
+    # Prima si prova con l'AGENTE, che parla HTTP.
+    #
+    # ssh su Windows si stanca: dopo una sessione fitta comincia a chiudere le
+    # connessioni sul nascere, in modo intermittente, e un push da quattordici
+    # file va in timeout mentre l'agente risponde in millisecondi. Misurato due
+    # volte nella stessa mattina. Una richiesta HTTP non apre nessuna sessione
+    # e non negozia nessuna chiave: costa una frazione di un ssh.
+    #
+    # ssh resta come ripiego per il primo caricamento, quando l'agente non c'e'
+    # ancora o e' una versione vecchia che non conosce /put.
+    if put_file_http "$f"; then n=$(( n + 1 )); continue; fi
+
     # Con un TETTO DI TEMPO, e non solo ConnectTimeout.
     #
     # ConnectTimeout copre la connessione, non quello che viene dopo, e qui il
