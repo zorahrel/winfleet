@@ -5785,6 +5785,18 @@ CFG
 }
 
 # ---------------------------------------------------------------------------
+# Caricato con "source" invece che eseguito? Allora si fermano qui.
+#
+# Serve a poter usare le funzioni da fuori - un test che vuole provare
+# agent_revive, uno script che chiede host_up - senza far partire un comando.
+# Senza questa riga, "source bin/winfleet" cade nel ramo vuoto qui sotto ed
+# ESEGUE IL DOCTOR: mac/tests/agent-revive.sh faceva esattamente questo,
+# credendo di chiamare refresh_vdd, e il doctor - che ripara l'agente da solo -
+# glielo rimetteva in piedi per la strada sbagliata. Poi il test cercava la
+# prova che refresh_vdd avesse funzionato, non la trovava, e falliva: verde
+# sarebbe stato peggio, perche' avrebbe attestato una cosa mai provata.
+(return 0 2>/dev/null) && return 0
+
 case "${1:-}" in
   # Interno, non da riga di comando: e' il supervisore di una finestra, lanciato
   # in una sessione separata perche' sopravviva a chi l'ha creato. Chiamarlo a
