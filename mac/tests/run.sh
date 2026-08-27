@@ -450,6 +450,20 @@ else
   fail=1
 fi
 
+# --- 10c-quater. un'istanza morta non e' un PC spento ----------------------
+# L'istanza sun0 e' morta di notte da sola ("Hang detected!" nel suo log) e da
+# quel momento winfleet ha detto «il PC e' spento o la rete non c'e'» per tredici
+# ore, con il PC acceso e le altre tre istanze vive. Causa: la raggiungibilita'
+# dell'host si decideva interrogando SOLO lo slot 0. E il doctor, nello stesso
+# minuto, annunciava «4 finestre disponibili» - un numero preso dalla config.
+if /opt/homebrew/bin/bash mac/tests/istanza-morta.sh > "$TMP/istanzamorta.out" 2>&1; then
+  say "ok   istanza morta: si riavvia, e non viene scambiata per un PC spento"
+else
+  say "NO   istanza morta:"
+  sed 's/^/       /' "$TMP/istanzamorta.out"
+  fail=1
+fi
+
 # --- 10c-ter. un guasto passeggero non bandisce un'app ---------------------
 # Il rifornitore ricorda quali app "non aprono finestre qui" per non bruciare uno
 # slot ogni giro. Ma bastava UNA prova andata male: il Blocco note e' finito

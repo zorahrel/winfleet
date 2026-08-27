@@ -1226,6 +1226,125 @@ slot_held(){ # slot -> 0 se prenotato da qualcun altro che e' ancora vivo
   [ -n "$owner" ] && [ "$owner" -gt 0 ] 2>/dev/null && kill -0 "$owner" 2>/dev/null
 }
 
+# Il PC c'e'?
+#
+# NON si chiede alla sola istanza dello slot 0. Sembrava ragionevole ("girano
+# tutte sulla stessa macchina"), ed e' proprio da li' che e' arrivato il guasto
+# del 27/08: l'istanza sun0 e' morta di notte ("Hang detected!" nel suo log) e
+# da quel momento pick_slot ha risposto "l'host non risponde" a ogni giro. Il
+# rifornitore ha scritto «il PC e' spento o la rete non c'e'» 395 volte con il
+# PC acceso, le altre tre istanze vive e l'agente che rispondeva - e nello
+# stesso istante winfleet doctor diceva «agente sull'host: risponde». Due parti
+# dello stesso programma, due risposte opposte, e il sospetto e' caduto sulla
+# rete per una notte intera.
+#
+# La domanda giusta e' "risponde QUALCUNO sul PC": l'agente per primo, che e' il
+# processo che conta davvero e che ha gia' un suo meccanismo di riparazione,
+# poi una qualunque delle istanze. Un solo componente morto non puo' piu'
+# spegnere l'intero sistema.
+host_up(){
+  local h; h="$(agent_host)"
+  [ -n "$h" ] || return 1
+
+  # La risposta si ricorda per DUE secondi.
+  #
+  # Non e' un'ottimizzazione di lusso: host_up viene chiamata piu' volte dentro
+  # una sola apertura (agent_revive, poi pick_slot, che ci prova due volte), e
+  # con il PC spento ogni chiamata paga il timeout per intero. Senza cache
+  # l'apertura a PC spento e' passata da 7 a 14 secondi - il test host-down.sh
+  # l'ha preso al primo giro.
+  #
+  # Due secondi e non cinque minuti come agent_host: qui la risposta e' proprio
+  # "il PC c'e'?", e ricordarsi a lungo un "no" farebbe dire "PC spento" a un PC
+  # appena tornato. Due secondi coprono la durata di un comando e nient'altro.
+  # Il file porta l'indirizzo nel nome: cambiando rete non si eredita la
+  # risposta data per un altro host.
+  local cache="$CONFIG_DIR/host-up-${h//[^0-9A-Za-z]/_}"
+  if [ -f "$cache" ]; then
+    local eta; eta=$(( $(date +%s) - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
+    if [ "$eta" -lt 2 ]; then
+      [ "$(cat "$cache" 2>/dev/null)" = si ] && return 0
+      return 1
+    fi
+  fi
+
+  # L'agente per PRIMO, da solo e sincrono.
+  #
+  # E' il caso normale e deve costare quanto costa: un nc, trenta millisecondi.
+  # Provato a lanciare le sonde degli slot in parallelo per sovrapporle a questa
+  # domanda: su host SANO l'apertura ci ha rimesso fra 0.37 e 1.26 secondi
+  # (misurati) solo in fork e kill di processi il cui esito non serviva a
+  # nessuno - su un'apertura che ne dura due. Il caso raro non si paga in quello
+  # normale; a coprirlo c'e' la cache qui sopra, che lo fa costare una volta per
+  # comando invece di tre.
+  #
+  # Un secondo di pazienza, e NON meno.
+  #
+  # Provato a scendere a mezzo per recuperare tempo a PC spento: "nc -G" vuole
+  # un INTERO e tronca, quindi 0.5 diventa 0, cioe' "non aspettare affatto" -
+  # e nc fallisce anche su una porta viva (verificato: -G 1 passa, -G 0.9, 0.5
+  # e 0.3 falliscono tutte sulla stessa porta aperta). Il guasto si presenta al
+  # contrario di come lo si cerca: host-down.sh e' passato da 8s a 5s e sembrava
+  # un miglioramento, mentre in realta' host_up rispondeva "spento" senza
+  # guardare niente. Una misura che migliora perche' la funzione ha smesso di
+  # funzionare.
+  if reachable "$h" "$AGENT_PORT" 1 2>/dev/null; then
+    echo si >"$cache" 2>/dev/null || true
+    return 0
+  fi
+
+  # L'agente non risponde: adesso conta sapere se e' il PC a mancare o solo lui.
+  #
+  # Un SOLO nc su tutte le porte, non una sonda per slot in background. nc
+  # accetta piu' porte e le prova in fila dentro lo stesso processo: 1.19s a PC
+  # spento, misurato, contro i ~2.5s del ventaglio di sottoprocessi, e senza
+  # lasciare figli da uccidere. Il valore d'uscita di nc e' zero solo se hanno
+  # risposto TUTTE, quindi non si guarda quello: si contano le risposte.
+  # LC_ALL=C perche' la riga che si conta e' quella di nc, e tradotta non
+  # corrisponderebbe piu' - contarne zero vorrebbe dire "PC spento" sempre.
+  # E -G 1 come sopra, per lo stesso motivo: un valore frazionario viene
+  # troncato a zero e nessuna porta risulterebbe mai viva.
+  local n
+  n="$(LC_ALL=C nc -z -G 1 -v "$h" $(for i in $(seq 0 $(( ${SLOTS:-1} - 1 ))); do slot_port "$i"; done) 2>&1 \
+       | grep -c succeeded)"
+  # if e non "&& su=0": con set -e un test falso in mezzo alla funzione la
+  # termina, e qui il caso falso e' proprio quello normale (trappola gia'
+  # pagata due volte in questo file).
+  local su=1
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then su=0; fi
+  if [ "$su" = 0 ]; then echo si >"$cache" 2>/dev/null || true
+  else echo no >"$cache" 2>/dev/null || true; fi
+  return "$su"
+}
+
+# Un'istanza Sunshine morta si riavvia: il suo task sull'host c'e' gia'.
+#
+# Senza, uno slot perso resta perso fino al riavvio del PC. Non e' teoria:
+# sun0 e' morta alle 01:00 del 27/08 e alle 14:30 era ancora giu'.
+# Stesso freno di agent_revive: un tentativo al minuto per slot. Se muore
+# appena riavviata, il problema non e' quello che questa funzione cura.
+slot_revive(){ # slot
+  local slot="$1" marca="$CONFIG_DIR/sun-revive$1"
+  [ -n "${HOST_SSH:-}" ] || return 1
+  if [ -f "$marca" ]; then
+    local eta; eta=$(( $(date +%s) - $(stat -f %m "$marca" 2>/dev/null || echo 0) ))
+    if [ "$eta" -lt 60 ]; then return 1; fi
+  fi
+  date +%s >"$marca" 2>/dev/null || true
+  trace "slot $slot: istanza muta, riavvio winfleet-sun$slot"
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+    "schtasks /end /tn winfleet-sun$slot & schtasks /run /tn winfleet-sun$slot" >/dev/null 2>&1 || true
+  local k
+  for k in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if reachable "$(agent_host)" "$(slot_port "$slot")" 1 2>/dev/null; then
+      trace "slot $slot: istanza tornata"
+      return 0
+    fi
+  done
+  return 1
+}
+
 pick_slot(){ # [nome-app]
   # Se l'host non risponde AFFATTO, non c'e' niente da cercare.
   #
@@ -1261,19 +1380,27 @@ pick_slot(){ # [nome-app]
   # non lascia niente in giro.
   #
   # 1 = nessuno slot libero. 3 = l'host non risponde.
-  if ! reachable "$(agent_host)" "$(slot_port 0)" 1 2>/dev/null; then
+  if ! host_up; then
     trace "host non raggiungibile: nessuno slot da cercare"
     return 3
   fi
 
 
-  local i free="" named=""
+  local i free="" named="" mute=""
   for i in $(seq 0 $(( SLOTS - 1 ))); do
     slot_live "$i" && continue
     # Gia' scelto da un altro comando che lo sta avviando: da fuori sembra
     # libero, e infatti lo era - per qualche secondo ancora.
     slot_held "$i" && continue
-    case "$(slot_state "$i")" in *FREE*) ;; *) continue;; esac
+    # Un'istanza che non risponde va ANNOTATA, non solo saltata: se alla fine
+    # non resta niente di libero, quella e' l'unica cosa che si puo' ancora
+    # provare a riparare. Prima si scartava in silenzio e uno slot morto
+    # spariva dal sistema senza che nessuno lo dicesse mai.
+    case "$(slot_state "$i")" in
+      *FREE*) ;;
+      '')     [ -n "$mute" ] || mute="$i"; continue;;
+      *)      continue;;
+    esac
     # Una finestra non accoppiata e' inutilizzabile: lo stream non parte e resta
     # vuota. Si scarta subito, cosi' le altre - che funzionano - vengono usate
     # per prime invece di far fallire l'apertura su quella rotta.
@@ -1293,6 +1420,14 @@ pick_slot(){ # [nome-app]
   done
   if [ -n "$named" ]; then echo "$named"; return 0; fi
   [ -n "$free" ] && { echo "$free"; return 0; }
+  # Niente di libero, ma un'istanza muta c'e': prima di dire "tutte occupate" si
+  # prova a rianimarla. E' l'unico momento in cui conviene pagare i dieci
+  # secondi del riavvio - se ci fossero slot sani si sarebbe gia' usciti sopra.
+  if [ -n "$mute" ] && slot_revive "$mute"; then
+    case "$(slot_state "$mute")" in
+      *FREE*) if slot_paired "$mute"; then echo "$mute"; return 0; fi;;
+    esac
+  fi
   return 1
 }
 
@@ -1580,12 +1715,11 @@ agent_revive(){
   # non c'e', non c'e' nessun agente da rimettere in piedi e chi ha chiamato
   # dira' da solo che il PC e' spento.
   #
-  # Si bussa alla PRIMA ISTANZA, non al Sunshine di sistema: quello e'
-  # un'installazione a parte che winfleet non usa, e spegnerlo non deve far
-  # credere che il PC sia sparito.
-  local porta_viva="$SUN_PORT"
-  [ "${SLOTS:-0}" -gt 0 ] && porta_viva="$SLOT_BASE"
-  reachable "$(agent_host)" "$porta_viva" 1 2>/dev/null || return 1
+  # Si guarda se risponde QUALCUNO sul PC, non una porta scelta a caso. La
+  # versione precedente bussava alla sola prima istanza: con quella morta - ed
+  # e' successo, il 27/08 - un agente muto non sarebbe mai stato riparato,
+  # perche' da qui il PC sembrava spento.
+  host_up || return 1
   local marca="$CONFIG_DIR/agent-revived"
   # Non piu' di una volta al minuto: se l'agente muore appena riavviato, il
   # problema non e' quello che questa funzione cura.
@@ -5084,7 +5218,47 @@ cmd_doctor(){
   [ -x "$MOONLIGHT" ] && ok "Moonlight: $MOONLIGHT" || bad "Moonlight non trovato (brew install --cask moonlight)"
   [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
   if [ "${SLOTS:-0}" -gt 0 ]; then
-    ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+    # "4 finestre disponibili" era un conteggio della CONFIG, non una misura:
+    # lo diceva identico con un'istanza morta da tredici ore. Si guarda chi
+    # risponde davvero, e le mute si riavviano invece di limitarsi a contarle -
+    # un'istanza giu' e' uno slot perso fino al riavvio del PC.
+    #
+    # In parallelo: quattro colpi in fila a PC spento sono quattro secondi, e
+    # questa e' la prima riga del doctor - la si aspetta guardando lo schermo.
+    local nvive=0 morte="" j esiti; esiti="$(mktemp -d)"
+    for j in $(seq 0 $(( SLOTS - 1 ))); do
+      ( reachable "$(agent_host)" "$(slot_port "$j")" 1 2>/dev/null && : >"$esiti/$j" ) &
+    done
+    wait
+    for j in $(seq 0 $(( SLOTS - 1 ))); do
+      if [ -e "$esiti/$j" ]; then nvive=$(( nvive + 1 ))
+      else morte="${morte:+$morte }$(( j + 1 ))"; fi
+    done
+    rm -rf "$esiti"
+    if [ -z "$morte" ]; then
+      ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+    else
+      bad "$nvive finestre su $SLOTS: l'istanza $morte non risponde"
+      local risorte="" fallite="" m
+      for m in $morte; do
+        # Anche quando slot_revive dice di no si RIGUARDA la porta: il suo freno
+        # di un minuto fa dire "no" pur non avendo provato niente, e due doctor
+        # di fila avrebbero accusato un'istanza tornata su.
+        if slot_revive $(( m - 1 )) || reachable "$(agent_host)" "$(slot_port $(( m - 1 )))" 1 2>/dev/null; then
+          risorte="${risorte:+$risorte }$m"
+        else
+          fallite="${fallite:+$fallite }$m"
+        fi
+      done
+      # if e non "&& ok": con set -e una lista che finisce falsa termina la
+      # funzione, e qui il caso normale e' proprio quello (trappola gia' pagata).
+      if [ -n "$risorte" ]; then
+        ok "  istanza $risorte riavviata: la finestra e' tornata"
+      fi
+      if [ -n "$fallite" ]; then
+        info "  istanza $fallite non riparte: schtasks /run /tn winfleet-sun<n-1> sull'host"
+      fi
+    fi
 
     # Le finestre calde: e' l'unica cosa che decide se un'app si apre in due
     # secondi o in quindici, e quando manca non lo dice nessuno. E' successo:
