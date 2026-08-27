@@ -35,7 +35,7 @@ cat > "$tmp/hosts" <<'H'
 192.168.1.5 altro-pc.local
 127.0.0.1 uno.localhost due.localhost
 H
-prima_altre="$(grep -v 'windowsatti' "$tmp/hosts")"
+prima_altre="$(grep -v 'pcdicasa' "$tmp/hosts")"
 
 # La stessa riscrittura di hosts_pin, isolata: togli le righe che nominano il
 # nome, poi aggiungi quella nuova.
@@ -47,8 +47,8 @@ riscrivi(){ # file ip nome
 }
 
 # --- 1. la voce si aggiunge ------------------------------------------------
-riscrivi "$tmp/hosts" 192.168.1.9 windowsatti.local
-if grep -qx "192.168.1.9 windowsatti.local" "$tmp/hosts"; then
+riscrivi "$tmp/hosts" 192.168.1.42 pcdicasa.local
+if grep -qx "192.168.1.42 pcdicasa.local" "$tmp/hosts"; then
   echo "  ok   la voce viene scritta"
 else
   echo "  NO   la voce non c'e' dopo la scrittura"
@@ -59,9 +59,9 @@ fi
 # E' il caso vero: il DHCP ha spostato il PC da .2 a .9. Due voci per lo stesso
 # nome fanno risolvere quella sbagliata, e il sintomo e' una finestra che non
 # si apre - senza nessun errore che nomini /etc/hosts.
-riscrivi "$tmp/hosts" 192.168.1.20 windowsatti.local
-n="$(grep -c 'windowsatti\.local' "$tmp/hosts" || true)"
-if [ "$n" = 1 ] && grep -qx "192.168.1.20 windowsatti.local" "$tmp/hosts"; then
+riscrivi "$tmp/hosts" 192.168.1.20 pcdicasa.local
+n="$(grep -c 'pcdicasa\.local' "$tmp/hosts" || true)"
+if [ "$n" = 1 ] && grep -qx "192.168.1.20 pcdicasa.local" "$tmp/hosts"; then
   echo "  ok   cambiando IP la voce si sostituisce, non si accumula"
 else
   echo "  NO   $n voci per lo stesso nome: risolverebbe l'indirizzo sbagliato"
@@ -70,7 +70,7 @@ fi
 
 # --- 3. e non tocca NIENTE altro -------------------------------------------
 # La cosa che conta davvero: questo file non e' nostro.
-dopo_altre="$(grep -v 'windowsatti' "$tmp/hosts")"
+dopo_altre="$(grep -v 'pcdicasa' "$tmp/hosts")"
 if [ "$prima_altre" = "$dopo_altre" ]; then
   echo "  ok   le altre voci di /etc/hosts restano identiche"
 else
@@ -80,15 +80,15 @@ else
 fi
 
 # --- 4. un nome che ne CONTIENE un altro non viene travolto ----------------
-# "windowsatti.local" non deve portarsi via "vecchio-windowsatti.local", e
+# "pcdicasa.local" non deve portarsi via "vecchio-pcdicasa.local", e
 # viceversa: il filtro cerca il nome preceduto da spazio e seguito da spazio o
 # fine riga, non una sottostringa qualsiasi.
-printf '10.0.0.1 vecchio-windowsatti.local\n' >> "$tmp/hosts"
-riscrivi "$tmp/hosts" 192.168.1.30 windowsatti.local
-if grep -qx "10.0.0.1 vecchio-windowsatti.local" "$tmp/hosts"; then
+printf '10.0.0.1 vecchio-pcdicasa.local\n' >> "$tmp/hosts"
+riscrivi "$tmp/hosts" 192.168.1.30 pcdicasa.local
+if grep -qx "10.0.0.1 vecchio-pcdicasa.local" "$tmp/hosts"; then
   echo "  ok   un nome che ne contiene un altro non viene toccato"
 else
-  echo "  NO   «vecchio-windowsatti.local» e' stato rimosso per sbaglio"
+  echo "  NO   «vecchio-pcdicasa.local» e' stato rimosso per sbaglio"
   fail=1
 fi
 

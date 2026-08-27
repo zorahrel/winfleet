@@ -3,9 +3,9 @@
 #
 # Il guasto vero, 25/08: "Arc non ha ancora aperto una finestra", finestra
 # VUOTA per 88 secondi, e nel log di Moonlight l'unica riga che spiegava
-# qualcosa: 'Failed to connect to WindowsAtti.local:48089'. Sul PC,
+# qualcosa: 'Failed to connect to PCdiCasa.local:48089'. Sul PC,
 # steamwebhelper aveva preso la porta 5353 e il responder mDNS di Windows non
-# rispondeva piu': "windowsatti.local" era diventato irrisolvibile da questo
+# rispondeva piu': "pcdicasa.local" era diventato irrisolvibile da questo
 # Mac. winfleet indirizzava comunque le istanze per nome, perche' il nome era
 # scritto in config e nessuno controllava che valesse ancora qualcosa.
 #
@@ -38,7 +38,7 @@ addr_con(){ # ip_restituito_da_dscacheutil ("" = non risolve)
   /opt/homebrew/bin/bash -c '
     source bin/winfleet 2>/dev/null
     CONFIG_DIR="'"$tmp"'/cfg"
-    HOST_NAME="pcdicasa.local"; HOST_TS="100.0.0.1"; HOST_LAN="192.168.1.9"
+    HOST_NAME="pcdicasa.local"; HOST_TS="100.0.0.1"; HOST_LAN="192.168.1.42"
     SLOT_BASE=48089
     host_name_resolves(){
       local ip="'"$1"'"
@@ -62,13 +62,13 @@ verifica(){ # descrizione ip atteso
 # --- 1. il nome si usa quando vale ------------------------------------------
 # E' la via preferita: Moonlight confronta gli host per indirizzo ignorando la
 # porta, quindi un IP nudo finirebbe sull'istanza di sistema.
-verifica "il nome risolve"        "192.168.1.9" "pcdicasa.local:48089"
+verifica "il nome risolve"        "192.168.1.42" "pcdicasa.local:48089"
 
 # --- 2. e si ripiega quando non vale ----------------------------------------
 verifica "il nome non risolve"    ""            "100.0.0.1:48089"
 
 # --- 3. il router che risponde per se' non conta ----------------------------
-# Visto dal vivo: il DNS di casa risolveva "windowsatti.homenet.telecomitalia.it"
+# Visto dal vivo: il DNS di casa risolveva "pcdicasa.homenet.example"
 # in 127.0.0.1. Un nome che risolve a localhost e' peggio di uno che non
 # risolve: lo stream parte e si connette a se stesso.
 verifica "risolve a localhost"    "127.0.0.1"   "100.0.0.1:48089"
@@ -77,15 +77,15 @@ verifica "risolve a localhost"    "127.0.0.1"   "100.0.0.1:48089"
 lan="$(/opt/homebrew/bin/bash -c '
   source bin/winfleet 2>/dev/null
   CONFIG_DIR="'"$tmp"'/cfg4"; mkdir -p "$CONFIG_DIR"
-  HOST_NAME="pcdicasa.local"; HOST_TS=""; HOST_LAN="192.168.1.9"
+  HOST_NAME="pcdicasa.local"; HOST_TS=""; HOST_LAN="192.168.1.42"
   SLOT_BASE=48089
   host_name_resolves(){ return 1; }
   echo "A=$(slot_addr 1)"
 ' 2>/dev/null | sed -n 's/^A=//p')"
-if [ "${lan:-x}" = "192.168.1.9:48189" ]; then
+if [ "${lan:-x}" = "192.168.1.42:48189" ]; then
   echo "  ok   senza Tailscale ripiega sulla LAN: $lan"
 else
-  echo "  NO   senza Tailscale: atteso «192.168.1.9:48189», ottenuto «${lan:-(niente)}»"
+  echo "  NO   senza Tailscale: atteso «192.168.1.42:48189», ottenuto «${lan:-(niente)}»"
   fail=1
 fi
 

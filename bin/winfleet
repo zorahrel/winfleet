@@ -938,10 +938,10 @@ slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
 #
 # Ma il nome puo' SPARIRE, e allora non indirizza piu' niente. Successo il
 # 25/08: steamwebhelper aveva preso la porta 5353 sul PC, il responder mDNS di
-# Windows non rispondeva piu' e "windowsatti.local" era diventato irrisolvibile
+# Windows non rispondeva piu' e "pcdicasa.local" era diventato irrisolvibile
 # da questo Mac. Da fuori: la finestra si apriva ed era VUOTA per 88 secondi,
 # perche' Moonlight non trovava l'host - "Failed to connect to
-# WindowsAtti.local:48089" nel suo log, e nessun errore da nessun'altra parte.
+# PCdiCasa.local:48089" nel suo log, e nessun errore da nessun'altra parte.
 #
 # Quindi il nome si usa solo se risolve DAVVERO. Se non risolve si ripiega su un
 # indirizzo: la collisione con l'istanza di sistema e' un fastidio (si potrebbe
@@ -981,7 +981,7 @@ host_name_resolves(){
       };
   ' 2>/dev/null)"
   # 127.x non e' l'host: e' il router di casa che risponde con il proprio
-  # dominio (visto con "windowsatti.homenet.telecomitalia.it" -> 127.0.0.1).
+  # dominio (visto con "pcdicasa.homenet.example" -> 127.0.0.1).
   # Streamare li' vuol dire connettersi a se stessi.
   case "$ip" in
     ''|127.*) echo no > "$memo" 2>/dev/null || true; return 1;;
@@ -5492,7 +5492,7 @@ cmd_doctor(){
   # per INDIRIZZO mentre Moonlight streama per NOME. Sul PC steamwebhelper
   # aveva preso la porta 5353 e il responder mDNS di Windows era muto: da qui
   # il nome sembrava sparito, e l'unica riga che lo diceva era sepolta nel log
-  # di Moonlight ("Failed to connect to WindowsAtti.local:48089").
+  # di Moonlight ("Failed to connect to PCdiCasa.local:48089").
   if [ -n "${HOST_NAME:-}" ]; then
     rm -f "$CONFIG_DIR/host-name-ok" 2>/dev/null || true
     if host_name_resolves; then

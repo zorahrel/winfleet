@@ -36,7 +36,7 @@ CONFIG="$HOME/.config/winfleet/config.env"
 [ -f "$CONFIG" ] || { echo "  SKIP: nessuna configurazione"; exit 0; }
 LAN="$(awk -F'"' '/^HOST_LAN=/{print $2}' "$CONFIG")"
 # L'indirizzo ssh si legge dalla CONFIG, non si ricostruisce da HOST_LAN: la
-# chiave dell'host e' nota per l'indirizzo Tailscale, e "zorah@192.168.1.9"
+# chiave dell'host e' nota per l'indirizzo Tailscale, e "utente@192.168.1.42"
 # fallisce con «Host key verification failed» - due controlli su quattro
 # rossi per una ragione che non c'entrava niente con winfleet.
 SSHH="$(awk -F'"' '/^HOST_SSH=/{print $2}' "$CONFIG")"
