@@ -100,7 +100,7 @@ else
     *viva=1*mostrata=1*)
       echo "  ok   dal vivo: la tray gira e l'icona e' nella barra  ($stato)";;
     *)
-      echo "  NO   risposta inattesa da /tray: «$stato»"
+      echo "  NO   risposta inattesa da /tray: «${stato}»"
       fail=1;;
   esac
 fi

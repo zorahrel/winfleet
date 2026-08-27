@@ -95,7 +95,7 @@ else
       echo "  NO   l'agente non conosce /engine: aggiorna l'host (winfleet push)"
       fail=1;;
     *installato=1*)
-      echo "  NO   Sunshine risulta installato sul PC: «$stato»"
+      echo "  NO   Sunshine risulta installato sul PC: «${stato}»"
       fail=1;;
     *fuori=0*)
       echo "  ok   dal vivo: motore dentro C:\\winfleet, nessun Sunshine installato  ($stato)"
@@ -116,7 +116,7 @@ else
         fail=1
       fi;;
     *)
-      echo "  NO   qualche istanza gira fuori da C:\\winfleet: «$stato»"
+      echo "  NO   qualche istanza gira fuori da C:\\winfleet: «${stato}»"
       fail=1;;
   esac
 fi

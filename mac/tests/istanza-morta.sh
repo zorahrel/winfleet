@@ -84,7 +84,7 @@ else
   if [ "$esito" = VIVO ]; then
     echo "  ok   agente vivo + istanze morte: il PC risulta acceso"
   else
-    echo "  NO   agente vivo + istanze morte: winfleet dice ancora «$esito»"
+    echo "  NO   agente vivo + istanze morte: winfleet dice ancora «${esito}»"
     fail=1
   fi
 fi
@@ -121,7 +121,7 @@ if [ -n "${porta:-}" ]; then
   if [ "$esito2" = SPENTO ]; then
     echo "  ok   nessuno risponde: il PC risulta spento (la funzione guarda davvero)"
   else
-    echo "  NO   nessuno risponde ma host_up dice «$esito2»"
+    echo "  NO   nessuno risponde ma host_up dice «${esito2}»"
     fail=1
   fi
 fi
