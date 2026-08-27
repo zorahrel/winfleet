@@ -5361,14 +5361,28 @@ cmd_doctor(){
       # Scorta spenta di proposito: le aperture costano due secondi comunque,
       # misurati, e tenere finestre pronte costerebbe due slot e due stream per
       # guadagnare mezzo secondo. Non e' un guasto e non va segnalato come tale.
-      ok "apertura diretta  ${c_dim}(~2s; nessuna finestra tenuta pronta, WF_WARM=2 per riaccenderle)${c_off}"
-      # L'agente si rimette anche adesso che non serve. Se lo si lasciasse
-      # mancante, il giorno in cui qualcuno scrive WF_WARM=2 non succederebbe
-      # niente - scorta a zero per sempre - e il sospetto cadrebbe sulla scorta,
-      # non su un servizio che manca. Costa un controllo e non stampa nulla
-      # quando e' gia' a posto.
-      if ! launchctl print "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
-        ensure_ready_agent >/dev/null 2>&1 || true
+      # Il rimedio indica la CONFIG, non l'ambiente.
+      #
+      # Prima diceva "WF_WARM=2 per riaccenderle", e quella strada non funziona:
+      # config.env viene caricato a ogni avvio del comando e sovrascrive
+      # l'ambiente, quindi "WF_WARM=2 winfleet doctor" viene ignorato senza dire
+      # niente. Provato: l'agente non tornava, e il messaggio mandava a cercare
+      # un guasto che non c'era.
+      ok "apertura diretta  ${c_dim}(~2s; per riaccendere la scorta: WF_WARM=2 in config.env)${c_off}"
+
+      # E l'agente launchd si TOGLIE, invece di tenerlo caricato "per quando
+      # servira'".
+      #
+      # Prima lo si rimetteva anche qui, col ragionamento che il giorno in cui
+      # qualcuno riaccende la scorta deve trovarlo pronto. Ma cosi' un servizio
+      # si sveglia ogni due minuti, per mesi, per accorgersi che non ha niente
+      # da fare - e chi guarda "launchctl list" trova un pezzo di winfleet vivo
+      # che non serve a nessuno. Riaccendere la scorta significa scrivere
+      # WF_WARM=2 e lanciare un doctor: e' quel doctor a rimetterlo, dal ramo
+      # qui sotto. Niente resta acceso per un futuro che magari non arriva.
+      if launchctl print "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1; then
+        launchctl bootout "gui/$(id -u)/com.winfleet.ready" >/dev/null 2>&1 || true
+        info "  tolto il rifornitore dai servizi attivi  ${c_dim}(non serviva a scorta spenta)${c_off}"
       fi
     elif [ "$nwarm" -ge 1 ]; then
       ok "$nwarm finestre tenute pronte  ${c_dim}(le app ci si aprono sopra in ~2s)${c_off}"
