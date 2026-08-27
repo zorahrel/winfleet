@@ -290,8 +290,34 @@ try {
         # monitor li stacca il watchdog del driver da solo qualche secondo dopo,
         # che e' l'unico modo che funziona (rimuoverli a mano rompe il driver).
         $miei = $PID
-        $altri = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
-                   Where-Object { $_.ProcessId -ne $miei -and $_.CommandLine -like '*wf-vdd*' })
+        # Si cerca per RIGA DI COMANDO, non per nome del processo.
+        #
+        # Il filtro era "Name='powershell.exe'", e ha smesso di funzionare nel
+        # momento in cui i task hanno cominciato a lanciare gli script tramite
+        # "conhost --headless" (serviva a non lasciare una console aperta sul
+        # desktop): il processo che porta wf-vdd nella sua riga di comando si
+        # chiama ora conhost.exe, e il vecchio filtro non lo vedeva. Risultato
+        # verificato sull'host: DUE pinger vivi insieme, il log fermo a meta' e
+        # i quattro monitor virtuali staccati - cioe' winfleet che non apre piu'
+        # niente. Il nome del processo e' un dettaglio di come lo si avvia; la
+        # riga di comando dice cosa sta facendo, ed e' quello che conta.
+        #
+        # Ma "tutti quelli con wf-vdd nella riga" e' TROPPO largo, e la prima
+        # versione di questa correzione ha fatto danni peggiori: con conhost la
+        # coppia e' conhost(padre) -> powershell(figlio), e il figlio vedeva il
+        # proprio padre come "un altro pinger" e lo uccideva - ammazzando se
+        # stesso. Nel log: "c'e' gia' un altro wf-vdd (1)" ogni dieci secondi,
+        # in un ciclo infinito, con zero monitor attaccati.
+        #
+        # Si esclude quindi la PROPRIA catena: se stessi, il proprio padre, e i
+        # propri figli. Quel che resta e' un pinger davvero di qualcun altro.
+        $mioPadre = (Get-CimInstance Win32_Process -Filter "ProcessId=$miei" -EA SilentlyContinue).ParentProcessId
+        $altri = @(Get-CimInstance Win32_Process -EA SilentlyContinue |
+                   Where-Object { $_.CommandLine -like '*wf-vdd.ps1*' -and
+                                  $_.ProcessId     -ne $miei -and
+                                  $_.ProcessId     -ne $mioPadre -and
+                                  $_.ParentProcessId -ne $miei })
+
         if ($altri.Count -gt 0) {
             Note "c'e' gia' un altro wf-vdd ($($altri.Count)): lo chiudo e aspetto che il driver stacchi i suoi"
             foreach ($a in $altri) { Stop-Process -Id $a.ProcessId -Force -EA SilentlyContinue }
@@ -352,8 +378,13 @@ try {
         if (-not $pulito) {
             $pulito = $true
             try {
-                $vecchi = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
-                            Where-Object { $_.CommandLine -like '*wf-vdd.ps1*' -and $_.ProcessId -ne $PID })
+                # Per riga di comando: vedi la nota sopra sul conhost.
+                $vddPadre = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -EA SilentlyContinue).ParentProcessId
+                $vecchi = @(Get-CimInstance Win32_Process -EA SilentlyContinue |
+                            Where-Object { $_.CommandLine -like '*wf-vdd.ps1*' -and
+                                           $_.ProcessId       -ne $PID -and
+                                           $_.ProcessId       -ne $vddPadre -and
+                                           $_.ParentProcessId -ne $PID })
                 foreach ($v in $vecchi) {
                     Note "spengo un pinger precedente (pid $($v.ProcessId))"
                     Stop-Process -Id $v.ProcessId -Force -EA SilentlyContinue

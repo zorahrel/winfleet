@@ -2464,7 +2464,16 @@ cmd_push(){
   [ -d "$src" ] || die "Non trovo la cartella host/ in $WF_ROOT."
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
     "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path C:\\winfleet | Out-Null\"" >/dev/null 2>&1
-  for f in "$src"/*.ps1; do
+  # Anche i .vbs, non solo i .ps1.
+  #
+  # host/wf-run-hidden.vbs e' quello che lancia i processi persistenti senza
+  # finestra: se non arriva sull'host, i task lo cercano e non lo trovano - e il
+  # sintomo non e' un errore, e' winfleet che non parte piu' affatto. Il push
+  # copiava solo *.ps1, quindi il file sarebbe rimasto sul Mac per sempre.
+  for f in "$src"/*.ps1 "$src"/*.vbs; do
+    # Il glob che non trova niente resta letterale: si salta, invece di provare
+    # a caricare un file di nome "*.vbs".
+    [ -f "$f" ] || continue
     # Prima si prova con l'AGENTE, che parla HTTP.
     #
     # ssh su Windows si stanca: dopo una sessione fitta comincia a chiudere le

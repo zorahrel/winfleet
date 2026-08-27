@@ -64,8 +64,16 @@ Set-Content $LOG ''
 # ucciderebbe qualsiasi script di chiunque.
 try {
     $mio = $PID
-    $vecchi = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
-                Where-Object { $_.CommandLine -like '*wf-agent.ps1*' -and $_.ProcessId -ne $mio })
+    # Per RIGA DI COMANDO, non per nome del processo: con "conhost --headless"
+    # (che i task usano per non lasciare console aperte sul desktop) il processo si
+    # chiama conhost.exe, e un filtro sul nome non lo vede. Gia' costato quattro
+    # monitor virtuali staccati e due pinger vivi insieme.
+    $mioPadre = (Get-CimInstance Win32_Process -Filter "ProcessId=$mio" -EA SilentlyContinue).ParentProcessId
+    $vecchi = @(Get-CimInstance Win32_Process -EA SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*wf-agent.ps1*' -and
+                               $_.ProcessId       -ne $mio -and
+                               $_.ProcessId       -ne $mioPadre -and
+                               $_.ParentProcessId -ne $mio })
     foreach ($v in $vecchi) {
         Note "spengo un agente precedente (pid $($v.ProcessId))"
         Stop-Process -Id $v.ProcessId -Force -EA SilentlyContinue

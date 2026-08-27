@@ -67,8 +67,16 @@ Note "avvio: $Slots finestre, base $SlotBase, agente $AgentPort"
 # lascerebbe un'icona in piu' nella barra: quattro icone identiche che dicono la
 # stessa cosa sono peggio di nessuna, perche' chi guarda pensa a un guasto.
 $mio = $PID
-Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
-  Where-Object { $_.ProcessId -ne $mio -and $_.CommandLine -like '*wf-tray.ps1*' } |
+# Per RIGA DI COMANDO, non per nome del processo: con "conhost --headless"
+# (che i task usano per non lasciare console aperte sul desktop) il processo si
+# chiama conhost.exe, e un filtro sul nome non lo vede. Gia' costato quattro
+# monitor virtuali staccati e due pinger vivi insieme.
+$mioPadre = (Get-CimInstance Win32_Process -Filter "ProcessId=$mio" -EA SilentlyContinue).ParentProcessId
+Get-CimInstance Win32_Process -EA SilentlyContinue |
+  Where-Object { $_.CommandLine -like '*wf-tray.ps1*' -and
+                 $_.ProcessId       -ne $mio -and
+                 $_.ProcessId       -ne $mioPadre -and
+                 $_.ParentProcessId -ne $mio } |
   ForEach-Object {
     Note "c'e' gia' una tray (pid $($_.ProcessId)): la chiudo"
     Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue

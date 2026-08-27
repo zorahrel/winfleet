@@ -21,9 +21,44 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$arg = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd.ps1 ' +
-       "-Count $Slots"
-$action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+# I processi persistenti si lanciano tramite un VBScript che avvia powershell
+# senza finestra.
+#
+# Il problema: "-WindowStyle Hidden" non basta. Quando un task avvia
+# powershell.exe, Windows gli alloca comunque una console, e su un PC dove il
+# terminale predefinito e' Windows Terminal quella console diventa una FINESTRA
+# VERA sul desktop. Sull'host si vedeva la console di wf-vdd con dentro "PING -
+# i monitor restano finche' questo processo vive": un dettaglio interno in mezzo
+# allo schermo, e per giunta chiudibile per sbaglio - chiudendola si staccano
+# tutti i monitor virtuali.
+#
+# Due strade provate e scartate, in ordine:
+#
+# 1) ShowWindow(SW_HIDE) sulla propria console. Nasconde la console classica, non
+#    la finestra di Windows Terminal che la ospita in una scheda. Verificato
+#    fotografando il desktop - non leggendo MainWindowHandle, che su questi
+#    processi vale 0 mentre la finestra sullo schermo c'e' eccome.
+#
+# 2) "conhost.exe --headless". La finestra sparisce davvero, ma il processo
+#    dentro si BLOCCA: wf-vdd restava vivo con il log fermo al primo giro e i
+#    quattro monitor virtuali staccati. Una console headless non regge un
+#    processo che deve girare per sempre e scrivere di continuo. Il sintomo e'
+#    il peggiore possibile - processo presente, task "In esecuzione", e niente
+#    che funziona.
+#
+# wscript.exe non alloca console AFFATTO: non c'e' finestra da nascondere e non
+# c'e' console che si blocca. Lo script wf-run-hidden.vbs e' tre righe e lancia
+# quello che gli si passa.
+$HEADLESS = 'wscript.exe'
+function Arg-Headless([string]$psArgs) {
+    # //B = niente finestre di dialogo, //Nologo = niente banner.
+    "//B //Nologo C:\winfleet\wf-run-hidden.vbs powershell.exe $psArgs"
+}
+
+$arg = Arg-Headless ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd.ps1 ' +
+       "-Count $Slots")
+$action    = New-ScheduledTaskAction -Execute $HEADLESS -Argument $arg
+
 $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -85,7 +120,7 @@ Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $prin
 # ogni minuto per sempre.
 schtasks /create /tn winfleet-vdd-guard `
     /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1 -Count $Slots" `
-    /sc minute /mo 1 /ru $User /it /f | Out-Null
+    /sc minute /mo 1 /ru $User /it /f 2>&1 | Out-Null
 Write-Host "Task 'winfleet-vdd-guard' registrato: rimette i monitor se cadono"
 
 Write-Host "Task 'winfleet-vdd' registrato: $Slots monitor virtuali" -ForegroundColor Green
@@ -95,8 +130,8 @@ Write-Host "Avvia con:  schtasks /run /tn winfleet-vdd     (stato in C:\winfleet
 # Sta nella sessione interattiva perche' deve toccare finestre, e risponde in
 # millisecondi: e' la differenza fra un ridimensionamento che segue il trascinamento
 # e uno che arriva mezzo secondo dopo.
-$agentAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-agent.ps1'
+$agentAction = New-ScheduledTaskAction -Execute $HEADLESS `
+    -Argument (Arg-Headless '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-agent.ps1')
 # Elevato: mettersi in ascolto su una porta per tutte le interfacce e' un privilegio,
 # e senza si otterrebbe un rifiuto di accesso invece di un errore comprensibile.
 $agentPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
@@ -119,8 +154,8 @@ Write-Host "Agente registrato (winfleet-agent, porta 48088)." -ForegroundColor G
 # non puo' mettere icone nella barra di un Explorer che gira senza privilegi -
 # l'icona semplicemente non comparirebbe, senza un errore. E non le serve
 # nessun privilegio: legge porte su localhost e conta schermi.
-$trayAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-tray.ps1'
+$trayAction = New-ScheduledTaskAction -Execute $HEADLESS `
+    -Argument (Arg-Headless '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-tray.ps1')
 $trayPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
 $trayTrigger = New-ScheduledTaskTrigger -AtLogOn -User $User
 # Dopo l'agente: la prima cosa che l'icona controlla e' proprio se lui risponde,
@@ -135,7 +170,15 @@ Register-ScheduledTask -TaskName 'winfleet-tray' -Action $trayAction -Principal 
 # Va fatto DOPO che la tray e' partita almeno una volta, perche' prima Windows
 # non ha ancora creato la sua voce di registro: si registra il comando e lo si
 # lancia piu' avanti.
+#
+# "2>&1 | Out-Null" e non solo "| Out-Null": un task /sc once con un'ora gia'
+# passata fa scrivere a schtasks un AVVISO su stderr, e con
+# $ErrorActionPreference = 'Stop' PowerShell tratta qualunque riga su stderr di
+# un comando nativo come errore FATALE. Lo script moriva li', dopo aver
+# registrato l'agente e prima della tray: nessun messaggio, nessuna eccezione da
+# catturare, solo un setup che finiva a meta' - e l'icona nella barra che non
+# veniva mai registrata su un host nuovo.
 schtasks /create /tn winfleet-tray-show `
     /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-tray-show.ps1" `
-    /sc once /st 00:00 /rl limited /f | Out-Null
+    /sc once /st 00:00 /rl limited /f 2>&1 | Out-Null
 Write-Host "Icona nella barra registrata (winfleet-tray)." -ForegroundColor Green

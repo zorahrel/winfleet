@@ -19,7 +19,11 @@
 param([switch]$WhatIfOnly)
 $ErrorActionPreference = 'Continue'
 
-$agenti = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -EA SilentlyContinue |
+# Per RIGA DI COMANDO, non per nome del processo: con "conhost --headless"
+# (che i task usano per non lasciare console aperte sul desktop) il processo si
+# chiama conhost.exe, e un filtro sul nome non lo vede. Gia' costato quattro
+# monitor virtuali staccati e due pinger vivi insieme.
+$agenti = @(Get-CimInstance Win32_Process -EA SilentlyContinue |
             Where-Object { $_.CommandLine -like '*wf-agent.ps1*' })
 
 if (-not $agenti) { Write-Output 'nessun agente in esecuzione'; exit 0 }
