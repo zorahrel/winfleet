@@ -130,8 +130,21 @@ Write-Host "Avvia con:  schtasks /run /tn winfleet-vdd     (stato in C:\winfleet
 # Sta nella sessione interattiva perche' deve toccare finestre, e risponde in
 # millisecondi: e' la differenza fra un ridimensionamento che segue il trascinamento
 # e uno che arriva mezzo secondo dopo.
-$agentAction = New-ScheduledTaskAction -Execute $HEADLESS `
-    -Argument (Arg-Headless '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-agent.ps1')
+# L'agente NON passa dal lanciatore nascosto, e non e' una dimenticanza.
+#
+# Serve elevato (RunLevel Highest, sotto) per mettersi in ascolto su tutte le
+# interfacce, e l'elevazione non sopravvive al giro attraverso wscript: il
+# processo nasce, non riesce a prendere la porta e muore in silenzio - nel log
+# nemmeno una riga, perche' muore prima di aprirlo. Da fuori: "winfleet open"
+# smette di funzionare e il doctor dice solo "agente non risponde".
+#
+# Non e' un problema per il desktop: la sua console resta aperta un istante e
+# poi il processo va in ascolto senza scrivere piu' nulla, quindi non c'e' una
+# finestra che si guarda addosso come quella del pinger dei monitor. Il costo
+# di nasconderla non varrebbe il rischio di lasciare l'agente giu'.
+$agentAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-agent.ps1'
+
 # Elevato: mettersi in ascolto su una porta per tutte le interfacce e' un privilegio,
 # e senza si otterrebbe un rifiuto di accesso invece di un errore comprensibile.
 $agentPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
