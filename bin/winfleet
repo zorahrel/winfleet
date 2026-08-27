@@ -24,6 +24,7 @@ fi
 #   winfleet scan              rilegge l'elenco delle app installate sul PC
 #   winfleet push              carica gli script host sul PC (C:\winfleet)
 #   winfleet host-clean        toglie dal PC gli script che non sono del repo
+#   winfleet host-hide         rende Sunshine invisibile sul PC (resta il motore)
 #   winfleet host-name         fissa il nome del PC in /etc/hosts (se mDNS non va)
 #   winfleet fit               riporta le finestre a filo dei pixel che ricevono
 #   winfleet stop [n]          chiude una finestra, o tutte
@@ -1332,8 +1333,18 @@ slot_revive(){ # slot
   fi
   date +%s >"$marca" 2>/dev/null || true
   trace "slot $slot: istanza muta, riavvio winfleet-sun$slot"
+  # Il PROCESSO, non solo il task.
+  #
+  # "schtasks /end" chiude il task, non il sunshine.exe che ci gira dentro:
+  # quello resta vivo, tiene la porta, e il /run successivo trova il posto
+  # occupato. Visto il 27/08 su un'istanza che si dichiarava BUSY senza nessun
+  # client connesso: due riavvii del task non l'hanno toccata (il suo log era
+  # fermo da mezz'ora), e lo slot e' tornato libero solo uccidendo il pid che
+  # possedeva la porta. Stessa famiglia del guasto gia' annotato sull'agente.
+  local porta; porta="$(slot_port "$slot")"
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
-    "schtasks /end /tn winfleet-sun$slot & schtasks /run /tn winfleet-sun$slot" >/dev/null 2>&1 || true
+    "powershell -NoProfile -Command \"schtasks /end /tn winfleet-sun$slot | Out-Null; \$c = Get-NetTCPConnection -LocalPort $porta -State Listen -EA SilentlyContinue; if (\$c) { Stop-Process -Id \$c.OwningProcess -Force -EA SilentlyContinue }; Start-Sleep -Seconds 2; schtasks /run /tn winfleet-sun$slot | Out-Null\"" \
+    >/dev/null 2>&1 || true
   local k
   for k in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
@@ -2415,6 +2426,24 @@ Aggiungi a $CONFIG:   HOST_SSH=\"utente@indirizzo\""
 host_ps(){ ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST_SSH" \
             "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\$1" 2>/dev/null | tr -d '\r'; }
 
+# Sunshine e' il motore, non un'app: non deve farsi vedere sul PC.
+#
+# winfleet ci gira sopra - cattura lo schermo e codifica in NVENC - quindi
+# disinstallarlo spegnerebbe tutto. Ma chi usa il PC non deve incontrarlo mai:
+# quattro icone nella barra (una per istanza), un servizio che riparte da solo
+# sulla 47990, e una voce nel menu Start che invita ad aprire una web UI da cui
+# si puo' solo rompere la configurazione. L'unica faccia visibile del sistema e'
+# l'icona di winfleet, che parla di winfleet.
+#
+# I collegamenti si SPOSTANO in C:\winfleet\collegamenti-nascosti, non si
+# cancellano: se un giorno serve la web UI di Sunshine per una diagnosi, si
+# rimettono al loro posto.
+cmd_host_hide(){
+  need_ssh
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$HOST_SSH" \
+    'powershell -NoProfile -ExecutionPolicy Bypass -File C:\winfleet\wf-hide-sunshine.ps1' 2>&1 | tr -d '\r'
+}
+
 # Gli script dell'host vivono nel repo e devono arrivare sul PC. Si passa da base64
 # perche' fra ssh, cmd e PowerShell qualsiasi cosa non sia [A-Za-z0-9+/=] rischia di
 # essere reinterpretata per strada.
@@ -2617,7 +2646,11 @@ cmd_host_clean(){
   # C:\winfleet\run-now.ps1 che non esiste piu' (verificato: Test-Path False).
   # Aveva il prefisso giusto e per questo sembrava legittimo: un filtro sui
   # prefissi l'avrebbe protetto per sempre.
-  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-vdd,winfleet-vdd-guard,wf-nolock"
+  # winfleet-tray e winfleet-tray-show fanno parte dell'elenco: sono l'icona
+  # nella barra e il comando che la fa uscire dal cassetto nascosto. Senza,
+  # host-clean li cancellerebbe come residui e il PC tornerebbe muto.
+  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock"
+
   #
   # Il lavoro lo fa uno SCRIPT sull'host (host/wf-task-clean.ps1), non un
   # "-Command" inline: il quoting di "-Confirm:$false" non sopravvive al giro
@@ -5216,6 +5249,22 @@ cmd_doctor(){
   printf "${c_bold}WinFleet doctor${c_off}\n"
   [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
   [ -x "$MOONLIGHT" ] && ok "Moonlight: $MOONLIGHT" || bad "Moonlight non trovato (brew install --cask moonlight)"
+  # Il Moonlight "normale" in /Applications, quando winfleet usa il suo.
+  #
+  # Non e' spazzatura: resta la riserva per chi non ha compilato il fork con il
+  # ritaglio (bin/winfleet ci ripiega da solo). Ma finche' sta li' e' anche
+  # un'app che si apre per sbaglio dal Launchpad o da Spotlight - e aprirla
+  # SCOLLEGA gli stream in corso, perche' un host Sunshine parla con un client
+  # alla volta: dal punto di vista di chi guarda, le finestre delle app
+  # diventano nere tutte insieme senza motivo.
+  #
+  # Si dice e basta, senza toccare niente: cancellare l'unica riserva del
+  # sistema per una comodita' non e' un affare, e nasconderla dal Launchpad
+  # significa modificare un bundle firmato di qualcun altro.
+  if [ "$MOONLIGHT_APP" != "/Applications/Moonlight.app" ] && [ -d "/Applications/Moonlight.app" ]; then
+    info "c'e' anche /Applications/Moonlight.app  ${c_dim}(riserva; aprirlo a mano scollega gli stream)${c_off}"
+  fi
+
   [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
   if [ "${SLOTS:-0}" -gt 0 ]; then
     # "4 finestre disponibili" era un conteggio della CONFIG, non una misura:
@@ -5236,7 +5285,41 @@ cmd_doctor(){
     done
     rm -rf "$esiti"
     if [ -z "$morte" ]; then
-      ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+      # Vive, ma quante sono davvero USABILI?
+      #
+      # Un'istanza puo' rispondere e dichiararsi BUSY senza che nessun client
+      # sia connesso: la sessione resta appesa e quello slot e' perso. Non lo
+      # dice nessuno, perche' finche' ne restano di libere le aperture
+      # funzionano - e' successo il 27/08, "finestra 1 in uso (da un altro
+      # client)" con zero Moonlight sul Mac, e ci sarebbe rimasta per giorni.
+      #
+      # reap_stuck_slots sa curarlo, ma lo chiamavano solo il rifornitore e chi
+      # apre SENZA TROVARE POSTO: con tre slot liberi su quattro non partiva
+      # mai. Il doctor e' chi guarda lo stato di proposito, ed e' il posto
+      # giusto per accorgersene.
+      local appesi=0 s
+      for s in $(seq 0 $(( SLOTS - 1 ))); do
+        if ! slot_live "$s" 2>/dev/null; then
+          case "$(slot_state "$s")" in *BUSY*) appesi=$(( appesi + 1 ));; esac
+        fi
+      done
+      if [ "$appesi" = 0 ]; then
+        ok "$SLOTS finestre disponibili  ${c_dim}porte $(slot_port 0)…$(slot_port $(( SLOTS - 1 )))${c_off}"
+      else
+        bad "$appesi finestre occupate da sessioni appese: sono slot persi"
+        reap_stuck_slots >/dev/null 2>&1 || true
+        local ancora=0
+        for s in $(seq 0 $(( SLOTS - 1 ))); do
+          if ! slot_live "$s" 2>/dev/null; then
+            case "$(slot_state "$s")" in *BUSY*) ancora=$(( ancora + 1 ));; esac
+          fi
+        done
+        if [ "$ancora" = 0 ]; then
+          ok "  liberate: tutte e $SLOTS le finestre sono di nuovo disponibili"
+        else
+          info "  $ancora ancora occupate  ${c_dim}(winfleet stop <n>, o riavvia il PC)${c_off}"
+        fi
+      fi
     else
       bad "$nvive finestre su $SLOTS: l'istanza $morte non risponde"
       local risorte="" fallite="" m
@@ -5332,6 +5415,42 @@ cmd_doctor(){
     ok "agente sull'host: risponde  ${c_dim}(ridimensionamento immediato)${c_off}"
   else
     bad "agente sull'host non risponde: il ridimensionamento restera' indietro"
+  fi
+
+  # L'icona nella barra di Windows.
+  #
+  # E' l'unica cosa che dice, DAL PC, se winfleet sta bene. Senza, un guasto
+  # resta invisibile a chi sta usando la macchina: e' successo il 27/08, tredici
+  # ore con un'istanza morta e nessun segno da nessuna parte.
+  #
+  # Si guardano due cose diverse: che il processo giri, e che l'icona sia
+  # PROMOSSA. Windows 11 mette ogni icona nuova nel cassetto dietro la freccetta,
+  # e un'icona nel cassetto e' viva, cambia colore e non avvisa nessuno.
+  if [ -n "${HOST_SSH:-}" ]; then
+    local tstato; tstato="$(curl -s --max-time 3 "http://$(agent_host):$AGENT_PORT/tray" 2>/dev/null)"
+    case "$tstato" in
+      *viva=0*)
+        bad "icona nella barra del PC: assente (un guasto sul PC non lo vedrebbe nessuno)"
+        if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+             'schtasks /run /tn winfleet-tray' >/dev/null 2>&1; then
+          ok "  riavviata"
+        else
+          info "  sull'host:  schtasks /run /tn winfleet-tray"
+        fi
+        ;;
+      *mostrata=0*)
+        bad "icona nella barra del PC: nascosta nell'overflow, non la vede nessuno"
+        # Si ripara invece di spiegare dove cliccare: il comando c'e' gia'.
+        if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$HOST_SSH" \
+             'schtasks /run /tn winfleet-tray-show' >/dev/null 2>&1; then
+          ok "  promossa  ${c_dim}(Explorer riavviato sull'host)${c_off}"
+        else
+          info "  sull'host:  schtasks /run /tn winfleet-tray-show"
+        fi
+        ;;
+      *mostrata=1*) ok "icona nella barra del PC: visibile" ;;
+      *) info "icona nella barra del PC: non verificabile (agente muto)" ;;
+    esac
   fi
   # Il nome con cui si indirizzano le istanze esiste ancora?
   #
@@ -5648,6 +5767,7 @@ case "${1:-}" in
   scan)     cmd_scan;;
   push)     cmd_push;;
   host-clean) cmd_host_clean;;
+  host-hide) cmd_host_hide;;
   host-name) cmd_host_name;;
   fit)      cmd_fit;;
   stop)     shift; cmd_stop "$@";;

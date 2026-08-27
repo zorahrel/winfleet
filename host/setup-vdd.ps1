@@ -109,3 +109,33 @@ Remove-NetFirewallRule -DisplayName 'WinFleet agent' -EA SilentlyContinue
 New-NetFirewallRule -DisplayName 'WinFleet agent' -Direction Inbound -Action Allow -Protocol TCP `
     -LocalPort 48088 -RemoteAddress @('192.168.0.0/16','100.64.0.0/10') | Out-Null
 Write-Host "Agente registrato (winfleet-agent, porta 48088)." -ForegroundColor Green
+
+# --- l'icona nella barra ---------------------------------------------------
+# La faccia del sistema sul lato Windows. Nasce da un guasto preciso: l'istanza
+# Sunshine dello slot 0 e' morta da sola all'01:00 del 27/08 e non se n'e'
+# accorto nessuno per tredici ore, perche' sul PC non c'era niente da guardare.
+#
+# NON elevata (RunLevel Limited, a differenza dell'agente): un processo elevato
+# non puo' mettere icone nella barra di un Explorer che gira senza privilegi -
+# l'icona semplicemente non comparirebbe, senza un errore. E non le serve
+# nessun privilegio: legge porte su localhost e conta schermi.
+$trayAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-tray.ps1'
+$trayPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+$trayTrigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+# Dopo l'agente: la prima cosa che l'icona controlla e' proprio se lui risponde,
+# e dire "agente giu'" nei primi secondi di ogni accensione sarebbe un falso
+# allarme che insegna a ignorare l'icona.
+$trayTrigger.Delay = 'PT45S'
+Register-ScheduledTask -TaskName 'winfleet-tray' -Action $trayAction -Principal $trayPrincipal `
+    -Settings $settings -Trigger $trayTrigger -Force | Out-Null
+
+# Promuoverla non e' un vezzo: Windows 11 mette ogni icona nuova nel cassetto
+# nascosto dietro la freccetta, e un'icona che nessuno vede non avvisa nessuno.
+# Va fatto DOPO che la tray e' partita almeno una volta, perche' prima Windows
+# non ha ancora creato la sua voce di registro: si registra il comando e lo si
+# lancia piu' avanti.
+schtasks /create /tn winfleet-tray-show `
+    /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-tray-show.ps1" `
+    /sc once /st 00:00 /rl limited /f | Out-Null
+Write-Host "Icona nella barra registrata (winfleet-tray)." -ForegroundColor Green

@@ -616,6 +616,31 @@ public class Mon {
             }
         }
         elseif ($req.Url.AbsolutePath -eq '/ping') { $body = 'ok' }
+        elseif ($req.Url.AbsolutePath -eq '/tray') {
+            # C'e' l'icona nella barra, ed e' VISIBILE?
+            #
+            # Due domande diverse, e servono entrambe. Il processo puo' girare
+            # benissimo con l'icona chiusa nel cassetto dell'overflow di
+            # Windows 11: da fuori "la tray c'e'", e intanto nessuno la vede -
+            # cioe' il guasto che la tray doveva risolvere, un piano piu' su.
+            #
+            # La chiave di registro dice cosa Windows ha deciso di mostrare;
+            # IsPromoted=1 e' l'unica prova che l'icona sta nella barra e non
+            # dietro la freccetta.
+            $viva = @(Get-CimInstance Win32_Process -EA SilentlyContinue |
+                      Where-Object { $_.CommandLine -like '*wf-tray.ps1*' }).Count
+            $mostrata = 0
+            $base = 'HKCU:\Control Panel\NotifyIconSettings'
+            if (Test-Path $base) {
+                Get-ChildItem $base -EA SilentlyContinue | ForEach-Object {
+                    $p = Get-ItemProperty $_.PSPath -EA SilentlyContinue
+                    if (("" + $p.ExecutablePath) -like '*powershell.exe' -and $p.IsPromoted -eq 1) {
+                        $mostrata = 1
+                    }
+                }
+            }
+            $body = "viva=$viva mostrata=$mostrata"
+        }
         elseif ($req.Url.AbsolutePath -eq '/put') {
             # Scrivi un file in C:\winfleet, senza passare da ssh.
             #

@@ -464,6 +464,19 @@ else
   fail=1
 fi
 
+# --- 10c-quinquies. l'icona nella barra del PC -----------------------------
+# La faccia del sistema sul lato Windows. E' nata dalle tredici ore di guasto
+# invisibile: sul PC non c'era niente da guardare. Si controlla che ci sia E che
+# sia PROMOSSA - Windows 11 nasconde ogni icona nuova dietro la freccetta, e
+# un'icona nel cassetto e' viva, cambia colore e non avvisa nessuno.
+if /opt/homebrew/bin/bash mac/tests/tray-visibile.sh > "$TMP/tray.out" 2>&1; then
+  say "ok   icona sul PC: c'e' e si vede nella barra"
+else
+  say "NO   icona sul PC:"
+  sed 's/^/       /' "$TMP/tray.out"
+  fail=1
+fi
+
 # --- 10c-ter. un guasto passeggero non bandisce un'app ---------------------
 # Il rifornitore ricorda quali app "non aprono finestre qui" per non bruciare uno
 # slot ogni giro. Ma bastava UNA prova andata male: il Blocco note e' finito
