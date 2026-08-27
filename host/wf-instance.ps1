@@ -29,8 +29,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$exe = 'C:\Program Files\Sunshine\sunshine.exe'
-if (-not (Test-Path $exe)) { throw "Sunshine non trovato in $exe" }
+# Il motore: quello dentro C:\winfleet se c'e', altrimenti l'installazione.
+# La scelta sta in wf-engine.ps1, una volta sola per tutti gli script.
+. C:\winfleet\wf-engine.ps1
+$exe = Get-WinfleetEngine
+
 
 $state = 'C:\winfleet\vdd.json'
 if (-not (Test-Path $state)) { throw "Nessun monitor virtuale attivo: avvia il task winfleet-vdd." }
@@ -98,12 +101,20 @@ if ($true) {
 # con l'utenza gia' in uso sull'istanza di sistema: stessa password, ma identita' e
 # dispositivi accoppiati nuovi, cosi' Moonlight vede host distinti.
 if (-not (Test-Path "$dir\state.json")) {
-    $main = 'C:\Program Files\Sunshine\config\sunshine_state.json'
-    if (Test-Path $main) {
-        $j = Get-Content $main -Raw | ConvertFrom-Json
-        $seed = [ordered]@{ username = $j.username; salt = $j.salt; password = $j.password }
-    } else {
-        $seed = [ordered]@{}
+    # Il seme si cerca accanto al MOTORE, non in Program Files: da quando il
+    # motore vive in C:\winfleet\engine l'installazione puo' non esistere piu'
+    # affatto, e questo percorso fisso avrebbe smesso di trovare niente in
+    # silenzio - un'istanza nuova con credenziali diverse dalle altre.
+    $seed = [ordered]@{}
+    foreach ($cand in @(
+        (Join-Path (Split-Path (Get-WinfleetEngine)) 'config\sunshine_state.json'),
+        'C:\Program Files\Sunshine\config\sunshine_state.json'
+    )) {
+        if (Test-Path $cand) {
+            $j = Get-Content $cand -Raw | ConvertFrom-Json
+            $seed = [ordered]@{ username = $j.username; salt = $j.salt; password = $j.password }
+            break
+        }
     }
     [IO.File]::WriteAllText("$dir\state.json", ($seed | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding $false))
 }

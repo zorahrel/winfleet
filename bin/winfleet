@@ -69,14 +69,24 @@ WF_ROOT="$(cd "$(dirname "$WF_SELF")/.." && pwd)"
 CONFIG_DIR="${WINFLEET_CONFIG:-$HOME/.config/winfleet}"
 CONFIG="$CONFIG_DIR/config.env"
 DIRECT_STREAMS="$CONFIG_DIR/direct-streams"
-# Il Moonlight di WinFleet, se e' stato costruito (fork/build.sh): e' l'originale
-# piu' il ritaglio, cioe' l'unico che sappia mostrare la sola finestra dell'app.
-# Senza, si usa quello installato e si torna a far seguire la risoluzione.
+# Il client di winfleet: l'originale piu' il ritaglio (fork/build.sh), cioe' il
+# solo che sappia mostrare la sola finestra dell'app invece dello schermo intero.
+#
+# Vive dentro casa, in ~/.local/share/winfleet, e non serve avere Moonlight
+# INSTALLATO: il bundle e' autosufficiente (verificato, `--version` risponde da
+# solo e otool non mostra nessuna dipendenza da /Applications).
+#
+# /Applications/Moonlight.app resta accettato come ripiego per chi non ha ancora
+# costruito il fork - in quel caso si perde il ritaglio e si torna a far seguire
+# la risoluzione - ma non e' piu' un requisito: winfleet non chiede di installare
+# niente sul Mac, e l'app installata e' anche una cosa che si apre per sbaglio e
+# che, aprendosi, SCOLLEGA gli stream in corso.
 WINFLEET_MOONLIGHT="$HOME/.local/share/winfleet/Moonlight.app"
 if [ -z "${MOONLIGHT_APP:-}" ] && [ -d "$WINFLEET_MOONLIGHT" ]; then
   MOONLIGHT_APP="$WINFLEET_MOONLIGHT"
 fi
 MOONLIGHT_APP="${MOONLIGHT_APP:-/Applications/Moonlight.app}"
+
 MOONLIGHT="${MOONLIGHT_BIN:-$MOONLIGHT_APP/Contents/MacOS/Moonlight}"
 
 # Defaults, sovrascrivibili da config.env
@@ -5249,20 +5259,19 @@ cmd_doctor(){
   printf "${c_bold}WinFleet doctor${c_off}\n"
   [ -f "$CONFIG" ] && ok "config: $CONFIG" || bad "config assente: $CONFIG (winfleet setup)"
   [ -x "$MOONLIGHT" ] && ok "Moonlight: $MOONLIGHT" || bad "Moonlight non trovato (brew install --cask moonlight)"
-  # Il Moonlight "normale" in /Applications, quando winfleet usa il suo.
+  # Nulla di installato fuori da winfleet: e' il punto di tutto il sistema.
   #
-  # Non e' spazzatura: resta la riserva per chi non ha compilato il fork con il
-  # ritaglio (bin/winfleet ci ripiega da solo). Ma finche' sta li' e' anche
-  # un'app che si apre per sbaglio dal Launchpad o da Spotlight - e aprirla
-  # SCOLLEGA gli stream in corso, perche' un host Sunshine parla con un client
-  # alla volta: dal punto di vista di chi guarda, le finestre delle app
-  # diventano nere tutte insieme senza motivo.
-  #
-  # Si dice e basta, senza toccare niente: cancellare l'unica riserva del
-  # sistema per una comodita' non e' un affare, e nasconderla dal Launchpad
-  # significa modificare un bundle firmato di qualcun altro.
-  if [ "$MOONLIGHT_APP" != "/Applications/Moonlight.app" ] && [ -d "/Applications/Moonlight.app" ]; then
-    info "c'e' anche /Applications/Moonlight.app  ${c_dim}(riserva; aprirlo a mano scollega gli stream)${c_off}"
+  # Il client sta in ~/.local/share/winfleet, il motore in C:\winfleet\engine.
+  # Se ricompaiono, non e' una comodita' in piu': un Moonlight in /Applications
+  # e' un'app che si apre per sbaglio e che, aprendosi, SCOLLEGA gli stream
+  # (un host Sunshine parla con un client alla volta); un Sunshine installato
+  # e' un servizio che puo' riprendersi la 47990 e un binario che puo' essere
+  # aggiornato sotto i piedi delle istanze.
+  if [ -d "/Applications/Moonlight.app" ]; then
+    bad "Moonlight e' tornato in /Applications: aprirlo scollega gli stream"
+    info "  toglilo:  trash /Applications/Moonlight.app   ${c_dim}(winfleet usa il suo)${c_off}"
+  else
+    ok "Mac: nessun Moonlight installato  ${c_dim}(winfleet usa il suo)${c_off}"
   fi
 
   [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
@@ -5450,6 +5459,30 @@ cmd_doctor(){
         ;;
       *mostrata=1*) ok "icona nella barra del PC: visibile" ;;
       *) info "icona nella barra del PC: non verificabile (agente muto)" ;;
+    esac
+
+    # E sul PC, il motore da dove gira?
+    #
+    # Stessa domanda del Mac, dall'altra parte: winfleet deve essere l'unica
+    # cosa installata. Un Sunshine che ricompare non e' innocuo - il suo
+    # servizio si riprende la 47990 e il suo aggiornatore puo' cambiare il
+    # binario sotto le istanze in esecuzione.
+    local estato; estato="$(curl -s --max-time 3 "http://$(agent_host):$AGENT_PORT/engine" 2>/dev/null)"
+    case "$estato" in
+      '') : ;;   # agente muto: gia' detto sopra, non si ripete
+      *fuori=0*installato=0*servizio=0*)
+        ok "PC: motore dentro winfleet  ${c_dim}(nessun Sunshine installato)${c_off}" ;;
+      *installato=1*)
+        bad "PC: Sunshine risulta di nuovo installato"
+        info "  toglilo:  wf-engine-adopt.ps1 sull'host  ${c_dim}(copia il motore e disinstalla)${c_off}" ;;
+      *fuori=0*)
+        # Il pacchetto non c'e' ma il servizio si': un residuo che puo'
+        # riaccendersi da solo e prendersi la porta.
+        ok "PC: motore dentro winfleet"
+        info "  resta il servizio SunshineService  ${c_dim}(disabilitato; winfleet host-hide)${c_off}" ;;
+      *)
+        bad "PC: qualche istanza gira fuori da C:\\winfleet  ${c_dim}($estato)${c_off}"
+        info "  riavviale:  wf-inst-ctl.ps1 -Slot N -Action restart" ;;
     esac
   fi
   # Il nome con cui si indirizzano le istanze esiste ancora?

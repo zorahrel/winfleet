@@ -477,6 +477,20 @@ else
   fail=1
 fi
 
+# --- 10c-sexies. niente installato fuori da winfleet -----------------------
+# Il client vive in ~/.local/share/winfleet, il motore in C:\winfleet\engine.
+# Un Moonlight in /Applications si apre per sbaglio e SCOLLEGA gli stream; un
+# Sunshine installato porta un servizio che si riprende la 47990 e un
+# aggiornatore che cambia il binario sotto le istanze. E' una proprieta' che si
+# perde da sola - un brew install, un reinstall - quindi si controlla.
+if /opt/homebrew/bin/bash mac/tests/niente-installato.sh > "$TMP/niente.out" 2>&1; then
+  say "ok   winfleet e' l'unica cosa installata (client e motore dentro casa)"
+else
+  say "NO   installazioni fuori da winfleet:"
+  sed 's/^/       /' "$TMP/niente.out"
+  fail=1
+fi
+
 # --- 10c-ter. un guasto passeggero non bandisce un'app ---------------------
 # Il rifornitore ricorda quali app "non aprono finestre qui" per non bruciare uno
 # slot ogni giro. Ma bastava UNA prova andata male: il Blocco note e' finito

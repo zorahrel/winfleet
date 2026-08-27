@@ -641,6 +641,31 @@ public class Mon {
             }
             $body = "viva=$viva mostrata=$mostrata"
         }
+        elseif ($req.Url.AbsolutePath -eq '/engine') {
+            # Da dove gira il motore, e Sunshine risulta ancora installato?
+            #
+            # Il punto del sistema e' che sul PC non ci sia "Sunshine": niente
+            # voce fra i programmi, niente servizio che si riprende la 47990,
+            # niente binario che un aggiornamento puo' cambiare sotto i piedi
+            # delle istanze. Ma e' una proprieta' che si perde da sola - basta
+            # che qualcuno reinstalli - quindi va CONTROLLATA, non assunta.
+            # I percorsi di TUTTI i processi, senza deduplicare per contarli:
+            # "Sort-Object -Unique" collassa quattro istanze identiche in una
+            # sola voce, e il conteggio diceva "istanze=1" con quattro vive.
+            # Un numero sbagliato in un controllo e' peggio di nessun numero:
+            # qui avrebbe fatto sembrare mezzo sistema spento.
+            $tutti = @(Get-CimInstance Win32_Process -Filter "Name='sunshine.exe'" -EA SilentlyContinue |
+                       ForEach-Object { $_.ExecutablePath })
+            $fuori = @($tutti | Where-Object { $_ -and -not $_.StartsWith('C:\winfleet\') }).Count
+            $inst = 0
+            $u = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
+                                  HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -EA SilentlyContinue |
+                 Where-Object { $_.DisplayName -eq 'Sunshine' }
+            if ($u) { $inst = 1 }
+            $svc = 0
+            if (Get-Service SunshineService -EA SilentlyContinue) { $svc = 1 }
+            $body = "istanze=$($tutti.Count) fuori=$fuori installato=$inst servizio=$svc"
+        }
         elseif ($req.Url.AbsolutePath -eq '/put') {
             # Scrivi un file in C:\winfleet, senza passare da ssh.
             #

@@ -21,8 +21,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$exe  = 'C:\Program Files\Sunshine\sunshine.exe'
+# Il motore: quello dentro C:\winfleet se c'e', altrimenti l'installazione.
+. C:\winfleet\wf-engine.ps1
+$exe  = Get-WinfleetEngine
 $conf = "C:\winfleet\sun$Slot\sunshine.conf"
+
 
 function Get-Instance {
     Get-CimInstance Win32_Process -Filter "Name='sunshine.exe'" -EA SilentlyContinue |

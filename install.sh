@@ -6,15 +6,25 @@ cd "$(dirname "$0")"
 
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
-echo "==> Moonlight (client di streaming)"
-if [ -d "/Applications/Moonlight.app" ]; then
-  echo "  già installato"
+echo "==> client di streaming"
+# Il client di WinFleet vive dentro casa, in ~/.local/share/winfleet: e' Moonlight
+# piu' il ritaglio (fork/build.sh), l'unico che sappia mostrare la sola finestra
+# dell'app invece dello schermo intero.
+#
+# NON si installa piu' Moonlight in /Applications, ed e' una scelta, non una
+# dimenticanza: quell'app si apre per sbaglio dal Launchpad o da Spotlight, e
+# aprendola SCOLLEGA gli stream in corso - un host Sunshine parla con un client
+# alla volta, quindi da fuori le finestre delle app diventano nere tutte insieme
+# senza un motivo visibile. WinFleet non chiede di installare niente sul Mac.
+CLIENT="$HOME/.local/share/winfleet/Moonlight.app"
+if [ -d "$CLIENT" ]; then
+  echo "  già presente in ~/.local/share/winfleet"
+elif [ -d "/Applications/Moonlight.app" ]; then
+  echo "  uso quello installato (senza ritaglio: la finestra seguirà la risoluzione)"
+  echo "  per il client completo:  ./fork/build.sh"
 else
-  if command -v brew >/dev/null 2>&1; then
-    brew install --cask moonlight
-  else
-    echo "  Homebrew assente: installa Moonlight da https://moonlight-stream.org"
-  fi
+  echo "  manca. Costruiscilo con:  ./fork/build.sh"
+  echo "  (in alternativa, temporaneamente: brew install --cask moonlight)"
 fi
 
 echo "==> CLI winfleet → $BIN_DIR/winfleet"

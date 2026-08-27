@@ -22,9 +22,16 @@ The usual options each miss something:
 | Parsec / VNC (full screen) | ❌ | ✅ | ✅ | ✅ |
 | **WinFleet** | ✅ | ✅ | ✅ | ✅ |
 
-WinFleet doesn't reinvent the hard part. It stands on **[Sunshine]** (host) and
+WinFleet doesn't reinvent the hard part. It builds on **[Sunshine]** (capture + encode) and
 **[Moonlight]** (client) — the open-source, gaming-grade streaming stack — and adds the
 orchestration that turns them into a per-app, windowed experience.
+
+Neither is *installed* as an application, though. WinFleet carries them: the client lives in
+`~/.local/share/winfleet` (Moonlight plus a crop patch, so a window shows only the app and not
+the whole remote screen), the capture engine in `C:\winfleet\engine`. Nothing shows up in
+Programs and Features, no service claims port 47990, no app sits in the Launchpad waiting to be
+opened by mistake — and opening that app would disconnect your live streams, since a Sunshine
+host talks to one client at a time.
 
 [Sunshine]: https://github.com/LizardByte/Sunshine
 [Moonlight]: https://github.com/moonlight-stream/moonlight-qt
