@@ -491,6 +491,18 @@ else
   fail=1
 fi
 
+# --- 10c-septies. decoder video appesi -------------------------------------
+# Trovato un VTDecoderXPCService al 71% di CPU da 25 ore, orfano e senza niente
+# da decodificare. macOS di solito lo chiude da solo, ma quando non lo fa nessuno
+# se ne accorge: il nome del processo non dice "winfleet" da nessuna parte.
+if /opt/homebrew/bin/bash mac/tests/decoder-appeso.sh > "$TMP/decoder.out" 2>&1; then
+  say "ok   decoder video appesi: li vede e dice quale, senza ucciderli"
+else
+  say "NO   decoder video appesi:"
+  sed 's/^/       /' "$TMP/decoder.out"
+  fail=1
+fi
+
 # --- 10c-ter. un guasto passeggero non bandisce un'app ---------------------
 # Il rifornitore ricorda quali app "non aprono finestre qui" per non bruciare uno
 # slot ogni giro. Ma bastava UNA prova andata male: il Blocco note e' finito

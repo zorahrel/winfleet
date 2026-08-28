@@ -5283,6 +5283,57 @@ cmd_doctor(){
     ok "Mac: nessun Moonlight installato  ${c_dim}(winfleet usa il suo)${c_off}"
   fi
 
+  # Decoder video rimasti appesi senza nessuno che li usi.
+  #
+  # VTDecoderXPCService e' il decoder hardware di macOS: winfleet non lo avvia e
+  # non lo possiede - lo chiede il client quando apre uno stream, e macOS lo
+  # spegne quando il client se ne va. Di solito funziona: verificato aprendo e
+  # chiudendo una finestra, e anche uccidendo il client con kill -9, il decoder
+  # sparisce da solo.
+  #
+  # Ma non SEMPRE. Trovato uno rimasto vivo 25 ore dopo la fine dello stream, al
+  # 71% di CPU: 1204 minuti di processore bruciati, contro i 5 secondi degli
+  # altri decoder sani sulla stessa macchina. Il suo processo padre era morto
+  # (adottato da launchd) e non aveva piu' nessun file di lavoro aperto: stava
+  # decodificando il nulla, con le ventole accese. E nessuno poteva
+  # accorgersene, perche' il nome del processo non dice "winfleet" da nessuna
+  # parte - e chi lo vede in cima ad Activity Monitor non sa a cosa collegarlo.
+  #
+  # Non si uccidono da soli: un decoder puo' benissimo essere di Chrome, di
+  # Spotify o di qualunque video si stia guardando adesso. Si guarda solo il
+  # TEMPO DI CPU accumulato, che e' l'unica cosa che distingue un decoder al
+  # lavoro da uno impazzito, e si dice quale.
+  local dec
+  # Piu' di un'ora di CPU: un decoder onesto, anche dopo un film intero, sta
+  # molto sotto. Sotto quella soglia non si dice niente, per non trasformare
+  # un'informazione utile in rumore da ignorare.
+  dec="$(ps -axo pid=,time=,%cpu=,comm= 2>/dev/null \
+    | awk '/VTDecoderXPCService/ {
+             # "ps -o time" cambia forma a seconda di quanto ha girato:
+             #   MM:SS.ss          il caso normale (e anche 1204:03.93)
+             #   HH:MM:SS          oltre le 99 ore e 59 minuti
+             #   D-HH:MM:SS        oltre le 24 ore, su alcune versioni
+             # Leggerlo a un formato solo NON e un dettaglio: il decoder trovato
+             # appeso aveva "1204:03.93", e una lettura che assumesse HH:MM:SS
+             # avrebbe detto 1204 ORE. Peggio, il formato coi giorni letto come
+             # MM:SS sottostima - cioe il caso piu grave passerebbe inosservato.
+             s = $2; g = 0;
+             if (index(s, "-") > 0) { split(s, d, "-"); g = d[1] + 0; s = d[2] }
+             n = split(s, t, ":");
+             if (n == 3)      min = g*1440 + t[1]*60 + t[2];
+             else if (n == 2) min = g*1440 + (g > 0 ? t[1]*60 : t[1]);
+             else             min = 0;
+             if (min > 60) printf "%s %d %s\n", $1, min, $3;
+           }')"
+  if [ -n "$dec" ]; then
+    local ndec; ndec="$(printf '%s\n' "$dec" | wc -l | tr -d ' ')"
+    bad "$ndec decoder video appesi: bruciano CPU senza che nessuno li usi"
+    printf '%s\n' "$dec" | while read -r dp dm dc; do
+      info "  pid $dp: ${dm} minuti di CPU, ora al ${dc}%  ${c_dim}(chiudilo:  kill $dp)${c_off}"
+    done
+    info "  non li chiudo io: un decoder puo' essere di un video che stai guardando"
+  fi
+
   [ -n "${SCREEN:-}" ] && ok "schermo utile: $SCREEN" || info "schermo non ancora misurato (si misura alla prima finestra)"
   if [ "${SLOTS:-0}" -gt 0 ]; then
     # "4 finestre disponibili" era un conteggio della CONFIG, non una misura:
