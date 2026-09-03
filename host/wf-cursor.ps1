@@ -91,7 +91,20 @@ if ($Action -eq 'guard') {
     if (-not (Test-Path $MARK)) { return }
     [void][WFCur]::SystemParametersInfo($SPI_SETCURSORS, 0, [IntPtr]::Zero, 0)
     Remove-Item $MARK -Force -EA SilentlyContinue
-    Note "cursori rimessi dal guardiano (nessun battito da $([int]$eta)s)"
+    # "$([int]$eta)" andava in OVERFLOW quando il battito non esisteva affatto:
+    # $eta valeva Double::MaxValue e la conversione a Int32 usciva con
+    # "Valore troppo grande per un Int32", uccidendo lo script DOPO il ripristino
+    # - cioe' nel punto peggiore: il cursore torna, il marchio sparisce, e nel log
+    # non resta una riga. Trovato il 03/09/2026 perche' cursor.log era fermo al
+    # 28/08 mentre il guardiano stava chiaramente intervenendo (il marchio
+    # spariva). Un guardiano che agisce senza lasciare traccia e' indistinguibile
+    # da uno morto.
+    #
+    # Il caso "battito mai esistito" e' quello NORMALE, non un bordo: l'agente
+    # crea quel file solo mentre una finestra e' aperta, quindi appena il PC si
+    # accende non c'e'.
+    $quanto = if ($eta -gt 86400) { 'mai' } else { "$([int]$eta)s" }
+    Note "cursori rimessi dal guardiano (nessun battito da $quanto)"
     return
 }
 
