@@ -29,6 +29,29 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Il lanciatore nascosto, per i task che NON hanno bisogno di una console.
+#
+# "-WindowStyle Hidden" non basta: quando un'attivita' pianificata avvia
+# powershell.exe Windows gli alloca comunque una console, e su questo PC il
+# terminale predefinito e' Windows Terminal - quindi quella console e' una
+# FINESTRA VERA sul desktop, 1129x635, in mezzo a quello che si sta facendo.
+#
+# Misurato il 03/09/2026, campionando le finestre visibili ogni 100 ms dalla
+# sessione grafica: DUE finestre "Windows Terminal" comparivano insieme a ogni
+# minuto (:02) e restavano ~14 secondi, una per winfleet-cursor-guard e una per
+# winfleet-vdd-guard. Da qui le "due finestre del terminale che si aprono a
+# caso" - a caso non era: era un cron al minuto.
+#
+# Perche' wscript e non conhost --headless: la seconda toglie la finestra ma
+# BLOCCA il processo dentro (provata e scartata il 27/08 su wf-vdd). wscript.exe
+# non alloca console affatto. Vale per i task brevi e non elevati; l'agente
+# resta su powershell perche' attraverso wscript perde l'elevazione.
+$HEADLESS = 'wscript.exe'
+function Arg-Headless([string]$psArgs) {
+    # //B = niente finestre di dialogo, //Nologo = niente banner.
+    "//B //Nologo C:\winfleet\wf-run-hidden.vbs powershell.exe $psArgs"
+}
+
 # Il motore: quello dentro C:\winfleet se c'e', altrimenti l'installazione.
 # La scelta sta in wf-engine.ps1, una volta sola per tutti gli script.
 . C:\winfleet\wf-engine.ps1
@@ -152,8 +175,8 @@ Register-ScheduledTask -TaskName "winfleet-sun$Slot" -Action $action -Principal 
 # Un'attivita' pianificata "Interactive" gira invece nella sessione dello schermo,
 # che e' l'unica in cui quel cambiamento ha senso.
 foreach ($c in @('hide','restore')) {
-    $ca = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action $c"
+    $ca = New-ScheduledTaskAction -Execute $HEADLESS `
+        -Argument (Arg-Headless "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action $c")
     Register-ScheduledTask -TaskName "winfleet-cursor-$c" -Action $ca -Principal $principal `
         -Settings $settings -Force -EA SilentlyContinue | Out-Null
 }
@@ -168,10 +191,14 @@ foreach ($c in @('hide','restore')) {
 # Ogni minuto, all'infinito: non fa nulla se il battito e' fresco o se non c'e'
 # niente da ripristinare, quindi il costo a regime e' un processo che parte e
 # muore subito.
+#
+# Dal lanciatore nascosto: "un processo che parte e muore subito" apriva una
+# finestra di Windows Terminal ogni minuto per ~14 secondi (vedi la nota su
+# $HEADLESS in testa al file). Un guardiano che si nota e' un guardiano rotto.
 $gt = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration ([TimeSpan]::MaxValue)
-$ga = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action guard"
+$ga = New-ScheduledTaskAction -Execute $HEADLESS `
+    -Argument (Arg-Headless '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-cursor.ps1 -Action guard')
 Register-ScheduledTask -TaskName 'winfleet-cursor-guard' -Action $ga -Principal $principal `
     -Settings $settings -Trigger $gt -Force -EA SilentlyContinue | Out-Null
 

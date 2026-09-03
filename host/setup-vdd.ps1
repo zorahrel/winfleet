@@ -118,8 +118,15 @@ Register-ScheduledTask -TaskName 'winfleet-vdd' -Action $action -Principal $prin
 # E come utente interattivo: gli schermi si contano solo da dentro la sessione
 # grafica - da sessione 0 se ne vede uno solo, e il guardiano rifarebbe il VDD
 # ogni minuto per sempre.
+#
+# Anche il guardiano passa dal lanciatore nascosto, per lo stesso motivo di
+# wf-vdd: lanciato come "powershell.exe" apriva una finestra di Windows Terminal
+# sul desktop A OGNI MINUTO. Qui si notava meno che con un processo persistente
+# (la finestra vive quanto il guardiano e poi sparisce) e proprio per questo era
+# peggio: due finestre che compaiono e se ne vanno da sole, senza un motivo
+# visibile, mentre uno sta usando il PC.
 schtasks /create /tn winfleet-vdd-guard `
-    /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1 -Count $Slots" `
+    /tr "$HEADLESS $(Arg-Headless "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\winfleet\wf-vdd-guard.ps1 -Count $Slots")" `
     /sc minute /mo 1 /ru $User /it /f 2>&1 | Out-Null
 Write-Host "Task 'winfleet-vdd-guard' registrato: rimette i monitor se cadono"
 
