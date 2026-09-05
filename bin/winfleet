@@ -5959,6 +5959,17 @@ case "${1:-}" in
   unlock)   cmd_unlock;;
   doctor|"") cmd_doctor;;
   -h|--help|help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//';;
+    # L'aiuto si ritaglia dal BLOCCO, non da numeri di riga.
+    #
+    # Era `sed -n '2,20p'`, e quelle righe una volta erano l'elenco dei comandi.
+    # Poi il file ha preso in testa quattordici righe di preambolo (il rilancio
+    # con bash 4) e da allora "winfleet --help" stampava la spiegazione di una
+    # shell vecchia, tagliando l'elenco a meta'. Nessuno se n'e' accorto perche'
+    # chi conosce i comandi non chiede aiuto, e chi non li conosce dava la colpa
+    # a se stesso. Aggiungere due comandi l'avrebbe rotto una volta di piu'.
+    #
+    # Il blocco comincia dal titolo e finisce dove finiscono i commenti, quindi
+    # segue il file da solo.
+    sed -n '/^# WinFleet/,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//';;
   *) die "Comando sconosciuto: $1  (winfleet --help)";;
 esac
