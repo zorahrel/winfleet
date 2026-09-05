@@ -28,6 +28,8 @@ fi
 #   winfleet host-name         fissa il nome del PC in /etc/hosts (se mDNS non va)
 #   winfleet fit               riporta le finestre a filo dei pixel che ricevono
 #   winfleet stop [n]          chiude una finestra, o tutte
+#   winfleet off               spegne winfleet sul PC (monitor virtuali compresi)
+#   winfleet on                lo riaccende
 #   winfleet dock <app...>     crea i lanciatori .app (nome e icona dell'app)
 #   winfleet panel             pannello in barra dei menu (finestre, app, strumenti)
 #   winfleet dockpanel         pannello nel Dock: click sull'icona, con la ricerca
@@ -2668,7 +2670,13 @@ cmd_host_clean(){
   # winfleet-tray e winfleet-tray-show fanno parte dell'elenco: sono l'icona
   # nella barra e il comando che la fa uscire dal cassetto nascosto. Senza,
   # host-clean li cancellerebbe come residui e il PC tornerebbe muto.
-  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock"
+  #
+  # wf-idleguard idem, e il suo era il caso peggiore: il suo script non stava
+  # nel repo, quindi host-clean avrebbe tolto SIA il task SIA il file, e il PC
+  # sarebbe tornato a sospendersi in mezzo a una partita. Un guardiano che
+  # l'installatore stesso puo' cancellare non e' un guardiano. Verificato il
+  # 03/09/2026 con "-WhatIfOnly": era nell'elenco di cio' che avrebbe tolto.
+  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock,wf-idleguard"
 
   #
   # Il lavoro lo fa uno SCRIPT sull'host (host/wf-task-clean.ps1), non un
@@ -4273,6 +4281,51 @@ cmd_stop(){
   fi
 
   info "nessuna sessione WinFleet aperta"
+}
+
+# Spegnere winfleet, non solo le finestre.
+#
+# `winfleet stop` chiude gli STREAM. Quello che resta acceso dopo - i quattro
+# monitor virtuali, le quattro istanze Sunshine, l'agente, l'icona nella barra -
+# non e' innocuo: con gli schermi fantasma attaccati, lo schermo PRIMARIO di
+# Windows diventa uno di quelli, e le finestre nuove nascono li'. Chi sta davanti
+# al PC apre un'app e non la vede comparire. Successo il 05/09/2026, e per
+# rimetterlo a posto servivano tredici comandi a mano.
+#
+# Il lavoro lo fa uno script sull'host (host/wf-power.ps1): l'ordine di
+# spegnimento conta - i cursori di sistema vanno ripristinati PRIMA di uccidere
+# chi li rimetterebbe - e quell'ordine sta scritto una volta sola, li'.
+cmd_power(){
+  need_ssh
+  local azione="$1"
+  case "$azione" in
+    off) echo "Spengo winfleet sul PC…" ;;
+    on)  echo "Riaccendo winfleet sul PC…" ;;
+  esac
+  local out
+  out="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=30 "$HOST_SSH" \
+    "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\winfleet\\wf-power.ps1 -Action $azione" \
+    2>&1 | tr -d '\r')" || true
+
+  # Un output vuoto non e' un successo silenzioso: vuol dire che lo script
+  # sull'host non c'e' (mai fatto `winfleet push`) o che ssh non e' arrivato.
+  # Dire "fatto" in quel caso lascia il PC nello stato esatto da cui si voleva
+  # uscire, con la convinzione opposta.
+  if [ -z "$out" ]; then
+    bad "nessuna risposta dall'host"
+    info "manca C:\\winfleet\\wf-power.ps1?  ${c_dim}winfleet push${c_off}"
+    return 1
+  fi
+  printf '%s\n' "$out" | sed 's/^/  /'
+
+  if [ "$azione" = "off" ]; then
+    # Gli stream lato Mac li chiude winfleet, non l'host: se restassero, la
+    # finestra di Moonlight resterebbe aperta su un host che non trasmette piu'.
+    cmd_stop >/dev/null 2>&1 || true
+    ok "winfleet spento  ${c_dim}(winfleet on per riaccenderlo)${c_off}"
+  else
+    ok "winfleet acceso"
+  fi
 }
 
 cmd_list(){
@@ -5890,6 +5943,8 @@ case "${1:-}" in
   host-name) cmd_host_name;;
   fit)      cmd_fit;;
   stop)     shift; cmd_stop "$@";;
+  off)      cmd_power off;;
+  on)       cmd_power on;;
   list)     cmd_list;;
   apps)     cmd_apps;;
   dock)     shift; cmd_dock "$@";;
