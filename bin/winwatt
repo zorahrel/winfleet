@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""winwatt - quanto costa tenere acceso il PC Windows.
+
+Legge C:\\winfleet\\power.csv (scritto ogni 5 min da wf-powerlog.ps1) e lo
+converte in kWh e in euro.
+
+Due scelte che vanno capite prima di fidarsi del numero:
+
+1. Lo stato "sospeso" NON e' scritto nel CSV, si DEDUCE dai buchi. Un PC
+   sospeso non puo' loggare di esserlo, e un task che lo svegliasse per
+   scriverlo distruggerebbe la cosa che sta misurando.
+
+2. La GPU e' MISURATA (nvidia-smi), il resto del PC e' STIMATO (BASE_WATT).
+   Senza wattmetro alla presa non esiste il numero vero: questo e' un ordine
+   di grandezza onesto, non una bolletta. Un Shelly Plug S (~15 EUR) lo
+   renderebbe una misura vera - vedi il fondo dell'output.
+
+winwatt non sveglia mai il PC: se dorme, legge l'ultima copia in cache e lo
+dice. Svegliare il PC per chiedergli quanto risparmia dormendo sarebbe
+esattamente il difetto che questo strumento serve a trovare.
+"""
+import csv, io, os, subprocess, sys
+from datetime import datetime, timedelta
+
+CFG = os.path.expanduser("~/.config/winfleet/power.env")
+CONFIG = os.path.expanduser("~/.config/winfleet/config.env")
+CACHE = os.path.expanduser("~/.config/winfleet/power.csv.cache")
+REMOTE = r"C:\winfleet\power.csv"
+INTERVAL = timedelta(minutes=5)      # cadenza del campionatore
+GAP = timedelta(minutes=12)          # oltre questo, il PC stava dormendo
+
+DEFAULTS = {
+    # ARERA III trimestre 2026, cliente domestico in maggior tutela, tutto
+    # compreso (energia + oneri + imposte). Nessuna bolletta trovata nelle
+    # mail: se la tua tariffa e' diversa, cambiala qui e basta.
+    "TARIFF_EUR_KWH": "0.316",
+    # i9-10900 + scheda madre + RAM + NVMe + ventole + perdite dell'alimentatore,
+    # GPU esclusa (quella la misura nvidia-smi). Stima, non misura.
+    "BASE_WATT": "55",
+    # S3: alimenta solo RAM e scheda di rete in ascolto del magic packet.
+    "SLEEP_WATT": "3",
+}
+
+
+def read_env(path):
+    out = {}
+    if not os.path.exists(path):
+        return out
+    for line in open(path):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def load_cfg():
+    cfg = dict(DEFAULTS)
+    # L'indirizzo del PC sta in config.env, che e' gitignorato: questo repo e'
+    # pubblico e un IP Tailscale piu' username committato ci resta per sempre.
+    cfg.update({k: v for k, v in read_env(CONFIG).items() if k == "HOST_SSH"})
+    if os.path.exists(CFG):
+        cfg.update(read_env(CFG))
+    else:
+        os.makedirs(os.path.dirname(CFG), exist_ok=True)
+        with open(CFG, "w") as f:
+            f.write("# Tariffa e stime di winwatt. Cambia qui, non nello script.\n")
+            for k, v in DEFAULTS.items():
+                f.write(f"{k}={v}\n")
+    return cfg
+
+
+def fetch(host):
+    """Torna (righe_csv, live). live=False se il PC dorme e leggiamo la cache."""
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", host,
+             f'type "{REMOTE}"'],
+            capture_output=True, text=True, timeout=25)
+        if r.returncode == 0 and "ts,gpu" in r.stdout:
+            os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+            with open(CACHE, "w") as f:
+                f.write(r.stdout)
+            return r.stdout, True
+    except Exception:
+        pass
+    if os.path.exists(CACHE):
+        return open(CACHE).read(), False
+    sys.exit("Il PC non risponde e non c'e' cache locale. "
+             "Sveglialo con 'winwake' e riprova.")
+
+
+def parse(raw):
+    rows = []
+    for d in csv.DictReader(io.StringIO(raw)):
+        try:
+            rows.append({
+                "ts": datetime.strptime(d["ts"], "%Y-%m-%d %H:%M:%S"),
+                "gpu": int(d["gpu"]), "enc": int(d["enc"]),
+                "watt": float(d["watt"]), "standby": int(d["standby_ac"]),
+            })
+        except (ValueError, KeyError, TypeError):
+            continue
+    rows.sort(key=lambda r: r["ts"])
+    return rows
+
+
+def integrate(rows, base_w, sleep_w):
+    """Somma kWh percorrendo i campioni. Ogni intervallo eredita la potenza
+    del campione che lo apre: e' l'unica cosa che sappiamo di quel tratto."""
+    awake = idle_awake = asleep = timedelta()
+    kwh_awake = kwh_idle = kwh_sleep = 0.0
+    for a, b in zip(rows, rows[1:]):
+        dt = b["ts"] - a["ts"]
+        if dt <= timedelta():
+            continue
+        gpu_w = a["watt"] if a["watt"] >= 0 else 0.0
+        if dt <= GAP:
+            on, off = dt, timedelta()
+        else:
+            # Non sappiamo in che minuto si e' addormentato: gli concediamo
+            # un intervallo di veglia, il resto e' sonno.
+            on, off = min(INTERVAL, dt), dt - min(INTERVAL, dt)
+        e = (base_w + gpu_w) * (on.total_seconds() / 3600) / 1000
+        awake += on
+        kwh_awake += e
+        if a["gpu"] < 20 and a["enc"] < 5:
+            idle_awake += on
+            kwh_idle += e
+        asleep += off
+        kwh_sleep += sleep_w * (off.total_seconds() / 3600) / 1000
+    return awake, idle_awake, asleep, kwh_awake, kwh_idle, kwh_sleep
+
+
+def hhmm(td):
+    h, m = divmod(int(td.total_seconds() // 60), 60)
+    return f"{h}h{m:02d}"
+
+
+def main():
+    cfg = load_cfg()
+    tariff = float(cfg["TARIFF_EUR_KWH"])
+    base_w = float(cfg["BASE_WATT"])
+    sleep_w = float(cfg["SLEEP_WATT"])
+
+    args = sys.argv[1:]
+    month = None
+    if args and args[0] not in ("-h", "--help"):
+        month = args[0]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__)
+        print(f"uso: winwatt [YYYY-MM]    (config: {CFG})")
+        return
+
+    host = cfg.get("HOST_SSH", "")
+    if not host:
+        sys.exit(f"HOST_SSH non impostato in {CONFIG} (es. HOST_SSH=\"utente@100.x.x.x\").")
+    raw, live = fetch(host)
+    rows = parse(raw)
+    if not rows:
+        sys.exit("power.csv vuoto: il task wf-powerlog non ha ancora scritto.")
+
+    if month is None:
+        month = rows[-1]["ts"].strftime("%Y-%m")
+    sel = [r for r in rows if r["ts"].strftime("%Y-%m") == month]
+    if len(sel) < 2:
+        print(f"Mese {month}: {len(sel)} campioni, troppo pochi per un totale.")
+        print(f"Il tracker e' partito il {rows[0]['ts']:%d/%m/%Y %H:%M}. Ripassa domani.")
+        return
+
+    awake, idle_awake, asleep, kwh_a, kwh_i, kwh_s = integrate(sel, base_w, sleep_w)
+    kwh = kwh_a + kwh_s
+    coperto = sel[-1]["ts"] - sel[0]["ts"]
+
+    print(f"PC Windows - {month}" + ("" if live else "   [PC sospeso: dati in cache]"))
+    print(f"  periodo coperto   {hhmm(coperto)}  ({len(sel)} campioni, ultimo {sel[-1]['ts']:%d/%m %H:%M})")
+    print()
+    print(f"  sveglio           {hhmm(awake):>8}   {kwh_a:6.2f} kWh   {kwh_a*tariff:6.2f} EUR")
+    print(f"    di cui a vuoto  {hhmm(idle_awake):>8}   {kwh_i:6.2f} kWh   {kwh_i*tariff:6.2f} EUR   <- lo spreco")
+    print(f"  sospeso           {hhmm(asleep):>8}   {kwh_s:6.2f} kWh   {kwh_s*tariff:6.2f} EUR")
+    print(f"  {'TOTALE':<17} {'':>8}   {kwh:6.2f} kWh   {kwh*tariff:6.2f} EUR")
+
+    # Sotto le 24h la proiezione e' un numero inventato che sembra una misura:
+    # il primo test l'ha vista stimare 505 EUR/anno partendo da un minuto solo,
+    # capitato per giunta durante il transitorio a 127 W del post-risveglio.
+    # Un giorno intero e' il minimo che contiene sia veglia sia sonno.
+    giorni = coperto.total_seconds() / 86400
+    if giorni >= 1:
+        print(f"\n  proiezione        {kwh/giorni*30:6.1f} kWh/mese   {kwh/giorni*30*tariff:6.2f} EUR/mese"
+              f"   ({kwh/giorni*365*tariff:.0f} EUR/anno)")
+    else:
+        print(f"\n  proiezione        non ancora: servono 24h di dati, ne ho {hhmm(coperto)}")
+
+    # Le ore "sveglio a vuoto" sono l'unica voce su cui si puo' agire: il
+    # risparmio e' la differenza fra tenerle accese e dormirle.
+    risp = (kwh_i - sleep_w * (idle_awake.total_seconds() / 3600) / 1000) * tariff
+    if idle_awake.total_seconds() > 0:
+        print(f"  recuperabile      {risp:6.2f} EUR se quelle {hhmm(idle_awake)} fossero state sospensione")
+
+    standby = sel[-1]["standby"]
+    stato = "OK, 30 min" if standby == 1800 else (
+        "MAI (azzerato!)" if standby == 0 else f"{standby}s")
+    print(f"\n  timeout sospensione: {stato}")
+    regressioni = sum(1 for a, b in zip(sel, sel[1:])
+                      if a["standby"] != b["standby"] and b["standby"] == 0)
+    if regressioni:
+        print(f"  ATTENZIONE: azzerato {regressioni} volta/e questo mese, "
+              f"wf-powerlog l'ha rimesso ogni volta")
+
+    print(f"\n  tariffa {tariff} EUR/kWh, base stimata {base_w:.0f} W (GPU misurata a parte).")
+    print(f"  Numeri veri con uno Shelly Plug S alla presa (~15 EUR): dillo e lo integro.")
+
+
+if __name__ == "__main__":
+    main()
