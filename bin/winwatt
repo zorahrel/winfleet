@@ -34,9 +34,15 @@ DEFAULTS = {
     # compreso (energia + oneri + imposte). Nessuna bolletta trovata nelle
     # mail: se la tua tariffa e' diversa, cambiala qui e basta.
     "TARIFF_EUR_KWH": "0.316",
-    # i9-10900 + scheda madre + RAM + NVMe + ventole + perdite dell'alimentatore,
-    # GPU esclusa (quella la misura nvidia-smi). Stima, non misura.
-    "BASE_WATT": "55",
+    # i9-10900 + scheda madre + RAM + NVMe + ventole, GPU esclusa (quella la
+    # misura nvidia-smi). Due valori, non uno: un'ora di gioco non costa come
+    # un'ora da ferma, e con una costante sola l'errore va tutto nella
+    # direzione sbagliata proprio nelle ore che pesano di piu'.
+    "BASE_WATT": "55",        # CPU a riposo
+    "CPU_FULL_WATT": "180",   # CPU al 100% (i9-10900: 65W TDP, PL2 molto sopra)
+    # nvidia-smi misura ai morsetti della scheda, cioe' in continua. Alla presa
+    # si paga anche la conversione dell'alimentatore.
+    "PSU_EFF": "0.90",
     # S3: alimenta solo RAM e scheda di rete in ascolto del magic packet.
     "SLEEP_WATT": "3",
 }
@@ -98,7 +104,8 @@ def parse(raw):
             rows.append({
                 "ts": datetime.strptime(d["ts"], "%Y-%m-%d %H:%M:%S"),
                 "gpu": int(d["gpu"]), "enc": int(d["enc"]),
-                "watt": float(d["watt"]), "standby": int(d["standby_ac"]),
+                "watt": float(d["watt"]), "cpu": int(d["cpu"]),
+                "standby": int(d["standby_ac"]),
             })
         except (ValueError, KeyError, TypeError):
             continue
@@ -106,7 +113,7 @@ def parse(raw):
     return rows
 
 
-def integrate(rows, base_w, sleep_w):
+def integrate(rows, base_w, cpu_full_w, psu_eff, sleep_w):
     """Somma kWh percorrendo i campioni. Ogni intervallo eredita la potenza
     del campione che lo apre: e' l'unica cosa che sappiamo di quel tratto."""
     awake = idle_awake = asleep = timedelta()
@@ -116,13 +123,15 @@ def integrate(rows, base_w, sleep_w):
         if dt <= timedelta():
             continue
         gpu_w = a["watt"] if a["watt"] >= 0 else 0.0
+        cpu_pct = a["cpu"] if a["cpu"] >= 0 else 0
+        rest_w = base_w + (cpu_full_w - base_w) * cpu_pct / 100.0
         if dt <= GAP:
             on, off = dt, timedelta()
         else:
             # Non sappiamo in che minuto si e' addormentato: gli concediamo
             # un intervallo di veglia, il resto e' sonno.
             on, off = min(INTERVAL, dt), dt - min(INTERVAL, dt)
-        e = (base_w + gpu_w) * (on.total_seconds() / 3600) / 1000
+        e = (rest_w + gpu_w) / psu_eff * (on.total_seconds() / 3600) / 1000
         awake += on
         kwh_awake += e
         if a["gpu"] < 20 and a["enc"] < 5:
@@ -142,6 +151,8 @@ def main():
     cfg = load_cfg()
     tariff = float(cfg["TARIFF_EUR_KWH"])
     base_w = float(cfg["BASE_WATT"])
+    cpu_full_w = float(cfg["CPU_FULL_WATT"])
+    psu_eff = float(cfg["PSU_EFF"])
     sleep_w = float(cfg["SLEEP_WATT"])
 
     args = sys.argv[1:]
@@ -169,7 +180,8 @@ def main():
         print(f"Il tracker e' partito il {rows[0]['ts']:%d/%m/%Y %H:%M}. Ripassa domani.")
         return
 
-    awake, idle_awake, asleep, kwh_a, kwh_i, kwh_s = integrate(sel, base_w, sleep_w)
+    awake, idle_awake, asleep, kwh_a, kwh_i, kwh_s = integrate(
+        sel, base_w, cpu_full_w, psu_eff, sleep_w)
     kwh = kwh_a + kwh_s
     coperto = sel[-1]["ts"] - sel[0]["ts"]
 
@@ -208,8 +220,8 @@ def main():
         print(f"  ATTENZIONE: azzerato {regressioni} volta/e questo mese, "
               f"wf-powerlog l'ha rimesso ogni volta")
 
-    print(f"\n  tariffa {tariff} EUR/kWh, base stimata {base_w:.0f} W (GPU misurata a parte).")
-    print(f"  Numeri veri con uno Shelly Plug S alla presa (~15 EUR): dillo e lo integro.")
+    print(f"\n  tariffa {tariff} EUR/kWh | GPU misurata | CPU+resto stimati "
+          f"{base_w:.0f}-{cpu_full_w:.0f} W a carico, /{psu_eff} per l'alimentatore.")
 
 
 if __name__ == "__main__":
