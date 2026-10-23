@@ -17,6 +17,23 @@ public static extern uint SetThreadExecutionState(uint esFlags);
 $K = Add-Type -MemberDefinition $sig -Name Pwr -Namespace WF -PassThru
 $CONTINUOUS = 0x80000000; $SYSTEM = 0x00000001; $DISPLAY = 0x00000002
 
+# Secondi dall'ultimo input alla console, per wf-autosleep: lui gira come SYSTEM, e da li'
+# GetLastInputInfo vede la sessione 0, non la console. Questo script gira nella sessione
+# utente, quindi lo scrive lui in C:\winfleet\input-idle.txt a ogni giro.
+$sigIn = @'
+[StructLayout(LayoutKind.Sequential)] public struct LII { public uint cbSize; public uint dwTime; }
+[DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LII p);
+'@
+$U = @(Add-Type -MemberDefinition $sigIn -Name LastIn -Namespace WF -PassThru)[0]
+function Input-Idle {
+  $li = New-Object WF.LastIn+LII; $li.cbSize = 8
+  if (-not $U::GetLastInputInfo([ref]$li)) { return -1 }
+  # TickCount e' un int32 che dopo 24,9 giorni di accensione diventa negativo: si riporta a 32 bit.
+  $d = ([int64][Environment]::TickCount -band 0xFFFFFFFFL) - [int64]$li.dwTime
+  if ($d -lt 0) { $d += 4294967296 }
+  return [int]($d / 1000)
+}
+
 $log = "C:\winfleet\idleguard.log"
 New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 function Log($m) {
@@ -69,6 +86,8 @@ while ($true) {
       $held = $false
     }
   }
+  $ii = Input-Idle
+  if ($ii -ge 0) { Set-Content -Path C:\winfleet\input-idle.txt -Value $ii -EA SilentlyContinue }
   Start-Sleep -Seconds 30
 }
 
