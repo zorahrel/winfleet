@@ -1,4 +1,4 @@
-# wf-autosleep: sospende il PC quando nessuno lo usa da N minuti (20, oppure il numero in
+﻿# wf-autosleep: sospende il PC quando nessuno lo usa da N minuti (20, oppure il numero in
 # C:\winfleet\autosleep.minutes). Gira ogni minuto come SYSTEM (task wf-autosleep), si
 # risveglia con `winwake` dal Mac (Wake-on-LAN da S3, misurato 23/10: ssh di nuovo su in 25 s).
 #
@@ -19,6 +19,15 @@
 #   - GPU sopra 10% in due letture a 5 s (un campione singolo a 40% con la GPU ferma c'e');
 #   - una richiesta di alimentazione SYSTEM/AWAYMODE/EXECUTION (aggiornamenti, download):
 #     chi la chiede vuole il PC sveglio, e powercfg /requestsoverride resta il modo di zittirla.
+#
+# Dati per lo schermo a tutto campo (C:\winfleet\schermo\index.html): a OGNI uscita di questo
+# script, anche quando c'e' lavoro, scrive C:\winfleet\schermo\stato.js (window.STATO = {...}) in
+# modo atomico. Non decide niente: la logica di sospensione qui sopra non lo legge. Gli ingressi
+# li scrive `offload` dal Mac: lavoro-<pid>.json (un giro in corso) e fine-<pid>.json (l'exit code,
+# scritto dal PC stesso a fine comando, cosi' non serve una seconda ssh). Qui il fine-*.json
+# diventa una riga di esiti.jsonl (ultime 50) e il lavoro-*.json sparisce.
+# Questo file e' UTF-8 con BOM: le frasi per lo schermo hanno le lettere accentate, e
+# PowerShell 5.1 senza BOM le leggerebbe come ANSI. Il resto resta in ASCII.
 # Uso: wf-autosleep.ps1 [-Dry]
 param([switch]$Dry)
 $dir = 'C:\winfleet'; $log = "$dir\autosleep.log"; $state = "$dir\autosleep.state"
@@ -38,6 +47,101 @@ function Gpu {
   $q = & nvidia-smi --query-gpu=utilization.gpu,utilization.encoder --format=csv,noheader,nounits 2>$null | Select-Object -First 1
   if (-not $q) { return @(0, 0) }
   return @($q -split ',' | ForEach-Object { [int]($_.Trim()) })
+}
+
+# ---------------------------------------------------------------------------------------------
+# Schermo: stato.js + gestione di lavoro-*.json / fine-*.json / esiti.jsonl
+# ---------------------------------------------------------------------------------------------
+$sch = "$dir\schermo"
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+function Read-Json($p) { try { Get-Content $p -Raw -EA Stop | ConvertFrom-Json } catch { $null } }
+function Iso([datetime]$d) { $d.ToString("yyyy-MM-dd'T'HH:mm:sszzz") }
+function Epoch-Ms([datetime]$d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }
+function When($v, $fallback) { try { [datetime]$v } catch { $fallback } }
+
+# Una riga in esiti.jsonl, tenendo solo le ultime 50.
+function Add-Esito($lav, $esito, [datetime]$fine) {
+  $da = When $lav.da $fine
+  $rec = [ordered]@{
+    progetto = "$($lav.progetto)"; cosa = "$($lav.cosa)"; esito = $esito
+    secondi = [math]::Max(0, [int]($fine - $da).TotalSeconds); fine = (Iso $fine)
+  }
+  $f = "$sch\esiti.jsonl"
+  $righe = @(); if (Test-Path $f) { $righe = @([IO.File]::ReadAllLines($f, $utf8) | Where-Object { $_.Trim() }) }
+  $righe += ($rec | ConvertTo-Json -Compress)
+  if ($righe.Count -gt 50) { $righe = $righe[($righe.Count - 50)..($righe.Count - 1)] }
+  [IO.File]::WriteAllLines("$f.tmp", [string[]]$righe, $utf8)
+  Move-Item "$f.tmp" $f -Force
+}
+
+# Porta a termine i giri: fine-<pid>.json (scritto dal PC al termine del comando) -> esito;
+# un lavoro-<pid>.json senza fine e senza nessuna sessione ssh e' morto (kill -9, rete caduta).
+# Il pid e' quello di offload sul Mac: qui non si puo' controllare, quindi "morto" vuol dire
+# che non c'e' piu' nemmeno una ssh aperta (un giro e' sempre dentro una ssh), da almeno 2 minuti
+# per non confondere il buco fra la copia e l'esecuzione. Piu' vecchi di 6 ore: avanzi.
+function Sync-Giri {
+  $ora = Get-Date; $vivi = @()
+  foreach ($ff in @(Get-ChildItem "$sch\fine-*.json" -EA SilentlyContinue)) {
+    $id = $ff.BaseName.Substring(5); $lf = "$sch\lavoro-$id.json"; $lav = Read-Json $lf
+    if ($lav) {
+      $fj = Read-Json $ff.FullName; $rc = if ($fj -and $null -ne $fj.rc) { [int]$fj.rc } else { 255 }
+      $esito = if ($rc -eq 0) { 'ok' } elseif ($rc -in 130, 143, 255) { 'interrotto' } else { 'fallito' }
+      Add-Esito $lav $esito $ff.LastWriteTime
+      Remove-Item $lf -EA SilentlyContinue
+    }
+    Remove-Item $ff.FullName -EA SilentlyContinue
+  }
+  foreach ($lf in @(Get-ChildItem "$sch\lavoro-*.json" -EA SilentlyContinue)) {
+    $lav = Read-Json $lf.FullName
+    if (-not $lav) { if (($ora - $lf.LastWriteTime).TotalMinutes -gt 10) { Remove-Item $lf.FullName -EA SilentlyContinue }; continue }
+    $da = When $lav.da $lf.LastWriteTime
+    if (($ora - $da).TotalHours -gt 6) { Remove-Item $lf.FullName -EA SilentlyContinue; continue }
+    if ($ssh -eq 0 -and ($ora - $da).TotalSeconds -gt 120) { Add-Esito $lav 'interrotto' $ora; Remove-Item $lf.FullName -EA SilentlyContinue; continue }
+    $vivi += [ordered]@{ progetto = "$($lav.progetto)"; cosa = "$($lav.cosa)"; chi = "$($lav.chi)"; da = (Iso $da); secondi = [math]::Max(0, [int]($ora - $da).TotalSeconds) }
+  }
+  return $vivi
+}
+
+# Il motivo per cui il PC resta sveglio, in italiano semplice (e' scritto per essere letto da 3 metri).
+function Motivo-Italiano($w, $nLavori) {
+  switch -Regex ($w) {
+    '^ssh attivo'                { if ($nLavori -gt 0) { 'Un lavoro mandato dal Mac è in corso' } else { 'Il Mac è collegato al PC' }; break }
+    '^stream porta'              { 'Qualcuno sta usando il PC in streaming'; break }
+    '^processo (\S+) a '         { "Un programma sta lavorando ($($Matches[1]))"; break }
+    '^cpu (\d+)%'                { "Il processore è occupato al $($Matches[1])%"; break }
+    '^gpu (\d+)%'                { "La scheda video è occupata al $($Matches[1])%"; break }
+    '^encoder'                   { 'Lo streaming sta usando la scheda video'; break }
+    '^richiesta di alimentazione' { 'Windows o un programma chiede di restare acceso'; break }
+    default                      { $w }
+  }
+}
+
+# stato.js a ogni uscita. Mai fatale: un errore qui finisce nel log e basta, la decisione di
+# sospendere e' gia' presa (o non presa) da chi chiama. $sospendeAlle = datetime, o $null se sveglio.
+function Write-Stato([string[]]$why, $sospendeAlle, [string[]]$extra = @()) {
+  try {
+    if (-not (Test-Path $sch)) { New-Item -ItemType Directory -Force -Path $sch | Out-Null }
+    $lavori = @(Sync-Giri)
+    $esiti = @()
+    if (Test-Path "$sch\esiti.jsonl") {
+      $esiti = @([IO.File]::ReadAllLines("$sch\esiti.jsonl", $utf8) | Where-Object { $_.Trim() } | Select-Object -Last 3 |
+        ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+      [array]::Reverse($esiti)
+    }
+    $motivi = @(@($why | Where-Object { $_ } | ForEach-Object { Motivo-Italiano $_ $lavori.Count }) + @($extra | Where-Object { $_ }) | Select-Object -Unique)
+    $stato = [ordered]@{
+      versione = 1
+      ora = (Iso (Get-Date))
+      sogliaMinuti = $soglia
+      sospendeAlle = $(if ($sospendeAlle -and $why.Count -eq 0) { Epoch-Ms $sospendeAlle } else { $null })
+      motivi = $motivi
+      lavori = $lavori
+      esiti = @($esiti | ForEach-Object { [ordered]@{ progetto = $_.progetto; cosa = $_.cosa; esito = $_.esito; secondi = [int]$_.secondi; fine = $_.fine } })
+    }
+    $json = $stato | ConvertTo-Json -Depth 5
+    [IO.File]::WriteAllText("$sch\stato.js.tmp", "window.STATO = $json;`n", $utf8)
+    Move-Item "$sch\stato.js.tmp" "$sch\stato.js" -Force
+  } catch { Log "stato.js non scritto: $($_.Exception.Message)" }
 }
 
 $why = @()
@@ -90,6 +194,7 @@ if ($why.Count -gt 0) {
   [void]$k::SetThreadExecutionState(0x00000001)
   if (Test-Path $state) { Remove-Item $state -EA SilentlyContinue }
   Log ("in uso: " + ($why -join '; '))
+  Write-Stato $why $null
   exit 0
 }
 # Il file di stato dice da quando e' inattivo; la sua data di modifica, quando l'ha visto
@@ -98,14 +203,20 @@ if ($why.Count -gt 0) {
 # giro, prima che arrivi la sessione ssh del job.
 $s = Get-Item $state -EA SilentlyContinue
 if (-not $s -or ((Get-Date) - $s.LastWriteTime).TotalMinutes -gt 3) {
-  Set-Content $state (Get-Date).ToString('o'); Log "inattivo: inizio conteggio (soglia $soglia min)"; exit 0
+  Set-Content $state (Get-Date).ToString('o'); Log "inattivo: inizio conteggio (soglia $soglia min)"
+  Write-Stato @() (Get-Date).AddMinutes($soglia); exit 0
 }
 $since = [datetime](Get-Content $state -TotalCount 1)
 Set-Content $state $since.ToString('o')
 if ($lastInput -gt $since) { $since = $lastInput }
 $min = [int][math]::Floor(((Get-Date) - $since).TotalMinutes)
-if ($min -lt $soglia) { Log "inattivo da $min min (soglia $soglia; ultimo input $($lastInput.ToString('HH:mm')))"; exit 0 }
-if ($Dry) { Log "DRY: sospenderei (inattivo da $min min)"; exit 0 }
+if ($min -lt $soglia) {
+  Log "inattivo da $min min (soglia $soglia; ultimo input $($lastInput.ToString('HH:mm')))"
+  Write-Stato @() $since.AddMinutes($soglia) $(if ($lastInput -gt (Get-Date).AddMinutes(-$soglia)) { 'Qualcuno ha usato il PC da poco' })
+  exit 0
+}
+if ($Dry) { Log "DRY: sospenderei (inattivo da $min min)"; Write-Stato @() (Get-Date); exit 0 }
 Log "sospensione (inattivo da $min min)"; Remove-Item $state -EA SilentlyContinue
+Write-Stato @() (Get-Date)
 Add-Type -AssemblyName System.Windows.Forms
 [void][System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)
