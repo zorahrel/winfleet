@@ -63,10 +63,14 @@ function Input-Idle($li) {
   [int]($d / 1000)
 }
 
+# [utilizzo GPU %, utilizzo encoder %, sessioni NVENC aperte]. Un campo che il driver non da' ([N/A]) vale 0.
 function Gpu-Util {
-  $q = & nvidia-smi --query-gpu=utilization.gpu,utilization.encoder --format=csv,noheader,nounits 2>$null | Select-Object -First 1
-  if (-not $q) { return @(0, 0) }
-  @($q -split ',' | ForEach-Object { [int]($_.Trim()) })
+  $q = & nvidia-smi --query-gpu=utilization.gpu,utilization.encoder,encoder.stats.sessionCount --format=csv,noheader,nounits 2>$null | Select-Object -First 1
+  $out = @(0, 0, 0)
+  if (-not $q) { return $out }
+  $p = @("$q" -split ',')
+  for ($i = 0; $i -lt 3 -and $i -lt $p.Count; $i++) { $v = 0; if ([int]::TryParse($p[$i].Trim(), [ref]$v)) { $out[$i] = $v } }
+  $out
 }
 
 # Stream davvero in corso: stessa regola di wf-autosleep. Il ritorno e' il motivo, o $null.
@@ -75,7 +79,11 @@ function Stream-Motivo {
     Where-Object { $_.RemoteAddress -notlike '127.*' -and $_.RemoteAddress -ne '::1' -and
                    ($_.LocalPort -in 8000..8010 -or $_.LocalPort -in 47984..48500) })
   if ($c.Count) { return "stream porta $($c[0].LocalPort)" }
+  # Uno stream Moonlight/Parsec a regime non tiene connessioni TCP aperte (video, audio e controllo
+  # viaggiano su UDP) e su un desktop fermo l'encoder puo' stare sotto il 5%: la sessione NVENC
+  # aperta c'e' invece per tutta la durata dello stream, anche a immagine ferma.
   $g = Gpu-Util
+  if ($g[2] -ge 1) { return "sessioni NVENC $($g[2])" }
   if ($g[1] -ge 5) { return "encoder GPU $($g[1])%" }
   $null
 }
