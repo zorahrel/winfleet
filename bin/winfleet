@@ -2679,7 +2679,9 @@ cmd_host_clean(){
   # Stessa storia per wf-autosleep (mette a dormire il PC fermo) e wf-powerlog
   # (rimette il timer quando si azzera): task creati a mano, fuori da questa lista
   # sarebbero spariti al primo host-clean e il PC sarebbe tornato acceso a vuoto.
-  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock,wf-idleguard,wf-autosleep,wf-powerlog"
+  # wf-schermo (la schermata a tutto campo, schermo/deploy.sh) vale lo stesso: senza,
+  # il primo host-clean la farebbe sparire e il PC tornerebbe a mostrare il desktop.
+  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock,wf-idleguard,wf-autosleep,wf-powerlog,wf-schermo"
 
   #
   # Il lavoro lo fa uno SCRIPT sull'host (host/wf-task-clean.ps1), non un

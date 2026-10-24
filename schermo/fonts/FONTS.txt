@@ -1,0 +1,4 @@
+Hubot Sans - SIL OFL 1.1 - https://github.com/github/hubot-sans (copia: github.com/google/fonts ofl/hubotsans) - (c) GitHub
+Archivo - SIL OFL 1.1 - https://fonts.google.com/specimen/Archivo (github.com/google/fonts ofl/archivo, upstream Omnibus-Type) - (c) Omnibus-Type
+Mona Sans - SIL OFL 1.1 - https://github.com/github/mona-sans (copia: github.com/google/fonts ofl/monasans) - (c) GitHub
+Schibsted Grotesk - SIL OFL 1.1 - https://github.com/schibsted/schibsted-grotesk (copia: github.com/google/fonts ofl/schibstedgrotesk) - (c) The Schibsted-Grotesk Project Authors
