@@ -78,6 +78,12 @@ $nets = @('192.168.0.0/16','100.64.0.0/10')
 Get-NetFirewallRule -DisplayName 'WinFleet Sunshine*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName 'WinFleet Sunshine TCP' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 47984,47989,47990,48010 -RemoteAddress $nets | Out-Null
 New-NetFirewallRule -DisplayName 'WinFleet Sunshine UDP' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 47998,47999,48000,48002 -RemoteAddress $nets | Out-Null
+# ssh con una regola sua, valida su ogni profilo come quelle di Sunshine: la regola di OpenSSH
+# vale solo sulle reti Private, e dopo un risveglio Windows rimette la scheda in Pubblica.
+# Il 24/10 il PC e' rimasto sveglio con Sunshine raggiungibile e la 22 scartata per 14 ore.
+Get-NetFirewallRule -DisplayName 'WinFleet SSH' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WinFleet SSH' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22 -RemoteAddress $nets | Out-Null
+Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
 Write-Host "Firewall aperto (LAN + Tailscale)"
 
 Start-Service SunshineService
