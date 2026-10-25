@@ -386,7 +386,7 @@ function spostaScena(){
 }
 
 /* ---------- terreno: carta a curve di livello in WebGL2 ----------
-   Risoluzione interna al massimo 1280 px di larghezza; 3 fps al massimo (poi scende da sola, vedi sotto);
+   Risoluzione interna al massimo 1280 px di larghezza; 2 fps al massimo (poi scende da sola, vedi sotto);
    si ferma se la pagina è nascosta. Non si ripete mai: due campi di rumore si danno il cambio
    in dissolvenza e quello invisibile riparte da un punto nuovo a caso. */
 let modoVoluto = 0, modo = 0, energia = 0.3, marea = 0;
@@ -550,8 +550,9 @@ let raf = 0, ultimo = 0, rinvio = 0;
    ?fps=N tetto fisso (il guardiano dello schermo lo usa se la GPU vera supera il 5%),
    ?fermo=1 parte già dal fondo fermo. */
 /* misurato sul PC (3440x1440): da 4 fps in su la GPU esce dal riposo e occupa il 5-13%, a 3 fps o meno
-   sta a 0%. Il terreno si muove piano (un ciclo ogni ~110 s), quindi 3 fps bastano. */
-const LIVELLI = [3, 2];
+   sta a 0% (a 3 le prime letture restano a 7% finche' la pagina non scende). Il terreno si muove
+   piano (un ciclo ogni ~110 s), quindi 2 fps bastano. */
+const LIVELLI = [2, 1];
 const TETTO = Math.max(0, +q.get('fps') || 0);
 let livello = 0, costo = 0, sopra = 0, ultCosto = 0, fermo = q.get('fermo') === '1';
 const fpsOra = () => {
