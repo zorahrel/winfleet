@@ -119,9 +119,9 @@ ol{list-style:none}
 #tacche{display:flex;gap:.5vw;margin-top:4.2vh;height:1.4vh}
 #tacche i{flex:1;background:rgba(242,240,230,.16)}
 #tacche i.on{background:var(--accento)}
-#tacche i.cur{animation:respiro 2.4s ease-in-out infinite}
-@keyframes respiro{0%,100%{opacity:1}50%{opacity:.28}}
-@media (prefers-reduced-motion:reduce){#tacche i.cur{animation:none;opacity:.6}}
+/* il respiro e' un cambio al secondo dal tic(), non una animazione CSS: un'animazione tiene Edge a
+   presentare 60 fps a schermo intero anche con il fondo fermo (GPU del PC sopra il 5%) */
+#tacche i.cur.giu{opacity:.28}
 #tacche-nota{margin-top:1.4vh}
 
 #perche{display:none;font-size:var(--t-medio);font-weight:700;line-height:1.15;margin-top:4vh;max-width:56vw;text-wrap:balance}
@@ -354,6 +354,7 @@ function disegna(){
 /* ogni secondo: orologio, dati fermi, durata, conto alla rovescia */
 function tic(){
   const ora = Date.now();
+  document.querySelectorAll('#tacche i.cur').forEach(e => e.classList.toggle('giu', Math.floor(ora / 1200) % 2 === 1));
   $('ora').innerHTML = cifre(hhmm(ora));
   if (!dati) { $('fermi').textContent = ''; return; }
   const vecchio = adesso() - (Date.parse(dati.ora) || adesso());
@@ -385,7 +386,7 @@ function spostaScena(){
 }
 
 /* ---------- terreno: carta a curve di livello in WebGL2 ----------
-   Risoluzione interna al massimo 1280 px di larghezza; fino a 24 fps quando lavora, 10 in attesa (poi scende da sola, vedi sotto);
+   Risoluzione interna al massimo 1280 px di larghezza; 3 fps al massimo (poi scende da sola, vedi sotto);
    si ferma se la pagina è nascosta. Non si ripete mai: due campi di rumore si danno il cambio
    in dissolvenza e quello invisibile riparte da un punto nuovo a caso. */
 let modoVoluto = 0, modo = 0, energia = 0.3, marea = 0;
@@ -548,7 +549,9 @@ let raf = 0, ultimo = 0, rinvio = 0;
    il 3,5%; in fondo alla scala resta un fondo fermo, ridisegnato ogni 20 s. Parametri nell'URL:
    ?fps=N tetto fisso (il guardiano dello schermo lo usa se la GPU vera supera il 5%),
    ?fermo=1 parte già dal fondo fermo. */
-const LIVELLI = [24, 16, 10, 6, 4, 2];
+/* misurato sul PC (3440x1440): da 4 fps in su la GPU esce dal riposo e occupa il 5-13%, a 3 fps o meno
+   sta a 0%. Il terreno si muove piano (un ciclo ogni ~110 s), quindi 3 fps bastano. */
+const LIVELLI = [3, 2];
 const TETTO = Math.max(0, +q.get('fps') || 0);
 let livello = 0, costo = 0, sopra = 0, ultCosto = 0, fermo = q.get('fermo') === '1';
 const fpsOra = () => {

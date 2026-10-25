@@ -36,11 +36,17 @@ attendi() { # attendi <da-riga> <regex> <secondi>
 edge() { "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 status" | tr -d '\r' | sed -n 's/.*Edge schermo: \([0-9]*\).*/\1/p'; }
 
 verifica() {
-  local esito=0 T=$(mktemp -d); trap 'rm -rf "$T"; "${S[@]}" "del C:\\winfleet\\schermo.secondi" >/dev/null 2>&1' EXIT
+  local esito=0 T=$(mktemp -d); trap "rm -rf '$T'; \"\${S[@]}\" \"del C:\\\\winfleet\\\\schermo.secondi\" >/dev/null 2>&1" EXIT
   v() { if [ "$1" = ok ]; then echo "OK  $2"; else echo "KO  $2"; esito=1; fi; }
-  "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 status" | tr -d '\r'
+  # Partenza pulita: spento, soglia di prova scritta, POI acceso. Se la soglia arrivasse dopo `on` il
+  # guardiano partirebbe con 300 s; e il punto di partenza del log si prende prima di accendere,
+  # cosi' «mostro la schermata» non puo' arrivare prima che lo si cerchi.
+  "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 off" >/dev/null
   echo 20 > "$T/s"; scp -q "$T/s" "$HOST:C:/winfleet/schermo.secondi"
   local L0; L0=$(righe)
+  "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 on" >/dev/null
+  attendi "$L0" 'avviato \(soglia 20 s\)' 30 && v ok "guardiano partito con la soglia di prova (20 s)" || v ko "il guardiano non e' partito con soglia 20 s"
+  "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 status" | tr -d '\r'
   # 1. compare da ferma
   if attendi "$L0" 'mostro la schermata' 150; then v ok "compare con l'input fermo (soglia di prova 20 s)"; else v ko "non e' comparsa in 150 s"; fi
   sleep 20; [ "$(edge)" -ge 1 ] 2>/dev/null && v ok "Edge dello schermo in esecuzione" || v ko "Edge dello schermo assente"
@@ -67,7 +73,23 @@ verifica() {
   return $esito
 }
 
+# Il PC dorme ancora con la schermata accesa: soglia di autosleep a 3 minuti, nessuna sessione ssh
+# (conta come uso), schermata mostrata; il PC deve addormentarsi entro 10 minuti. Poi lo si sveglia
+# e si toglie la soglia di prova.
+sonno() {
+  local i
+  "${S[@]}" '(echo 3)> C:\winfleet\autosleep.minutes' >/dev/null || ko "soglia di prova"
+  "${S[@]}" '(echo 20)> C:\winfleet\schermo.secondi' >/dev/null  # la schermata compare dopo 20 s, prima del sonno a 3 min
+  "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 on" >/dev/null
+  echo "soglia 3 min scritta, lascio il PC: $(date +%T)"
+  for i in $(seq 1 20); do sleep 30; [ "$(pc-state | sed -n 's/.*"pc":"\([a-z]*\)".*/\1/p')" = dorme ] && { echo "OK  il PC dorme (dopo ~$((i / 2)) min) con la schermata accesa"; pc-wake >/dev/null 2>&1; "${S[@]}" 'del C:\winfleet\autosleep.minutes C:\winfleet\schermo.secondi' >/dev/null; return 0; }; done
+  pc-wake >/dev/null 2>&1; "${S[@]}" 'del C:\winfleet\autosleep.minutes C:\winfleet\schermo.secondi' >/dev/null
+  echo "KO  il PC non si e' addormentato in 10 min"; return 1
+}
+
 case "${1:-deploy}" in
+  sonno) sonno ;;
+  barra) "${S[@]}" "$PS C:\\winfleet\\schermo\\prova\\barra.ps1" | tr -d '\r'; exit ${PIPESTATUS[0]} ;;
   deploy) deploy ;;
   verifica) verifica ;;
   off|on|status) "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 $1" ;;
