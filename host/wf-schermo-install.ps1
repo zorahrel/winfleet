@@ -14,9 +14,15 @@ $xml = [xml](Export-ScheduledTask -TaskName $src.TaskName -TaskPath $src.TaskPat
 $ex = @($xml.Task.Actions.Exec)[0]
 $ex.Arguments = ("$($ex.Arguments)" -replace 'wf-idleguard\.ps1', 'wf-schermo.ps1')
 if ("$($ex.Arguments)$($ex.Command)" -notmatch 'wf-schermo\.ps1') { throw "azione inattesa: $($ex.Command) $($ex.Arguments)" }
-$xml.Task.RegistrationInfo.Description = 'wf-schermo: schermata a tutto campo del PC quando nessuno lo usa (Edge kiosk, si chiude al primo tocco)'
+# il nodo puo' mancare nell'XML esportato: va creato prima di assegnarlo
+function Set-XmlChild($parent, $name, $value) {
+  $n = $parent.GetElementsByTagName($name) | Select-Object -First 1
+  if (-not $n) { $n = $parent.OwnerDocument.CreateElement($name, $parent.NamespaceURI); [void]$parent.AppendChild($n) }
+  $n.InnerText = $value
+}
+Set-XmlChild $xml.Task.RegistrationInfo 'Description' 'wf-schermo: schermata a tutto campo del PC quando nessuno lo usa (Edge kiosk, si chiude al primo tocco)'
 # un guardiano che il sistema ferma dopo 72 ore non e' un guardiano
-$xml.Task.Settings.ExecutionTimeLimit = 'PT0S'
+Set-XmlChild $xml.Task.Settings 'ExecutionTimeLimit' 'PT0S'
 Register-ScheduledTask -TaskName 'wf-schermo' -Xml $xml.OuterXml -Force | Out-Null
 Remove-Item "$dir\schermo.off" -Force -EA SilentlyContinue
 Start-ScheduledTask -TaskName 'wf-schermo'
