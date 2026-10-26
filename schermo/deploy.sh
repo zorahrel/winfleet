@@ -6,7 +6,13 @@
 #   deploy.sh off|on|status   interruttore (wf-schermo-ctl.ps1)
 # Non scrive mai stato.js ed esiti.jsonl: sono dati di wf-autosleep.
 set -u
-HOST="${HOST_SSH:-zorah@192.168.1.2}"; IP="${HOST##*@}"
+# ssh passa solo da Tailscale: in LAN la porta 22 non risponde (il 26/10 il backup di Topics falliva così).
+# Sunshine invece risponde in LAN, quindi IP resta l'indirizzo di casa.
+# Si leggono solo le due voci: config.env ha nomi con lettere accentate che bash non accetta come variabili.
+cfg() { sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" "$HOME/.config/winfleet/config.env" 2>/dev/null | head -1; }
+HOST="${HOST_SSH:-$(cfg HOST_SSH)}"
+[ -n "$HOST" ] || { echo "KO: manca HOST_SSH (utente@ip-tailscale) in ~/.config/winfleet/config.env" >&2; exit 1; }
+IP="${HOST_LAN:-$(cfg HOST_LAN)}"; IP="${IP:-192.168.1.2}"
 AQUI="$(cd "$(dirname "$0")" && pwd)"; HOSTDIR="$AQUI/../host"
 S=(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST")
 PS='powershell -NoProfile -ExecutionPolicy Bypass -File'
