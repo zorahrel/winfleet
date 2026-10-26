@@ -217,6 +217,13 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         payload = {}
+    # L'hook node-run scatta per ogni nodo appaiato, anche per Cloud Claude
+    # (node_base_url "claude-cloud://"): solo il nodo dietro il tunnel e' il PC.
+    # Per gli altri niente sveglia ne' bundle, e soprattutto niente veto.
+    base = (payload.get("node_base_url") or "").rstrip("/")
+    if base and base != f"http://127.0.0.1:{LPORT}":
+        log(f"{payload.get('machine_name') or base}: non e' il PC, niente da preparare")
+        return
     origin = payload.get("origin_url") or os.environ.get("PC_NODO_ORIGIN")
     repo = payload.get("cwd") or os.environ.get("PC_NODO_REPO")
     if not origin or not repo:
