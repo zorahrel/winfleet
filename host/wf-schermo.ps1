@@ -195,7 +195,8 @@ while ($true) {
       $h = $W::GetForegroundWindow(); [uint32]$fpid = 0
       if ($h -ne [IntPtr]::Zero) { [void]$W::GetWindowThreadProcessId($h, [ref]$fpid) }
       $fp = if ($fpid) { (Get-Process -Id $fpid -EA SilentlyContinue).ProcessName } else { $null }
-      if ($fp -and $fp -ne 'msedge' -and ($ora - $dal).TotalSeconds -ge 6) {
+      # explorer e' la shell (desktop, barra): prende il primo piano da sola e il kiosk a schermo intero la copre, quindi non e' un'altra app
+      if ($fp -and $fp -ne 'msedge' -and $fp -ne 'explorer' -and ($ora - $dal).TotalSeconds -ge 6) {
         if ($spinte -lt 3 -and $script:edge -and -not $Dry) {
           # kiosk non ancora in primo piano: si spinge fino a tre volte (l'input e' fermo da minuti)
           $script:edge.Refresh(); [void]$W::SetForegroundWindow($script:edge.MainWindowHandle); $spinte++
