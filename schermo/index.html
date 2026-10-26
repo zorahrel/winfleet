@@ -185,6 +185,7 @@ ol{list-style:none}
   </section>
 </main>
 
+<script src="nome-lavoro.js"></script>
 <script>
 const q = new URLSearchParams(location.search);
 const FONT = ['1','2','3'].includes(q.get('font')) ? q.get('font') : '1';
@@ -310,9 +311,10 @@ function disegna(){
   if (lavora) {
     document.body.className = 'lavora';
     const L = lav[0];
+    const mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(L) : { titolo: L.cosa, progetto: L.progetto };
     $('testa-stato').textContent = 'Il PC di casa lavora per il Mac';
-    $('frase').innerHTML = cifre(pulisci(L.cosa) || 'Un lavoro mandato dal Mac');
-    const chi = L.chi || 'un agente', prog = L.progetto;
+    $('frase').innerHTML = cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac');
+    const chi = L.chi || 'un agente', prog = mostra.progetto;
     $('chi').innerHTML = cifre(`Mandato da ${chi}` + (prog ? `, per ${prog}` : '') + '.');
     const altri = lav.length - 1 + (s.coda || []).length;
     $('coda').innerHTML = cifre(altri === 0 ? 'Nessun altro lavoro in coda.'
@@ -342,9 +344,10 @@ function disegna(){
       const esito = ok ? `<span class="ok">Riuscito</span> <span class="dur">in ${cifre(dur)}</span>`
                        : u.esito === 'interrotto' ? `<span class="ko">Interrotto</span> <span class="dur">dopo ${cifre(dur)}</span>`
                        : `<span class="ko">Non riuscito</span> <span class="dur">dopo ${cifre(dur)}</span>`;
-      const dove = [u.progetto, u.ramo && `ramo ${u.ramo}`, !isNaN(fine) && fa((adesso() - fine) / 1000)].filter(Boolean);
+      const mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(u) : { titolo: u.cosa, progetto: u.progetto };
+      const dove = [mostra.progetto, u.ramo && `ramo ${u.ramo}`, !isNaN(fine) && fa((adesso() - fine) / 1000)].filter(Boolean);
       return `<li><p class="u-esito">${esito}</p>
-        <p class="u-cosa">${cifre(pulisci(u.cosa))}</p>
+        <p class="u-cosa">${cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac')}</p>
         <p class="u-meta">${cifre(dove.join(', '))}</p></li>`;
     }).join('');
   }

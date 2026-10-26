@@ -15,8 +15,8 @@ ko() { echo "KO: $*" >&2; exit 1; }
 deploy() {
   "${S[@]}" 'if not exist C:\winfleet\schermo\prova mkdir C:\winfleet\schermo\prova' >/dev/null || ko "PC irraggiungibile"
   scp -q "$HOSTDIR/wf-schermo.ps1" "$HOSTDIR/wf-schermo-ctl.ps1" "$HOSTDIR/wf-schermo-install.ps1" "$HOST:C:/winfleet/" || ko "scp script"
-  # la pagina: index.html, i font e le istantanee di prova; mai stato.js ed esiti.jsonl
-  scp -q "$AQUI/index.html" "$AQUI/stato-attesa.js" "$AQUI/stato-lavora.js" "$HOST:C:/winfleet/schermo/" || ko "scp pagina"
+  # la pagina: index.html con nome-lavoro.js, i font e le istantanee di prova; mai stato.js ed esiti.jsonl
+  scp -q "$AQUI/index.html" "$AQUI/nome-lavoro.js" "$AQUI/stato-attesa.js" "$AQUI/stato-lavora.js" "$HOST:C:/winfleet/schermo/" || ko "scp pagina"
   scp -q -r "$AQUI/fonts" "$HOST:C:/winfleet/schermo/" || ko "scp font"
   scp -q "$AQUI/prova/"*.ps1 "$HOST:C:/winfleet/schermo/prova/" || ko "scp prove"
   # la sintassi si controlla sul PC, dove c'e' il parser giusto (PowerShell 5.1)
