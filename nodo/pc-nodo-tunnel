@@ -1,0 +1,27 @@
+#!/bin/sh
+# Tiene aperto il tunnel ssh fra il Mac e il nodo Topics del PC.
+#   -L 127.0.0.1:$LPORT (Mac) -> 127.0.0.1:3341 (PC, ascoltatore "tunnel":
+#      conta come remoto, quindi il Mac deve essersi appaiato)
+#   -R 127.0.0.1:$RPORT (PC)  -> 127.0.0.1:$PROXY (Mac, SOLO il proxy dei
+#      modelli: mai la porta principale di Topics, che da loopback e'
+#      proprietario senza credenziali)
+# Un "ssh -N" non tiene sveglio il PC (wf-autosleep conta solo le sessioni con
+# un processo figlio), quindi il tunnel puo' restare acceso sempre: quando il
+# PC dorme la porta 22 non risponde e si riprova dopo 15 s.
+set -u
+HOST_SSH=$(sed -n 's/^HOST_SSH="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$HOME/.config/winfleet/config.env")
+LPORT="${PC_NODO_LPORT:-3393}"
+RPORT="${PC_NODO_RPORT:-3394}"
+PROXY="${PC_NODO_PROXY_PORT:-3391}"
+host="${HOST_SSH#*@}"
+while :; do
+  if nc -z -G 2 "$host" 22 >/dev/null 2>&1; then
+    echo "$(date '+%F %T') apro tunnel L$LPORT R$RPORT->$PROXY"
+    ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=8 \
+      -L "127.0.0.1:$LPORT:127.0.0.1:3341" \
+      -R "127.0.0.1:$RPORT:127.0.0.1:$PROXY" "$HOST_SSH"
+    echo "$(date '+%F %T') tunnel chiuso ($?)"
+  fi
+  sleep 15
+done

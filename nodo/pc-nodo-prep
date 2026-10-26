@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Prepara il PC prima che la Topics del Mac gli mandi una card.
+
+Lo lancia Topics come hook "node-run" (hooks.json nella home di Topics) con il
+payload JSON su stdin: origin_url, cwd (il repo sul Mac), machine_id, task_id.
+Exit 0 = il nodo e' pronto, la card parte. Exit diverso da 0 = la card resta in
+coda e riprova fra 5 minuti; il motivo (stderr) finisce sulla card.
+
+Tre passi:
+  1. sveglia il PC (winwake) e aspetta che il tunnel risponda;
+  2. porta sul PC il ramo di default del repo con un git bundle incrementale:
+     il PC non ha token GitHub, origin resta l'URL di GitHub (il nodo trova il
+     progetto per origin);
+  3. registra il repo come progetto nel Topics del PC se non c'e'.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+HOME = os.path.expanduser("~")
+LPORT = int(os.environ.get("PC_NODO_LPORT", "3393"))
+PC_ROOT = os.environ.get("PC_NODO_DIR", r"E:\topics-nodo")
+WINWAKE = os.environ.get("PC_NODO_WINWAKE", os.path.join(HOME, ".local/bin/winwake"))
+
+
+def fail(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def log(msg):
+    print(f"[pc-nodo-prep] {msg}", file=sys.stdout, flush=True)
+
+
+def host_ssh():
+    if os.environ.get("PC_NODO_SSH"):
+        return os.environ["PC_NODO_SSH"]
+    cfg = os.path.join(HOME, ".config/winfleet/config.env")
+    with open(cfg) as f:
+        for line in f:
+            m = re.match(r'\s*HOST_SSH="?([^"\n]+)"?', line)
+            if m:
+                return m.group(1)
+    fail("pc-nodo-prep: HOST_SSH mancante in ~/.config/winfleet/config.env")
+
+
+def run(cmd, timeout, cwd=None, input_text=None):
+    return subprocess.run(cmd, cwd=cwd, input=input_text, capture_output=True, text=True, timeout=timeout)
+
+
+def ps(script, timeout=180):
+    """PowerShell sul PC. Lo script va come -EncodedCommand e non su stdin:
+    con "-Command -" PowerShell legge riga per riga come una console, e un
+    "else" a capo dopo la graffa diventa un errore di sintassi muto."""
+    import base64
+    enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host_ssh(),
+         f"powershell -NoProfile -NonInteractive -EncodedCommand {enc}"],
+        capture_output=True, timeout=timeout)
+    out = r.stdout.decode("utf-8", "replace")
+    err = r.stderr.decode("utf-8", "replace")
+    return r.returncode, out, err
+
+
+def ps_quote(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def repo_key(origin):
+    """host/owner/repo come normalizeRemoteUrl di topics-app (nodes.ts)."""
+    u = origin.strip()
+    m = re.match(r"^[\w.-]+@([\w.-]+):(.+)$", u) or re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", u)
+    if not m:
+        return None
+    path = re.sub(r"\.git$", "", m.group(2).strip("/"))
+    return f"{m.group(1).lower()}/{path.lower()}"
+
+
+def wake_and_wait():
+    if os.path.exists(WINWAKE):
+        try:
+            r = run([WINWAKE], timeout=150)
+        except subprocess.TimeoutExpired:
+            fail("pc-nodo-prep: il PC non si e' svegliato in 150 s (winwake)")
+        if r.returncode != 0:
+            fail(f"pc-nodo-prep: il PC non si sveglia (winwake exit {r.returncode}): {r.stdout.strip()[-200:]}")
+    deadline = time.time() + 90
+    last = ""
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{LPORT}/api/topics", timeout=4)
+            return
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):  # risponde il nodo: senza cookie e' giusto un 401
+                return
+            last = f"HTTP {e.code}"
+        except Exception as e:  # tunnel non ancora su
+            last = str(e)
+        time.sleep(3)
+    fail(f"pc-nodo-prep: il PC e' sveglio ma il tunnel verso il nodo (127.0.0.1:{LPORT}) non risponde: {last}")
+
+
+def default_branch(repo):
+    r = run(["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], timeout=10)
+    if r.returncode == 0 and r.stdout.strip().startswith("origin/"):
+        return r.stdout.strip()[len("origin/"):]
+    for b in ("main", "master"):
+        if run(["git", "-C", repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{b}"], timeout=10).returncode == 0:
+            return b
+    fail(f"pc-nodo-prep: nel repo {repo} non trovo origin/main ne' origin/master")
+
+
+def sync_repo(origin, repo):
+    key = repo_key(origin)
+    if not key:
+        fail(f"pc-nodo-prep: origin non riconosciuto: {origin}")
+    owner_repo = key.split("/", 1)[1]
+    pc_dir = PC_ROOT + "\\repos\\" + owner_repo.replace("/", "\\")
+    name = owner_repo.split("/")[-1]
+
+    # Il Mac ha accesso a GitHub: aggiorna la sua vista di origin prima di copiarla.
+    f = run(["git", "-C", repo, "fetch", "--no-tags", "-q", "origin"], timeout=120)
+    if f.returncode != 0:
+        log(f"fetch origin sul Mac fallito, uso quello che c'e': {f.stderr.strip()[-200:]}")
+    branch = default_branch(repo)
+    ref = f"refs/remotes/origin/{branch}"
+    mac_sha = run(["git", "-C", repo, "rev-parse", ref], timeout=10).stdout.strip()
+
+    code, out, err = ps(f"git -C {ps_quote(pc_dir)} rev-parse --verify -q {ref} 2>$null", timeout=60)
+    pc_sha = out.strip() if code == 0 else ""
+    if pc_sha == mac_sha:
+        log(f"{name}: il PC ha gia' {branch} @ {mac_sha[:10]}")
+    else:
+        args = ["git", "-C", repo, "bundle", "create"]
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = os.path.join(tmp, f"{name}.bundle")
+            incr = bool(pc_sha) and run(["git", "-C", repo, "merge-base", "--is-ancestor", pc_sha, mac_sha], timeout=20).returncode == 0
+            cmd = args + [bundle, ref] + (["--not", pc_sha] if incr else [])
+            b = run(cmd, timeout=300)
+            if b.returncode != 0:
+                fail(f"pc-nodo-prep: git bundle fallito: {b.stderr.strip()[-300:]}")
+            remote_bundle = PC_ROOT + "\\dl\\" + name + ".bundle"
+            s = run(["scp", "-q", "-o", "BatchMode=yes", bundle, f"{host_ssh()}:{remote_bundle.replace(chr(92), '/')}"], timeout=600)
+            if s.returncode != 0:
+                fail(f"pc-nodo-prep: copia del bundle sul PC fallita: {s.stderr.strip()[-300:]}")
+        script = f"""
+$ErrorActionPreference = 'Stop'
+$env:GIT_TERMINAL_PROMPT = '0'
+$d = {ps_quote(pc_dir)}; $b = {ps_quote(remote_bundle)}
+$nuovo = -not (Test-Path (Join-Path $d '.git'))
+if ($nuovo) {{
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  git init -q $d
+  git -C $d remote add origin {ps_quote(origin)}
+  # checkout identico al Mac: niente CRLF negli script che il nodo esegue
+  git -C $d config core.autocrlf false
+  git -C $d config credential.interactive never
+}}
+git -C $d fetch -q $b "+{ref}:{ref}"
+if ($LASTEXITCODE -ne 0) {{ throw "fetch dal bundle fallito" }}
+git -C $d symbolic-ref refs/remotes/origin/HEAD {ref}
+if ($nuovo) {{ git -C $d checkout -q -B {branch} {ref} }}
+else {{
+  $st = git -C $d status --porcelain
+  $cur = git -C $d rev-parse --abbrev-ref HEAD
+  if (-not $st -and $cur -eq {ps_quote(branch)}) {{ git -C $d merge -q --ff-only {ref} }}
+}}
+Remove-Item $b -ErrorAction SilentlyContinue
+git -C $d rev-parse {ref}
+"""
+        code, out, err = ps(script, timeout=600)
+        if code != 0 or mac_sha not in out:
+            fail(f"pc-nodo-prep: aggiornamento del repo sul PC fallito (exit {code}): {(err + out).strip()[-400:]}")
+        log(f"{name}: PC portato a {branch} @ {mac_sha[:10]} ({'incrementale' if pc_sha else 'completo'})")
+    return pc_dir, name
+
+
+def ensure_project(pc_dir, name):
+    """Registra il repo nel Topics del PC (porta 3333, loopback = proprietario)."""
+    slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "progetto"
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$d = {ps_quote(pc_dir)}
+$ps = Invoke-RestMethod -UseBasicParsing http://127.0.0.1:3333/api/projects
+$lista = if ($ps.projects) {{ $ps.projects }} else {{ $ps }}
+$gia = $lista | Where-Object {{ $_.path -eq $d }} | Select-Object -First 1
+if ($gia) {{ "gia' registrato $($gia.id)"; exit 0 }}
+$body = @{{ name = {ps_quote(name)}; slug = {ps_quote(slug)}; path = $d }} | ConvertTo-Json
+try {{
+  $p = Invoke-RestMethod -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body http://127.0.0.1:3333/api/projects
+  "registrato via API $($p.id)"
+}} catch {{
+  $msg = $_.ErrorDetails.Message
+  if ($msg -match 'path must be absolute') {{
+    # Topics <= 2.3.30 rifiuta i percorsi Windows: ripiego sullo script.
+    $id = & "$env:USERPROFILE\\.bun\\bin\\bun.exe" {ps_quote(PC_ROOT + chr(92) + 'registra-progetto.ts')} {ps_quote(PC_ROOT + chr(92) + 'stato' + chr(92) + 'data' + chr(92) + 'topics.db')} {ps_quote(name)} {ps_quote(slug)} $d
+    if ($LASTEXITCODE -ne 0) {{ throw "registra-progetto.ts fallito" }}
+    "registrato via ripiego $id"
+  }} else {{ throw "POST /api/projects: $msg" }}
+}}
+"""
+    code, out, err = ps(script, timeout=120)
+    if code != 0:
+        fail(f"pc-nodo-prep: registrazione del progetto sul PC fallita: {(err or out).strip()[-400:]}")
+    log(f"{name}: {out.strip().splitlines()[-1] if out.strip() else 'ok'}")
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    origin = payload.get("origin_url") or os.environ.get("PC_NODO_ORIGIN")
+    repo = payload.get("cwd") or os.environ.get("PC_NODO_REPO")
+    if not origin or not repo:
+        fail("pc-nodo-prep: payload senza origin_url o cwd")
+    t0 = time.time()
+    wake_and_wait()
+    pc_dir, name = sync_repo(origin, repo)
+    ensure_project(pc_dir, name)
+    log(f"pronto in {time.time() - t0:.0f} s")
+
+
+if __name__ == "__main__":
+    main()

@@ -112,6 +112,7 @@ function Motivo-Italiano($w, $nLavori) {
     '^gpu (\d+)%'                { "La scheda video è occupata al $($Matches[1])%"; break }
     '^encoder'                   { 'Lo streaming sta usando la scheda video'; break }
     '^richiesta di alimentazione' { 'Windows o un programma chiede di restare acceso'; break }
+    '^topics nodo'               { 'Una card di Topics sta lavorando su questo PC'; break }
     default                      { $w }
   }
 }
@@ -186,6 +187,15 @@ foreach ($r in (powercfg /requests 2>$null)) {
   if ($r -like '[[]*' -and $sez -in 1, 2, 3) { $req += $r.Trim() }
 }
 if ($req) { $why += "richiesta di alimentazione: $($req[0])" }
+
+# Una card della Topics del Mac in corsa sul nodo (nodo/avvia-nodo.ps1, porta 3333 su
+# loopback). Il CLI aspetta il modello per lunghi tratti a CPU quasi zero, e il tunnel
+# ssh -N del Mac non e' una sessione con figli: senza questo il PC dormirebbe a meta' card.
+try {
+  $tn = Invoke-RestMethod -UseBasicParsing -TimeoutSec 3 'http://127.0.0.1:3333/api/all-boards/tasks?status=in_progress'
+  $nc = @($tn.tasks | Where-Object { $_ }).Count
+  if ($nc -gt 0) { $why += "topics nodo ($nc card in corso)" }
+} catch { }  # nodo spento o porta libera: nessuna card, nessun motivo
 
 if ($why.Count -gt 0) {
   # ES_SYSTEM_REQUIRED senza ES_CONTINUOUS: azzera il timer di Windows una volta, e il
