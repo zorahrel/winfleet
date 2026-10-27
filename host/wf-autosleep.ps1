@@ -111,6 +111,7 @@ function Motivo-Italiano($w, $nLavori) {
     '^stream porta'              { 'Qualcuno sta usando il PC in streaming'; break }
     '^processo (\S+) a '         { "Un programma sta lavorando ($($Matches[1]))"; break }
     '^cpu (\d+)%'                { "Il processore è occupato al $($Matches[1])%"; break }
+    '^gpu (\d+)% da (\S+)'       { "La scheda video è occupata al $($Matches[1])% ($($Matches[2]))"; break }
     '^gpu (\d+)%'                { "La scheda video è occupata al $($Matches[1])%"; break }
     '^encoder'                   { 'Lo streaming sta usando la scheda video'; break }
     '^richiesta di alimentazione' { 'Windows o un programma chiede di restare acceso'; break }
@@ -189,7 +190,19 @@ if ($r1 -and $r2 -and $r2.Timestamp_Sys100NS -gt $r1.Timestamp_Sys100NS) {
 }
 if ($null -eq $cpu) { $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average }
 if ($cpu -ge 15) { $why += "cpu $cpu%" }
-if ($g1[0] -ge 10 -and $g2[0] -ge 10) { $why += "gpu $($g2[0])%" }
+# Con la GPU occupata si dice anche chi la usa: «GPU al 100%» da solo è stato chiesto due volte il 27/10 (un render
+# Blender, poi la demo di PoP lasciata aperta). pmon misura per processo, anche i giochi, e non è localizzato; il nome
+# lo dà Get-Process (pmon lo taglia a 15 lettere).
+function GpuUser {
+  $best = $null
+  foreach ($l in (& nvidia-smi pmon -c 1 -s u 2>$null)) {
+    if ($l -match '^\s*\d+\s+(\d+)\s+\S+\s+(\d+)\s') { if (-not $best -or [int]$Matches[2] -gt $best.Sm) { $best = @{ Pid = [int]$Matches[1]; Sm = [int]$Matches[2] } } }
+  }
+  if (-not $best -or $best.Sm -lt 5) { return $null }
+  $p = Get-Process -Id $best.Pid -EA SilentlyContinue
+  if ($p) { $p.ProcessName } else { $null }
+}
+if ($g1[0] -ge 10 -and $g2[0] -ge 10) { $gu = GpuUser; $why += "gpu $($g2[0])%" + $(if ($gu) { " da $gu" } else { '' }) }
 if ($g1[1] -ge 5 -and $g2[1] -ge 5) { $why += "encoder $($g2[1])% (stream)" }
 
 # Le misure per chi guarda il PC dal Mac (pc-state -> hub -> tray), in coda a ogni riga del log
