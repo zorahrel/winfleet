@@ -31,7 +31,9 @@
 # Uso: wf-autosleep.ps1 [-Dry]
 param([switch]$Dry)
 $dir = 'C:\winfleet'; $log = "$dir\autosleep.log"; $state = "$dir\autosleep.state"
+$misure = ''
 function Log($m) {
+  if ($script:misure) { $m = "$m | $($script:misure)" }
   $r = "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $m
   Add-Content -Path $log -Value $r
   # l'ultima decisione da sola, per pc-state sul Mac: un `type` via ssh dura decine di ms,
@@ -178,6 +180,19 @@ $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentag
 if ($cpu -ge 15) { $why += "cpu $cpu%" }
 if ($g1[0] -ge 10 -and $g2[0] -ge 10) { $why += "gpu $($g2[0])%" }
 if ($g1[1] -ge 5 -and $g2[1] -ge 5) { $why += "encoder $($g2[1])% (stream)" }
+
+# Le misure per chi guarda il PC dal Mac (pc-state -> hub -> tray), in coda a ogni riga del log
+# dopo " | ": sempre, anche sotto soglia. Prima cpu e gpu c'erano solo come motivi (>=15%, >=10%)
+# e il cruscotto del PC restava grigio mentre lavorava poco. Non sono motivi: la decisione legge
+# solo $why. Memoria = in uso come nel Task Manager; disco = C:. Solo interi: SYSTEM puo' avere
+# la cultura italiana, e "62,5" si confonderebbe con i separatori.
+try {
+  $os = Get-CimInstance Win32_OperatingSystem -EA Stop
+  $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
+  $misure = "misure: cpu {0}%; gpu {1}%; mem {2}%; disco {3}% ({4} GB liberi)" -f `
+    [int][math]::Round($cpu), $g2[0], [int][math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)),
+    [int][math]::Round(100 * (1 - $c.FreeSpace / $c.Size)), [int][math]::Round($c.FreeSpace / 1GB)
+} catch { $misure = '' }  # WMI che non risponde: niente misure in questo giro, la decisione non cambia
 
 # powercfg /requests e' localizzato, ma l'ordine delle sezioni no: DISPLAY, SYSTEM, AWAYMODE,
 # EXECUTION, PERFBOOST, ACTIVELOCKSCREEN. Una richiesta vera e' una riga che comincia con "[".
