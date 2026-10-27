@@ -168,15 +168,26 @@ $stream = Get-NetTCPConnection -State Established -EA SilentlyContinue |
 if ($stream) { $why += "stream porta $(@($stream)[0].LocalPort)" }
 
 # CPU per processo su una finestra di 5 s (TotalProcessorTime, non localizzato come Get-Counter).
+# Il totale dal contatore grezzo _Total sulla stessa finestra: Win32_Processor.LoadPercentage su
+# questo i9 torna vuoto (27/10, render Blender a 1 core: vuoto, arrotondato a "cpu 0%", e la soglia
+# del 15% non poteva mai scattare). Grezzo = tempo di inattivita' in tick da 100 ns, non localizzato.
+function CpuRaw { try { Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter "Name='_Total'" -EA Stop } catch { $null } }
 $g1 = Gpu
+$r1 = CpuRaw
 $t0 = @{}; Get-Process | ForEach-Object { if ($_.TotalProcessorTime) { $t0[$_.Id] = $_.TotalProcessorTime.TotalSeconds } }
 Start-Sleep -Seconds 5
 $g2 = Gpu
+$r2 = CpuRaw
 $top = Get-Process | Where-Object { $_.Id -ne $PID -and $_.Name -ne 'Idle' -and $t0.ContainsKey($_.Id) -and $_.TotalProcessorTime } |
   ForEach-Object { [pscustomobject]@{ Name = $_.Name; Core = ($_.TotalProcessorTime.TotalSeconds - $t0[$_.Id]) / 5 } } |
   Sort-Object Core -Descending | Select-Object -First 1
 if ($top -and $top.Core -ge 0.5) { $why += ("processo {0} a {1:N1} core" -f $top.Name, $top.Core) }
-$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$cpu = $null
+if ($r1 -and $r2 -and $r2.Timestamp_Sys100NS -gt $r1.Timestamp_Sys100NS) {
+  $idle = ([double]$r2.PercentProcessorTime - [double]$r1.PercentProcessorTime) / ([double]$r2.Timestamp_Sys100NS - [double]$r1.Timestamp_Sys100NS)
+  $cpu = [int][math]::Round([math]::Min(100, [math]::Max(0, 100 * (1 - $idle))))
+}
+if ($null -eq $cpu) { $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average }
 if ($cpu -ge 15) { $why += "cpu $cpu%" }
 if ($g1[0] -ge 10 -and $g2[0] -ge 10) { $why += "gpu $($g2[0])%" }
 if ($g1[1] -ge 5 -and $g2[1] -ge 5) { $why += "encoder $($g2[1])% (stream)" }
@@ -190,7 +201,7 @@ try {
   $os = Get-CimInstance Win32_OperatingSystem -EA Stop
   $c = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop
   $misure = "misure: cpu {0}%; gpu {1}%; mem {2}%; disco {3}% ({4} GB liberi)" -f `
-    [int][math]::Round($cpu), $g2[0], [int][math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)),
+    $(if ($null -eq $cpu) { '?' } else { [int][math]::Round($cpu) }), $g2[0], [int][math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)),
     [int][math]::Round(100 * (1 - $c.FreeSpace / $c.Size)), [int][math]::Round($c.FreeSpace / 1GB)
 } catch { $misure = '' }  # WMI che non risponde: niente misure in questo giro, la decisione non cambia
 
