@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PC di casa</title>
 <!--
-  Schermo del PC di casa: cosa sta facendo per il Mac, o quanto manca allo standby.
-  Base: prototipo p2 (curve di livello). Gira da file:// senza rete.
+  Schermo del PC di casa: lavoro in corso, stato del PC, conto allo standby.
+  Tecnico e minimale: fondo piatto, filetti sottili, poche parole. Niente WebGL e niente animazioni
+  (la GPU resta a riposo, il PC puo' andare in standby). Gira da file:// senza rete.
   Font (SIL OFL 1.1, file in fonts/ con le licenze):
-    ?font=1  Hubot Sans Black Expanded + Schibsted Grotesk per i testi (predefinito)
-    ?font=2  Archivo Expanded Black + Archivo
-    ?font=3  Mona Sans Black Expanded + Mona Sans
+    ?font=1  Mona Sans (predefinito: numeri Expanded Black, etichette strette)
+    ?font=2  Hubot Sans
+    ?font=3  Archivo
   Stato: stato.js (window.STATO), ricaricato ogni 2 s. ?stato=lavora|attesa legge le istantanee
   stato-lavora.js / stato-attesa.js e le riporta all'ora attuale.
   ?misura=1 scrive in <pre id="misura"> sovrapposizioni ed elementi fuori schermo.
-  Rumore simplex 3D: adattato da webgl-noise (Ashima Arts / Stefan Gustavson, licenza MIT).
 -->
 <style>
 @font-face{font-family:"Hubot Sans";src:url("fonts/HubotSans%5Bwdth,wght%5D.ttf") format("truetype");
@@ -23,166 +23,100 @@
   font-weight:200 900;font-stretch:75% 125%;font-display:block}
 @font-face{font-family:"Archivo";src:url("fonts/Archivo%5Bwdth,wght%5D.ttf") format("truetype");
   font-weight:100 900;font-stretch:62% 125%;font-display:block}
-@font-face{font-family:"Schibsted Grotesk";src:url("fonts/SchibstedGrotesk%5Bwght%5D.ttf") format("truetype");
-  font-weight:400 900;font-display:block}
 
 :root{
-  --nero:#0b0c0a;
-  --carta:#f2f0e6;
-  --grigio:#cfccbd;       /* righe secondarie: chiaro abbastanza da leggersi sopra le curve */
-  --lime:#d2f43a;
-  --arancio:#ff6a1f;
-  --rosso:#ff5a48;
+  --nero:#0a0b0a; --carta:#eceae0; --grigio:#8c8b82; --filo:rgba(236,234,224,.16);
+  --lime:#d2f43a; --arancio:#ff6a1f; --rosso:#ff5a48;
   --accento:var(--lime);
-  /* 1vh = 10,8 px a 1080p, 14,4 px a 1440p. Nessun testo sotto 3,6vh (39 px a 1080p). */
+  /* 1vh = 10,8 px a 1080p. Etichette 2,8vh (30 px), testi 4,4vh */
   --pad-x:6vw; --pad-y:6vh;
-  --t-nota:3.6vh; --t-medio:5vh;
-  --display:"Hubot Sans"; --testo:"Schibsted Grotesk";
-  --largo:125%;           /* larghezza dei numeri e della frase grande */
-  --largo-frase:118%;
-  --spazio-parole:.13em;  /* il largo espanso stringe gli spazi: li riapriamo */
+  --et:2.8vh; --testo-t:4.4vh;
+  --display:"Mona Sans"; --corpo:"Mona Sans";
 }
-:root[data-font="2"]{ --display:"Archivo"; --testo:"Archivo"; --largo-frase:116%; --spazio-parole:.08em }
-:root[data-font="3"]{ --display:"Mona Sans"; --testo:"Mona Sans"; --largo-frase:120% }
-
+:root[data-font="2"]{ --display:"Hubot Sans"; --corpo:"Hubot Sans" }
+:root[data-font="3"]{ --display:"Archivo"; --corpo:"Archivo" }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{width:100%;height:100%;overflow:hidden;background:var(--nero);color:var(--carta)}
-body{font-family:var(--testo),"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
-  font-weight:600;font-stretch:100%;-webkit-font-smoothing:antialiased;cursor:none;user-select:none;
-  font-kerning:normal}
+body{font-family:var(--corpo),"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-weight:600;
+  -webkit-font-smoothing:antialiased;cursor:none;user-select:none}
 body.attesa{--accento:var(--arancio)}
 ol{list-style:none}
-
-/* cifre a larghezza fissa SOLO dentro .n: la punteggiatura resta proporzionale */
 .n{font-variant-numeric:tabular-nums lining-nums}
 
-#terreno{position:fixed;inset:0;width:100vw;height:100vh;display:block;background:var(--nero)}
-/* velo fisso dietro il testo: nessuna animazione, solo una composizione */
-#velo{position:fixed;inset:0;pointer-events:none;
-  background:
-    linear-gradient(90deg,rgba(11,12,10,.84) 0%,rgba(11,12,10,.64) 50%,rgba(11,12,10,.28) 86%,rgba(11,12,10,.14) 100%),
-    linear-gradient(0deg,rgba(11,12,10,.72) 0%,rgba(11,12,10,0) 30%)}
-.attesa #velo{background:
-    radial-gradient(40% 58% at 80% 70%,rgba(11,12,10,.80) 0%,rgba(11,12,10,0) 100%),
-    linear-gradient(90deg,rgba(11,12,10,.84) 0%,rgba(11,12,10,.60) 45%,rgba(11,12,10,.18) 80%,rgba(11,12,10,.22) 100%),
-    linear-gradient(0deg,rgba(11,12,10,.70) 0%,rgba(11,12,10,0) 34%)}
+#scena{position:fixed;inset:0;padding:var(--pad-y) var(--pad-x);display:flex;flex-direction:column;
+  transition:transform 6s ease-in-out}
+/* etichetta tecnica: maiuscolo stretto, spaziato, grigio */
+.et{font-size:var(--et);font-weight:600;font-stretch:80%;letter-spacing:.16em;text-transform:uppercase;color:var(--grigio);line-height:1}
 
-#scena{position:fixed;inset:0;padding:var(--pad-y) var(--pad-x);
-  display:flex;flex-direction:column;transition:transform 6s ease-in-out}
-
-/* testa: lo stato, nel colore dello stato, è la prima cosa che si legge */
-.testa{display:flex;align-items:baseline;justify-content:space-between;gap:3vw;
-  font-size:var(--t-medio);font-weight:800;line-height:1.1}
-#testa-stato{color:var(--accento)}
-.testa .dx{display:flex;align-items:baseline;gap:1.2em}
-#fermi{color:var(--rosso);font-size:var(--t-nota)}
+.testa{display:flex;justify-content:space-between;align-items:center;padding-bottom:2.6vh;border-bottom:1px solid var(--filo)}
+.stato{display:flex;align-items:center;gap:1.1vw;color:var(--accento)}
+.stato i{width:1.5vh;height:1.5vh;background:var(--accento);display:block}
+.testa .dx{display:flex;gap:3vw;align-items:center}
+#fermi{color:var(--rosso)}
 #ora{color:var(--carta)}
 
-.vista{flex:1;display:none;min-height:0}
-.lavora #v-lavora{display:flex}
+.vista{flex:1;display:none;min-height:0;flex-direction:column;justify-content:center}
+.lavora #v-lavora,.attesa #v-attesa{display:flex}
 
-/* LAVORA: frase e durata stanno insieme al centro, chi l'ha mandato in basso */
-#v-lavora{flex-direction:column}
-.centro{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center;padding:2vh 0 3vh}
-#frase{font-family:var(--display),sans-serif;font-weight:900;font-stretch:var(--largo-frase);
-  line-height:1;letter-spacing:0;word-spacing:var(--spazio-parole);max-width:86vw;
-  text-wrap:balance;hyphens:manual;overflow-wrap:normal}
-.tempo{display:flex;align-items:baseline;flex-wrap:wrap;column-gap:2.6vw;row-gap:1vh;margin-top:5vh}
-#durata{font-family:var(--display),sans-serif;font-weight:900;font-stretch:var(--largo);
-  font-size:12vh;line-height:.9;color:var(--accento);white-space:nowrap}
-.u{font-family:var(--testo),sans-serif;font-stretch:100%;font-weight:800;font-size:.5em;
-  margin:0 .4em 0 .14em;color:var(--accento)}
-.u:last-child{margin-right:0}
-#iniziato{font-size:var(--t-medio);font-weight:700;color:var(--grigio);white-space:nowrap}
-#chi{font-size:var(--t-medio);font-weight:800;line-height:1.15}
-.nota{font-size:var(--t-nota);font-weight:600;color:var(--grigio);line-height:1.3;margin-top:1vh}
+/* il numero grande: Expanded Black, e' l'unica cosa che conta */
+.grande{font-family:var(--display),sans-serif;font-weight:900;font-stretch:125%;line-height:.82;
+  letter-spacing:-.025em;color:var(--carta);white-space:nowrap;width:max-content}
+.grande .u{font-size:.2em;font-weight:700;font-stretch:90%;letter-spacing:.04em;color:var(--accento);margin:0 .5em 0 .2em}
+.grande .u:last-child{margin-right:0}
+.grande .sep{color:var(--accento);letter-spacing:0;margin:0 .05em}
+#durata{font-size:23vh}
+#frase{font-size:var(--testo-t);font-weight:700;line-height:1.15;margin-top:5vh;max-width:80vw;
+  text-wrap:balance;overflow-wrap:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
-/* ATTESA: due colonne con le intestazioni sulla stessa riga di base */
-#v-attesa{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);grid-template-rows:1fr auto auto;
-  column-gap:4.5vw;grid-template-areas:". ." "k h" "sx dx"}
-.attesa #v-attesa,.vuoto #v-attesa{display:grid}
-#k-attesa,#h-ultimi{font-size:var(--t-medio);font-weight:700;color:var(--grigio);line-height:1.1;align-self:baseline}
-#k-attesa{grid-area:k}
-#h-ultimi{grid-area:h}
-.sx{grid-area:sx;min-width:0;display:flex;flex-direction:column}
-.dx-attesa{grid-area:dx;min-width:0}
-#conto-riga{display:flex;align-items:baseline;gap:1.1vw;margin-top:2.8vh;white-space:nowrap}
-#conto{font-family:var(--display),sans-serif;font-weight:900;font-stretch:var(--largo);
-  line-height:.8;letter-spacing:-.02em;width:max-content}
-#conto .sep{letter-spacing:0;margin:0 .07em 0 .05em}
-#conto-u{font-size:6vh;font-weight:800;color:var(--carta)}
-#fermo{display:none;font-family:var(--display),sans-serif;font-weight:900;font-stretch:var(--largo);
-  font-size:15vh;line-height:.9;margin-top:1.6vh}
-.senza-conto #conto-riga,.senza-conto #tacche,.senza-conto #tacche-nota,.senza-conto #risveglia{display:none}
-.senza-conto #fermo{display:block}
+/* filetto di avanzamento del conto */
+#barra{flex:none;height:.6vh;min-height:4px;background:var(--filo);margin-top:4vh;position:relative}
+#barra b{position:absolute;left:0;top:0;bottom:0;background:var(--accento)}
+.k{margin:3vh 0 3.4vh}
 
-#tacche{display:flex;gap:.5vw;margin-top:4.2vh;height:1.4vh}
-#tacche i{flex:1;background:rgba(242,240,230,.16)}
-#tacche i.on{background:var(--accento)}
-/* il respiro e' un cambio al secondo dal tic(), non una animazione CSS: un'animazione tiene Edge a
-   presentare 60 fps a schermo intero anche con il fondo fermo (GPU del PC sopra il 5%) */
-#tacche i.cur.giu{opacity:.28}
-#tacche-nota{margin-top:1.4vh}
+/* riga dei dati: celle con etichetta sopra e valore sotto, separate da filetti */
+.celle{flex:none;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border-top:1px solid var(--filo)}
+.celle>div{padding:2.6vh 2vw 0 0;min-width:0}
+.celle>div+div{padding-left:2vw;border-left:1px solid var(--filo)}
+.celle .v{font-size:var(--testo-t);font-weight:700;line-height:1.1;margin-top:1.4vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.celle .v small{font-size:.6em;color:var(--grigio);font-weight:600;margin-left:.2em}
+.celle .m{height:.5vh;background:var(--filo);margin-top:1.4vh}
+.celle .m b{display:block;height:100%;background:var(--carta)}
 
-#perche{display:none;font-size:var(--t-medio);font-weight:700;line-height:1.15;margin-top:4vh;max-width:56vw;text-wrap:balance}
+/* ultimi lavori: una riga l'uno */
+#ultimi{margin:4vh 0 3vh;border-top:1px solid var(--filo)}
+#ultimi li{display:grid;grid-template-columns:11vw 1fr auto;column-gap:2vw;align-items:baseline;
+  padding:1.9vh 0;border-bottom:1px solid var(--filo);font-size:var(--testo-t);font-weight:600;line-height:1.1}
+#ultimi .ok{color:var(--lime)} #ultimi .ko{color:var(--rosso)}
+#ultimi .e{font-size:var(--et);font-weight:700;font-stretch:80%;letter-spacing:.14em;text-transform:uppercase}
+#ultimi .c{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ultimi .d{color:var(--grigio)}
+#perche{display:none;font-size:var(--testo-t);font-weight:600;line-height:1.2;margin-top:5vh;max-width:70vw;text-wrap:balance}
 .senza-conto #perche{display:block}
-#risveglia{font-size:4.2vh;font-weight:700;color:var(--carta);line-height:1.2;margin-top:4.4vh;max-width:52vw;text-wrap:balance}
-
-/* ultimi lavori: prima l'esito, a colore; poi cosa; poi dove e quando */
-#ultimi{margin-top:2.8vh}
-#ultimi li{padding:1.6vh 0 1.9vh;border-top:2px solid rgba(242,240,230,.18)}
-.u-esito{font-size:4.2vh;font-weight:800;line-height:1.1}
-.u-esito .ok{color:var(--lime)}
-.u-esito .ko{color:var(--rosso)}
-.u-esito .dur{color:var(--carta);font-weight:700;white-space:nowrap}
-.u-cosa{font-size:var(--t-nota);font-weight:700;line-height:1.2;margin-top:.7vh}
-.u-meta{font-size:var(--t-nota);font-weight:600;color:var(--grigio);line-height:1.25;margin-top:.4vh}
-
-@media (max-aspect-ratio:3/2){
-  #v-attesa{grid-template-columns:minmax(0,1fr);grid-template-rows:1fr auto auto auto auto;
-    grid-template-areas:"." "k" "sx" "h" "dx";row-gap:3vh}
-}
+.senza-conto #barra{display:none}
+.senza-conto #conto .sep,.senza-conto #conto-u{display:none}
 </style>
 </head>
 <body class="vuoto">
-<canvas id="terreno"></canvas>
-<div id="velo"></div>
-
 <main id="scena">
   <header class="testa">
-    <span id="testa-stato">Il PC di casa</span>
-    <span class="dx"><span id="fermi"></span><span id="ora">--:--</span></span>
+    <span class="et stato"><i></i><span id="testa-stato">PC di casa</span></span>
+    <span class="dx"><span class="et" id="fermi"></span><span class="et n" id="ora" style="color:var(--carta)">--:--</span></span>
   </header>
 
   <section class="vista" id="v-lavora">
-    <div class="centro" id="centro">
-      <h1 id="frase"></h1>
-      <div class="tempo" id="tempo">
-        <div id="durata"></div>
-        <p id="iniziato"></p>
-      </div>
-    </div>
-    <div class="chi">
-      <p id="chi"></p>
-      <p class="nota" id="coda"></p>
-    </div>
+    <div class="grande" id="durata"></div>
+    <p id="frase"></p>
   </section>
 
   <section class="vista" id="v-attesa">
-    <p id="k-attesa">Va in standby tra</p>
-    <h2 id="h-ultimi">Ultimi lavori</h2>
-    <div class="sx" id="sx">
-      <div id="conto-riga"><div id="conto"></div><span id="conto-u">minuti</span></div>
-      <div id="fermo">Resta acceso</div>
-      <div id="tacche"></div>
-      <p class="nota" id="tacche-nota"></p>
-      <p id="perche"></p>
-      <p id="risveglia">Se dal Mac arriva un lavoro nuovo, lo risveglia da solo.</p>
-    </div>
-    <aside class="dx-attesa" id="dx-attesa">
-      <ol id="ultimi"></ol>
-    </aside>
+    <p class="et k" id="k-attesa">Standby tra</p>
+    <div class="grande" id="conto" style="font-size:30vh"></div>
+    <div id="barra"><b id="barra-in"></b></div>
+    <p id="perche"></p>
+    <ol id="ultimi"></ol>
   </section>
+
+  <footer class="celle" id="celle"></footer>
 </main>
 
 <script src="nome-lavoro.js"></script>
@@ -251,77 +185,42 @@ function lavoriDi(s){
   return l.slice().sort((a, b) => (Date.parse(a.da) || 0) - (Date.parse(b.da) || 0));
 }
 
-/* ---------- adattamenti di misura ---------- */
-/* righe vere: quante "cime" diverse hanno i rettangoli del testo */
-function contaRighe(el){
-  const r = document.createRange(); r.selectNodeContents(el);
-  const cime = [];
-  for (const b of r.getClientRects()) if (b.width > 1 && !cime.some(c => Math.abs(c - b.top) < b.height / 2)) cime.push(b.top);
-  return cime.length;
-}
-/* frase: la più grande che sta in al massimo 3 righe dentro il suo spazio */
-function adattaFrase(){
-  const el = $('frase'), box = $('centro'), vh = innerHeight / 100;
-  const cs = getComputedStyle(box);
-  const maxH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
-             - $('tempo').offsetHeight - 5 * vh - 2 * vh;
-  let lo = 5.5, hi = 15.5;
-  for (let i = 0; i < 14; i++) {
-    const m = (lo + hi) / 2;
-    el.style.fontSize = (m * vh) + 'px';
-    const righe = contaRighe(el);
-    (righe <= 3 && el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().height <= maxH) ? lo = m : hi = m;
+/* ---------- disegno ---------- */
+let soglia = 20, fineAlle = null;
+const cella = (k, v, m) => `<div><p class="et">${k}</p><p class="v">${v}</p>${m == null ? '' : `<div class="m"><b style="width:${Math.max(0, Math.min(100, m))}%"></b></div>`}</div>`;
+function celle(s, L, altri){
+  const r = s.risorse || {}, c = [];
+  if (L) {
+    const da = Date.parse(L.da);
+    if (!isNaN(da)) c.push(cella('Dalle', cifre(hhmm(da + scarto))));
+    c.push(cella('Da', esc(L.chi || 'un agente')));
+    if (altri) c.push(cella('In coda', cifre(altri)));
   }
-  el.style.fontSize = (lo * vh) + 'px';
-}
-/* conto: misura fissata sul caso più largo (es. 20:00), così le cifre non ballano */
-function adattaConto(minuti){
-  const el = $('conto'), riga = $('conto-riga'), vh = innerHeight / 100;
-  const largo = $('sx').clientWidth;
-  el.innerHTML = contoHTML(minuti * 60);
-  let size = 34;
-  el.style.fontSize = (size * vh) + 'px';
-  while (size > 12 && riga.scrollWidth > largo) { size -= .5; el.style.fontSize = (size * vh) + 'px'; }
+  if (r.cpu != null) c.push(cella('CPU', cifre(Math.round(r.cpu)) + '<small>%</small>', r.cpu));
+  if (r.gpu != null) c.push(cella('GPU', cifre(Math.round(r.gpu)) + '<small>%</small>', r.gpu));
+  if (r.ram_usata_gb != null && r.ram_totale_gb) c.push(cella('RAM', cifre(Math.round(r.ram_usata_gb)) + '<small>/ ' + cifre(Math.round(r.ram_totale_gb)) + ' GB</small>', 100 * r.ram_usata_gb / r.ram_totale_gb));
+  $('celle').innerHTML = c.join('');
 }
 const contoHTML = s => {
   const m = Math.floor(s / 60), r = Math.floor(s % 60);
-  return `<span class="n">${m}</span><span class="sep">:</span><span class="n">${String(r).padStart(2,'0')}</span>`;
+  return `<span class="n">${m}</span><span class="sep">:</span><span class="n">${String(r).padStart(2,'0')}</span><span class="u" id="conto-u">min</span>`;
 };
-
-/* ---------- disegno ---------- */
-let soglia = 20, fineAlle = null, primoFatto = false;
 function disegna(){
   if (!dati) {
     document.body.className = 'attesa vuoto senza-conto';
-    $('testa-stato').textContent = 'Il PC di casa';
+    $('testa-stato').textContent = 'PC di casa';
     $('k-attesa').textContent = 'In attesa di dati';
-    $('h-ultimi').textContent = '';
-    $('fermo').textContent = 'In attesa di dati';
-    $('perche').textContent = '';
-    $('ultimi').innerHTML = '';
-    modoVoluto = 0; marea = 0;
+    $('conto').innerHTML = ''; $('perche').textContent = ''; $('ultimi').innerHTML = ''; $('celle').innerHTML = '';
     return;
   }
   const s = dati, lav = lavoriDi(s), esiti = ultimiDi(s);
-  const lavora = lav.length > 0;
-  modoVoluto = lavora ? 1 : 0;
-  if (!primoFatto) { modo = modoVoluto; primoFatto = true; }
-  energia = Math.min(1, ((s.risorse && s.risorse.cpu) || 0) / 60);
-
-  if (lavora) {
+  if (lav.length) {
     document.body.className = 'lavora';
     const L = lav[0];
     const mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(L) : { titolo: L.cosa, progetto: L.progetto };
-    $('testa-stato').textContent = 'Il PC di casa lavora per il Mac';
+    $('testa-stato').textContent = 'Al lavoro';
     $('frase').innerHTML = cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac');
-    const chi = L.chi || 'un agente', prog = mostra.progetto;
-    $('chi').innerHTML = cifre(`Mandato da ${chi}` + (prog ? `, per ${prog}` : '') + '.');
-    const altri = lav.length - 1 + (s.coda || []).length;
-    $('coda').innerHTML = cifre(altri === 0 ? 'Nessun altro lavoro in coda.'
-      : altri === 1 ? 'Dopo questo c’è un altro lavoro.' : `Dopo questo ci sono altri ${altri} lavori.`);
-    const da = Date.parse(L.da);
-    $('iniziato').innerHTML = isNaN(da) ? '' : cifre('iniziato alle ' + hhmm(da + scarto));
-    adattaFrase();
+    celle(s, L, lav.length - 1 + (s.coda || []).length);
   } else {
     const sp = s.sospensione || {};
     soglia = sp.soglia_minuti || s.sogliaMinuti || 20;
@@ -329,57 +228,37 @@ function disegna(){
     else if (sp.minuti_mancanti != null) fineAlle = (Date.parse(s.ora) || adesso()) + sp.minuti_mancanti * 60000;
     else fineAlle = null;
     document.body.className = 'attesa' + (fineAlle == null ? ' senza-conto' : '');
-    $('testa-stato').textContent = 'Il PC di casa è libero';
-    $('k-attesa').textContent = 'Va in standby tra';
-    $('fermo').textContent = 'Resta acceso';
+    $('testa-stato').textContent = 'Libero';
     const motivo = sp.perche_sveglio || (Array.isArray(s.motivi) && s.motivi.join(', ')) || '';
-    /* col conto il motivo ripeterebbe «va in standby tra»: si mostra solo quando resta acceso */
+    $('k-attesa').textContent = fineAlle == null ? 'Resta acceso' : 'Standby tra';
     $('perche').innerHTML = fineAlle == null ? cifre(motivo || 'Qualcosa lo tiene sveglio.') : '';
-    if (fineAlle == null) $('k-attesa').textContent = 'Non va in standby';
-    $('h-ultimi').textContent = esiti.length ? 'Ultimi lavori' : '';
-    $('tacche').innerHTML = '<i></i>'.repeat(soglia);
-    adattaConto(soglia);
+    if (fineAlle == null) $('conto').innerHTML = '';
     $('ultimi').innerHTML = esiti.slice(0, 3).map(u => {
-      const ok = u.esito === 'ok', fine = Date.parse(u.fine), dur = lunghezza(u.secondi || 0);
-      const esito = ok ? `<span class="ok">Riuscito</span> <span class="dur">in ${cifre(dur)}</span>`
-                       : u.esito === 'interrotto' ? `<span class="ko">Interrotto</span> <span class="dur">dopo ${cifre(dur)}</span>`
-                       : `<span class="ko">Non riuscito</span> <span class="dur">dopo ${cifre(dur)}</span>`;
-      const mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(u) : { titolo: u.cosa, progetto: u.progetto };
-      const dove = [mostra.progetto, u.ramo && `ramo ${u.ramo}`, !isNaN(fine) && fa((adesso() - fine) / 1000)].filter(Boolean);
-      return `<li><p class="u-esito">${esito}</p>
-        <p class="u-cosa">${cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac')}</p>
-        <p class="u-meta">${cifre(dove.join(', '))}</p></li>`;
+      const ok = u.esito === 'ok', mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(u) : { titolo: u.cosa };
+      const et = ok ? 'ok' : u.esito === 'interrotto' ? 'stop' : 'ko';
+      return `<li><span class="e ${ok ? 'ok' : 'ko'}">${et}</span><span class="c">${cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac')}</span><span class="d">${cifre(lunghezza(u.secondi || 0))}</span></li>`;
     }).join('');
+    celle(s, null, 0);
   }
   tic();
 }
 
 /* ogni secondo: orologio, dati fermi, durata, conto alla rovescia */
 function tic(){
-  const ora = Date.now();
-  document.querySelectorAll('#tacche i.cur').forEach(e => e.classList.toggle('giu', Math.floor(ora / 1200) % 2 === 1));
-  $('ora').innerHTML = cifre(hhmm(ora));
+  $('ora').innerHTML = cifre(hhmm(Date.now()));
   if (!dati) { $('fermi').textContent = ''; return; }
   const vecchio = adesso() - (Date.parse(dati.ora) || adesso());
-  $('fermi').textContent = vecchio > 120000 ? `dati fermi da ${Math.floor(vecchio / 60000)} minuti` : '';
-
+  $('fermi').textContent = vecchio > 120000 ? `dati fermi da ${Math.floor(vecchio / 60000)} min` : '';
   if (document.body.classList.contains('lavora')) {
     const L = lavoriDi(dati)[0];
     $('durata').innerHTML = durataHTML((adesso() - Date.parse(L.da)) / 1000);
     return;
   }
-  if (fineAlle == null) { marea = 0; return; }
+  if (fineAlle == null) return;
   const resto = Math.max(0, (fineAlle - adesso()) / 1000);
   $('conto').innerHTML = contoHTML(Math.ceil(resto));
-  $('k-attesa').textContent = resto > 0 ? 'Va in standby tra' : 'Sta andando in standby';
-  const accese = Math.min(soglia, Math.ceil(resto / 60));
-  $('tacche-nota').innerHTML = cifre(accese === 1 ? `Ogni tacca è un minuto: resta l’ultima di ${soglia}.`
-    : `Ogni tacca è un minuto: ne restano ${accese} su ${soglia}.`);
-  [...$('tacche').children].forEach((t, k) => {
-    const c = k < accese ? (k === accese - 1 ? 'on cur' : 'on') : '';
-    if (t.className !== c) t.className = c;
-  });
-  marea = 1 - Math.min(1, resto / (soglia * 60));
+  $('k-attesa').textContent = resto > 0 ? 'Standby tra' : 'Sta andando in standby';
+  $('barra-in').style.width = (100 * (1 - Math.min(1, resto / (soglia * 60)))) + '%';
 }
 
 /* il testo si sposta di pochi pixel ogni tanto, contro il segno sullo schermo */
@@ -387,238 +266,6 @@ function spostaScena(){
   const r = () => Math.round((Math.random() * 2 - 1) * 7);
   $('scena').style.transform = `translate(${r()}px, ${r()}px)`;
 }
-
-/* ---------- terreno: carta a curve di livello in WebGL2 ----------
-   Risoluzione interna al massimo 1280 px di larghezza; 2 fps al massimo (poi scende da sola, vedi sotto);
-   si ferma se la pagina è nascosta. Non si ripete mai: due campi di rumore si danno il cambio
-   in dissolvenza e quello invisibile riparte da un punto nuovo a caso. */
-let modoVoluto = 0, modo = 0, energia = 0.3, marea = 0;
-const cv = $('terreno');
-const gl = cv.getContext('webgl2', {antialias:false, alpha:false, depth:false, stencil:false,
-  powerPreference:'low-power', preserveDrawingBuffer:false});
-
-const VS = `#version 300 es
-in vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
-
-const FS = `#version 300 es
-precision highp float;
-uniform vec2 uRes;
-uniform vec4 uA, uB;        // xyz = posizione nel rumore, w = peso
-uniform float uModo;        // 0 attesa, 1 lavora
-uniform vec3 uAccento;      // un solo colore per stato
-uniform float uScan, uScanA;
-uniform float uMarea;       // 0..1 in attesa: il buio che sale col conto
-uniform float uT;
-out vec4 o;
-
-vec4 perm(vec4 x){ return mod(((x*34.)+1.)*x, 289.); }
-// simplex 3D: adattato da webgl-noise (Ashima Arts, Stefan Gustavson), MIT
-float sn(vec3 v){
-  const vec2 C = vec2(1./6., 1./3.);
-  vec3 i = floor(v + dot(v, C.yyy));
-  vec3 x0 = v - i + dot(i, C.xxx);
-  vec3 g = step(x0.yzx, x0.xyz);
-  vec3 l = 1. - g;
-  vec3 i1 = min(g.xyz, l.zxy), i2 = max(g.xyz, l.zxy);
-  vec3 x1 = x0 - i1 + C.xxx, x2 = x0 - i2 + C.yyy, x3 = x0 - .5;
-  i = mod(i, 289.);
-  vec4 pp = perm(perm(perm(i.z + vec4(0., i1.z, i2.z, 1.)) + i.y + vec4(0., i1.y, i2.y, 1.)) + i.x + vec4(0., i1.x, i2.x, 1.));
-  vec4 j = pp - 49. * floor(pp / 49.);
-  vec4 x_ = floor(j / 7.), y_ = floor(j - 7. * x_);
-  vec4 x = (x_ * 2. + .5) / 7. - 1., y = (y_ * 2. + .5) / 7. - 1.;
-  vec4 h = 1. - abs(x) - abs(y);
-  vec4 b0 = vec4(x.xy, y.xy), b1 = vec4(x.zw, y.zw);
-  vec4 s0 = floor(b0) * 2. + 1., s1 = floor(b1) * 2. + 1.;
-  vec4 sh = -step(h, vec4(0.));
-  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy, a1 = b1.xzyw + s1.xzyw * sh.zzww;
-  vec3 g0 = vec3(a0.xy, h.x), g1 = vec3(a0.zw, h.y), g2 = vec3(a1.xy, h.z), g3 = vec3(a1.zw, h.w);
-  vec4 nr = inversesqrt(vec4(dot(g0,g0), dot(g1,g1), dot(g2,g2), dot(g3,g3)));
-  g0 *= nr.x; g1 *= nr.y; g2 *= nr.z; g3 *= nr.w;
-  vec4 m = max(.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.);
-  m *= m;
-  return 42. * dot(m*m, vec4(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3)));
-}
-
-// terreno: due ottave deformate da un altro rumore; un rumore lento decide
-// dove il pendio è ripido (curve fitte) e dove è quasi piano (curve rade)
-float campo(vec2 uv, vec3 c){
-  vec3 p = vec3(uv + c.xy, c.z);
-  vec2 w = vec2(sn(p * .55), sn(p * .55 + vec3(5.2, 1.3, 2.7)));
-  vec3 q = vec3(p.xy + 1.2 * w, c.z * 1.4);
-  float h = sn(q) * .68 + sn(q * 2.03 + vec3(11.7, 3.1, 7.9)) * .32;
-  float ripido = smoothstep(-.45, .65, sn(vec3(p.xy * .3 + 3.1, c.z * .5 + 8.)));
-  return h * mix(.45, 1.5, ripido);
-}
-
-float lineaSola(float x, float spessore){
-  float fw = fwidth(x);
-  return 1. - smoothstep(fw * (spessore - .5), fw * (spessore + .5), abs(x));
-}
-float linea(float n, float spessore){
-  float d = abs(fract(n + .5) - .5);
-  float fw = fwidth(n);
-  return 1. - smoothstep(fw * (spessore - .5), fw * (spessore + .5), d);
-}
-
-void main(){
-  vec2 uv = (gl_FragCoord.xy - .5 * uRes) / uRes.y * 1.5;
-  float h = (uA.w * campo(uv, uA.xyz) + uB.w * campo(uv, uB.xyz)) / sqrt(uA.w*uA.w + uB.w*uB.w);
-
-  vec3 fondo = vec3(.043, .047, .039);
-  vec3 alto  = vec3(.078, .082, .066);
-  float t = smoothstep(-.8, .9, h);
-  vec3 col = mix(fondo, alto, t);
-  // ombreggiatura appena accennata, come su una carta stampata
-  vec2 gr = vec2(dFdx(h), dFdy(h)) * uRes.y * .3;
-  float luce = clamp(dot(normalize(vec3(-gr, 1.)), normalize(vec3(-.5, .6, .62))), 0., 1.);
-  col *= .88 + .2 * luce;
-
-  // curve: una ogni 1/12 di quota, una maestra piena ogni cinque. Le alfe hanno un minimo
-  // fisso: lo sfondo non scende mai sotto questa luminosità, qualunque terreno esca
-  float n = h * 12.;
-  float minore = linea(n, 1.15);
-  float maestra = linea(n / 5., 2.1);
-  float alfa = max(minore * mix(.30, .42, uModo), maestra * mix(.66, .88, uModo));
-
-  // attesa: il buio sale col conto alla rovescia, il suo bordo è una curva intera
-  float livello = mix(-1.05, 1.05, uMarea);
-  float sotto = (1. - uModo) * (1. - smoothstep(livello - .015, livello + .015, h));
-  alfa *= 1. - .28 * sotto;
-  col *= 1. - .18 * sotto;
-  float bordo = (1. - uModo) * step(.001, uMarea) * lineaSola((h - livello) * 12., 2.);
-  // lavora: una curva più chiara che sale lungo il terreno
-  float scan = uModo * uScanA * lineaSola((h - uScan) * 12., 2.2);
-
-  // cime: sopra una quota alta le curve passano all'arancio. Il terreno ne ha di solito
-  // due o tre per schermo; solo mentre lavora, in attesa l'accento è già arancio
-  float cima = uModo * smoothstep(.56, .62, h);
-  vec3 tinta = mix(uAccento, vec3(1., .42, .12), cima);
-  col = mix(col, tinta, clamp(alfa * (1. + .25 * cima) + bordo * .9 + scan * .8, 0., 1.));
-
-  vec2 c = gl_FragCoord.xy / uRes - .5;
-  col *= 1. - .32 * dot(c, c);
-  float g = fract(sin(dot(gl_FragCoord.xy + uT, vec2(12.9898, 78.233))) * 43758.5453);
-  col += (g - .5) / 255.;
-  o = vec4(col, 1.);
-}`;
-
-let prog, U = {};
-function compila(){
-  const sh = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
-  prog = gl.createProgram();
-  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
-  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  gl.useProgram(prog);
-  const b = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, b);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, 'p');
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const k of ['uRes','uA','uB','uModo','uAccento','uScan','uScanA','uMarea','uT']) U[k] = gl.getUniformLocation(prog, k);
-}
-function dimensiona(){
-  const w = Math.min(1280, Math.round(innerWidth * 0.7));
-  const h = Math.round(w * innerHeight / innerWidth);
-  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-  if (gl) gl.viewport(0, 0, w, h);
-}
-
-/* tempo del terreno: fase in JS (doppia precisione), mai un numero che cresce senza fine nello shader */
-let fase = Math.random() * 10, scanFase = Math.random();
-const tappe = new Map();
-function tappa(k){
-  if (!tappe.has(k)) {
-    const a = Math.random() * Math.PI * 2;
-    tappe.set(k, { x: (Math.random() - .5) * 80, y: (Math.random() - .5) * 80, z: Math.random() * 60,
-                   dx: Math.cos(a), dy: Math.sin(a) });
-    for (const kk of tappe.keys()) if (kk < k - 2) tappe.delete(kk);
-  }
-  return tappe.get(k);
-}
-function campoA(f){
-  const k = Math.floor(f), u = f - k, p = tappa(k);
-  return [p.x + p.dx * u * .55, p.y + p.dy * u * .55, p.z + u * .9, Math.sin(Math.PI * u)];
-}
-const LIME = [.86, 1, .24], ARANCIO = [1, .416, .122];
-
-let raf = 0, ultimo = 0, rinvio = 0;
-
-/* Il PC non deve restare sveglio per colpa dello schermo: sotto il 5% di GPU. La pagina misura da
-   sola quanto costa un frame (gl.finish) e scende di fps finché la quota di GPU che occupa è sotto
-   il 3,5%; in fondo alla scala resta un fondo fermo, ridisegnato ogni 20 s. Parametri nell'URL:
-   ?fps=N tetto fisso (il guardiano dello schermo lo usa se la GPU vera supera il 5%),
-   ?fermo=1 parte già dal fondo fermo. */
-/* misurato sul PC (3440x1440): da 4 fps in su la GPU esce dal riposo e occupa il 5-13%, a 3 fps o meno
-   sta a 0% (a 3 le prime letture restano a 7% finche' la pagina non scende). Il terreno si muove
-   piano (un ciclo ogni ~110 s), quindi 2 fps bastano. */
-const LIVELLI = [2, 1];
-const TETTO = Math.max(0, +q.get('fps') || 0);
-let livello = 0, costo = 0, sopra = 0, ultCosto = 0, fermo = q.get('fermo') === '1';
-const fpsOra = () => {
-  let f = LIVELLI[livello];
-  if (!modoVoluto) f = Math.min(f, 10);
-  return TETTO ? Math.min(f, TETTO) : f;
-};
-function scendi(){
-  if (livello < LIVELLI.length - 1) { livello++; console.warn('schermo: scendo a', LIVELLI[livello], 'fps'); }
-  else { fermo = true; console.warn('schermo: fondo fermo'); ferma(); rinvio = setTimeout(giroFermo, 20000); }
-}
-
-function frame(ts, dt){
-  modo += (modoVoluto - modo) * Math.min(1, dt * .8);
-  const ritmo = (1 / 110) * (0.55 + modo * (0.7 + 1.3 * energia));
-  fase += dt * ritmo;
-  scanFase += dt / 38;
-
-  const A = campoA(fase), B = campoA(fase + .5), su = scanFase % 1;
-  const acc = LIME.map((v, i) => ARANCIO[i] + (v - ARANCIO[i]) * modo);
-  gl.uniform2f(U.uRes, cv.width, cv.height);
-  gl.uniform4f(U.uA, A[0], A[1], A[2], A[3]);
-  gl.uniform4f(U.uB, B[0], B[1], B[2], B[3]);
-  gl.uniform1f(U.uModo, modo);
-  gl.uniform3f(U.uAccento, acc[0], acc[1], acc[2]);
-  gl.uniform1f(U.uScan, -.9 + 1.8 * su);
-  gl.uniform1f(U.uScanA, Math.sin(Math.PI * su) ** 1.5);
-  gl.uniform1f(U.uMarea, marea);
-  gl.uniform1f(U.uT, ts % 997);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-function giro(ts){
-  raf = requestAnimationFrame(giro);
-  const passo = 1000 / fpsOra();
-  if (ts - ultimo < passo - 1) return;
-  const dt = Math.min(.25, (ts - ultimo) / 1000 || 0); ultimo = ts;
-  frame(ts, dt);
-  if (ts - ultCosto >= 1500) {
-    ultCosto = ts;
-    const t = performance.now(); gl.finish();
-    costo = costo ? costo * .8 + (performance.now() - t) * .2 : performance.now() - t;
-    if (costo * fpsOra() / 1000 > .035) { if (++sopra >= 4) { sopra = 0; scendi(); } } else sopra = 0;
-  }
-}
-/* fondo fermo: un frame ogni 20 s, senza il ciclo di animazione (niente CPU, niente GPU nel mezzo) */
-function giroFermo(){
-  if (!prog) return;
-  if (document.hidden) { rinvio = setTimeout(giroFermo, 20000); return; }
-  const ts = performance.now();
-  frame(ts, Math.min(.25, (ts - ultimo) / 1000 || 0)); ultimo = ts;
-  rinvio = setTimeout(giroFermo, 20000);
-}
-function avvia(){
-  if (raf || rinvio || !gl || !prog || document.hidden) return;
-  ultimo = performance.now() - 1000;
-  if (fermo) { giroFermo(); return; }
-  raf = requestAnimationFrame(giro);
-}
-function ferma(){
-  if (raf) { cancelAnimationFrame(raf); raf = 0; }
-  if (rinvio && !fermo) { clearTimeout(rinvio); rinvio = 0; }
-}
-document.addEventListener('visibilitychange', () => document.hidden ? ferma() : avvia());
 
 /* ---------- misura del DOM (?misura=1) ----------
    rettangoli reali dei testi (Range sui nodi di testo visibili): coppie di nodi diversi che si
@@ -649,36 +296,26 @@ function misura(){
       if (ox > 1 && oy > 1) sovra.push(`${a.t} × ${b.t} (${ox.toFixed(0)}×${oy.toFixed(0)} px)`);
     }
   }
-  const fr = $('frase');
+  
   const out = {W, H, font: FONT, stato: document.body.className,
     fontCaricati: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family),
     testi: testi.length, sovrapposizioni: sovra, fuori,
-    frase: fr.checkVisibility() ? {px: parseFloat(fr.style.fontSize), righe: contaRighe(fr)} : null,
-    conto: $('conto').checkVisibility() ? {px: parseFloat($('conto').style.fontSize), testo: $('conto').textContent} : null,
-    webgl: !!(gl && prog)};
+    conto: $('conto').checkVisibility() ? $('conto').textContent : null};
   let pre = $('misura');
   if (!pre) { pre = document.createElement('pre'); pre.id = 'misura'; pre.style.display = 'none'; document.body.appendChild(pre); }
   pre.textContent = JSON.stringify(out);
 }
 
 /* ---------- avvio ---------- */
-/* senza WebGL, o se la GPU perde il contesto, la tela sparisce e resta il fondo nero:
-   mai una tela bianca sotto il velo */
-function spegniTerreno(perche){ console.warn('terreno spento:', perche); ferma(); clearTimeout(rinvio); rinvio = 0; prog = null; cv.style.display = 'none'; }
-try { if (gl) { compila(); gl.clearColor(.043, .047, .039, 1); gl.clear(gl.COLOR_BUFFER_BIT); } else spegniTerreno('niente WebGL2'); }
-catch (e) { spegniTerreno(e.message); }
-cv.addEventListener('webglcontextlost', e => { e.preventDefault(); spegniTerreno('contesto perso'); });
-dimensiona();
-addEventListener('resize', () => { dimensiona(); disegna(); });
-/* i font si caricano solo quando un testo li usa: li chiediamo subito, altrimenti la frase
-   verrebbe misurata col font di ripiego e poi andrebbe a capo una volta di più */
-const famiglie = {'1': ['Hubot Sans','Schibsted Grotesk'], '2': ['Archivo'], '3': ['Mona Sans']}[FONT];
+/* i font si caricano solo quando un testo li usa: li chiediamo subito */
+const famiglia = {'1': 'Mona Sans', '2': 'Hubot Sans', '3': 'Archivo'}[FONT];
 const pronti = document.fonts
-  ? Promise.all(famiglie.flatMap(f => [`900 100px "${f}"`, `800 40px "${f}"`, `700 40px "${f}"`, `600 40px "${f}"`].map(x => document.fonts.load(x)))).catch(() => {})
+  ? Promise.all([900, 700, 600].map(w => document.fonts.load(`${w} 40px "${famiglia}"`))).catch(() => {})
   : Promise.resolve();
 if (document.fonts) document.fonts.addEventListener('loadingdone', () => { if (dati) disegna(); });
+addEventListener('resize', () => { if (dati) disegna(); });
 pronti.then(() => {
-  carica(); avvia();
+  carica();
   if (q.get('misura')) setTimeout(misura, 2500);
 });
 setInterval(tic, 1000);
