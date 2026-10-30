@@ -30,7 +30,14 @@ deploy() {
     r=$("${S[@]}" "powershell -NoProfile -Command \"\$e=\$null; [void][System.Management.Automation.Language.Parser]::ParseFile('C:\\winfleet\\$f.ps1',[ref]\$null,[ref]\$e); if(\$e){\$e|ForEach-Object{\$_.Message}; exit 1}\"") || ko "sintassi $f: $r"
   done
   "${S[@]}" "$PS C:\\winfleet\\wf-schermo-install.ps1" || ko "registrazione del task"
-  echo "distribuito e registrato"
+  # il guardiano gia' in giro tiene il codice vecchio finche' non riparte (30/10: girava quello del 28/10
+  # dopo un deploy riuscito); se l'interruttore e' su off resta spento
+  if "${S[@]}" 'if exist C:\winfleet\schermo.off (exit 1) else (exit 0)' >/dev/null; then
+    "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 off" >/dev/null && "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 on" >/dev/null || ko "riavvio del guardiano"
+    echo "distribuito, registrato e guardiano riavviato"
+  else
+    echo "distribuito e registrato (interruttore su off: guardiano spento)"
+  fi
 }
 
 # righe di log nuove dal punto $1
