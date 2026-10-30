@@ -90,11 +90,22 @@ function Stream-Motivo {
 
 # 5 = Windows accetta notifiche (nessuna app a schermo intero), 6 = ore di silenzio. Tutto il resto
 # (1 schermo non presente/bloccato, 2 app a schermo intero, 3 gioco D3D, 4 presentazione, 7 app) = no.
-function Schermo-Libero {
+function Stato-Notifiche {
   $st = 0
-  if ($W::SHQueryUserNotificationState([ref]$st) -ne 0) { return $false }
-  $st -in 5, 6
+  if ($W::SHQueryUserNotificationState([ref]$st) -ne 0) { return -1 }
+  $st
 }
+# Processo della finestra in primo piano, o $null.
+function Primo-Piano {
+  $h = $W::GetForegroundWindow(); [uint32]$fpid = 0
+  if ($h -ne [IntPtr]::Zero) { [void]$W::GetWindowThreadProcessId($h, [ref]$fpid) }
+  if ($fpid) { (Get-Process -Id $fpid -EA SilentlyContinue).ProcessName } else { $null }
+}
+# I pannelli della shell (menu Start, ricerca) per Windows valgono come «app a tutto schermo» (stato 7):
+# il 30/10 un menu Start rimasto aperto ha tenuto nascosta la schermata per otto ore. Con l'input
+# fermo nessuno li sta usando, e il kiosk in primo piano li chiude.
+$shellPannelli = 'StartMenuExperienceHost', 'SearchHost', 'SearchApp', 'ShellExperienceHost'
+function Schermo-Libero { (Stato-Notifiche) -in 5, 6 }
 
 function Edge-Exe {
   foreach ($p in "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") {
@@ -131,6 +142,7 @@ function Edge-Apri($extra) {
 }
 
 $soglia = 120
+$nonMostro = $null  # l'ultimo motivo per cui non compare, scritto nel log una volta
 function Leggi-Soglia {
   $f = "$dir\schermo.secondi"
   if (Test-Path $f) { $v = 0; if ([int]::TryParse(("" + (Get-Content $f -TotalCount 1)).Trim(), [ref]$v) -and $v -ge 5) { return $v } }
@@ -173,6 +185,8 @@ while ($true) {
   $spento = Test-Path $flagOff
   if (-not $li -or $spento) {
     if ($visibile) { Nascondi $(if ($spento) { 'spenta (schermo.off)' } else { 'input illeggibile' }) }
+    $m = if ($spento) { 'spenta (schermo.off)' } else { 'input illeggibile' }
+    if ($m -ne $nonMostro) { $nonMostro = $m; Log "non mostro: $m" }
     Start-Sleep -Seconds 5; continue
   }
 
@@ -196,7 +210,7 @@ while ($true) {
       if ($h -ne [IntPtr]::Zero) { [void]$W::GetWindowThreadProcessId($h, [ref]$fpid) }
       $fp = if ($fpid) { (Get-Process -Id $fpid -EA SilentlyContinue).ProcessName } else { $null }
       # explorer e' la shell (desktop, barra): prende il primo piano da sola e il kiosk a schermo intero la copre, quindi non e' un'altra app
-      if ($fp -and $fp -ne 'msedge' -and $fp -ne 'explorer' -and ($ora - $dal).TotalSeconds -ge 6) {
+      if ($fp -and $fp -ne 'msedge' -and $fp -ne 'explorer' -and $fp -notin $shellPannelli -and ($ora - $dal).TotalSeconds -ge 6) {
         if ($spinte -lt 3 -and $script:edge -and -not $Dry) {
           # kiosk non ancora in primo piano: si spinge fino a tre volte (l'input e' fermo da minuti)
           $script:edge.Refresh(); [void]$W::SetForegroundWindow($script:edge.MainWindowHandle); $spinte++
@@ -237,9 +251,22 @@ while ($true) {
   $idle = Input-Idle $li
   if ($idle -ge $soglia -and $ora -ge $pausaFino -and ($ora - $ultimoCheck).TotalSeconds -ge 10) {
     $ultimoCheck = $ora
+    # perche' non compare: una riga quando il motivo cambia (prima era muto, e il 30/10 la schermata
+    # non e' mai comparsa senza una traccia del perche')
     $s = Stream-Motivo
-    if ($s) { Start-Sleep -Seconds 2; continue }
-    if (-not (Schermo-Libero)) { Start-Sleep -Seconds 2; continue }
+    if ($s) { if ($s -ne $nonMostro) { $nonMostro = $s; Log "non mostro: $s" }; Start-Sleep -Seconds 2; continue }
+    $st = Stato-Notifiche
+    $pannello = Primo-Piano
+    if ($st -eq 7 -and $pannello -in $shellPannelli) {
+      # il pannello aperto starebbe sopra il kiosk: si chiude il processo che lo disegna (Windows lo
+      # riavvia da solo), senza tasti finti che conterebbero come un tocco e farebbero sparire la schermata
+      # tutti e due: il menu Start di Windows 11 sta in StartMenuExperienceHost anche quando il primo piano e' di
+      # SearchHost (30/10: chiuso solo SearchHost, il menu e' rimasto sopra la schermata)
+      Stop-Process -Name StartMenuExperienceHost, SearchHost -Force -EA SilentlyContinue; Log "chiusi i pannelli della shell (primo piano: $pannello)"
+      Start-Sleep -Seconds 1; $st = 5
+    }
+    if ($st -notin 5, 6) { $m = "schermo non libero (stato notifiche $st)"; if ($m -ne $nonMostro) { $nonMostro = $m; Log "non mostro: $m" }; Start-Sleep -Seconds 2; continue }
+    $nonMostro = $null
     if ($falliti -ge 3) { $pausaFino = $ora.AddMinutes(10); $falliti = 0; Log 'Edge non parte: pausa di 10 minuti'; continue }
     Log "mostro la schermata (input fermo da $idle s)"
     if (Edge-Apri $parametri[$livello]) {
