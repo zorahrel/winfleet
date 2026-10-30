@@ -4,7 +4,7 @@
 # powershell.exe nudo alloca una console visibile; il task e' clonato da quello di wf-idleguard
 # da wf-schermo-install.ps1, quindi stesso utente, stesso trigger al logon).
 #
-# Quando compare: input della console fermo da 5 minuti (GetLastInputInfo, lo stesso dato di
+# Quando compare: input della console fermo da 2 minuti (120 s, Attilio 30/10) (GetLastInputInfo, lo stesso dato di
 # wf-idleguard) E nessuno stream E nessuna app a schermo intero in primo piano.
 #  - L'input di uno stream (Sunshine/Parsec) e' INIETTATO e non resetta il timer: per questo lo
 #    stream si cerca a parte, con la stessa regola di wf-autosleep (connessione TCP stabilita sulle
@@ -23,7 +23,7 @@
 # sotto il 5%; se no si rilancia la pagina con ?fps=6 e poi con ?fermo=1 (fondo fermo).
 #
 # Spegnere tutto: wf-schermo-ctl.ps1 off (riaccendere: on).
-# Prove: C:\winfleet\schermo.secondi (numero) cambia i 300 s; -Dry scrive solo nel log.
+# Prove: C:\winfleet\schermo.secondi (numero) cambia i 120 s; -Dry scrive solo nel log.
 # Log: C:\winfleet\schermo.log
 param([switch]$Dry)
 
@@ -130,11 +130,11 @@ function Edge-Apri($extra) {
   $true
 }
 
-$soglia = 300
+$soglia = 120
 function Leggi-Soglia {
   $f = "$dir\schermo.secondi"
   if (Test-Path $f) { $v = 0; if ([int]::TryParse(("" + (Get-Content $f -TotalCount 1)).Trim(), [ref]$v) -and $v -ge 5) { return $v } }
-  300
+  120
 }
 
 # L'ultima riga di stato.js dice se un lavoro e' in corso: con un lavoro la GPU non e' tutta nostra
