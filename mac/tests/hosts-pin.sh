@@ -56,12 +56,12 @@ else
 fi
 
 # --- 2. e NON si duplica quando l'IP cambia --------------------------------
-# E' il caso vero: il DHCP ha spostato il PC da .2 a .9. Due voci per lo stesso
-# nome fanno risolvere quella sbagliata, e il sintomo e' una finestra che non
-# si apre - senza nessun errore che nomini /etc/hosts.
-riscrivi "$tmp/hosts" 192.168.1.20 pcdicasa.local
+# E' il caso vero: il DHCP ha spostato il PC su un altro indirizzo. Due voci per
+# lo stesso nome fanno risolvere quella sbagliata, e il sintomo e' una finestra
+# che non si apre - senza nessun errore che nomini /etc/hosts.
+riscrivi "$tmp/hosts" 192.168.1.43 pcdicasa.local
 n="$(grep -c 'pcdicasa\.local' "$tmp/hosts" || true)"
-if [ "$n" = 1 ] && grep -qx "192.168.1.20 pcdicasa.local" "$tmp/hosts"; then
+if [ "$n" = 1 ] && grep -qx "192.168.1.43 pcdicasa.local" "$tmp/hosts"; then
   echo "  ok   cambiando IP la voce si sostituisce, non si accumula"
 else
   echo "  NO   $n voci per lo stesso nome: risolverebbe l'indirizzo sbagliato"

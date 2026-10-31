@@ -12,7 +12,7 @@ set -u
 cfg() { sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" "$HOME/.config/winfleet/config.env" 2>/dev/null | head -1; }
 HOST="${HOST_SSH:-$(cfg HOST_SSH)}"
 [ -n "$HOST" ] || { echo "KO: manca HOST_SSH (utente@ip-tailscale) in ~/.config/winfleet/config.env" >&2; exit 1; }
-IP="${HOST_LAN:-$(cfg HOST_LAN)}"; IP="${IP:-192.168.1.2}"
+IP="${HOST_LAN:-$(cfg HOST_LAN)}"
 AQUI="$(cd "$(dirname "$0")" && pwd)"; HOSTDIR="$AQUI/../host"
 S=(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST")
 PS='powershell -NoProfile -ExecutionPolicy Bypass -File'
@@ -49,6 +49,8 @@ attendi() { # attendi <da-riga> <regex> <secondi>
 edge() { "${S[@]}" "$PS C:\\winfleet\\wf-schermo-ctl.ps1 status" | tr -d '\r' | sed -n 's/.*Edge schermo: \([0-9]*\).*/\1/p'; }
 
 verifica() {
+  # senza l'indirizzo la prova dello stream fallirebbe solo a meta', dando la colpa alla schermata
+  [ -n "$IP" ] || ko "manca HOST_LAN (indirizzo di casa del PC) in ~/.config/winfleet/config.env"
   local esito=0 T=$(mktemp -d); trap "rm -rf '$T'; \"\${S[@]}\" \"del C:\\\\winfleet\\\\schermo.secondi\" >/dev/null 2>&1" EXIT
   v() { if [ "$1" = ok ]; then echo "OK  $2"; else echo "KO  $2"; esito=1; fi; }
   # Partenza pulita: spento, soglia di prova scritta, POI acceso. Se la soglia arrivasse dopo `on` il

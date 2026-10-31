@@ -935,7 +935,7 @@ VDD_CACHE="$CONFIG_DIR/vdd.json"
 slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
 
 # Moonlight cerca prima fra gli host che gia' conosce e li confronta per indirizzo
-# ignorando la porta: con "192.168.1.3:48089" finirebbe sull'istanza di sistema.
+# ignorando la porta: con "192.168.1.42:48089" finirebbe sull'istanza di sistema.
 # Il nome mDNS non collide con nulla, quindi indirizza l'istanza giusta.
 #
 # Ma il nome puo' SPARIRE, e allora non indirizza piu' niente. Successo il
@@ -949,7 +949,7 @@ slot_port(){ echo $(( SLOT_BASE + $1 * 100 )); }
 # indirizzo: la collisione con l'istanza di sistema e' un fastidio (si potrebbe
 # aprire la finestra sbagliata), una finestra vuota e' un guasto. Tailscale per
 # primo perche' e' un IP stabile che non cambia con il DHCP di casa - ed e'
-# proprio il DHCP che aveva anche spostato il PC da .2 a .9 nello stesso giorno.
+# proprio il DHCP che aveva anche spostato il PC nello stesso giorno.
 slot_addr(){
   local h="$HOST_NAME"
   [ -n "$h" ] && host_name_resolves || h="${HOST_TS:-${HOST_LAN:-$HOST_NAME}}"
@@ -5755,7 +5755,7 @@ cmd_doctor(){
   fi
   # L'IP in config e' ancora quello del PC?
   #
-  # Il DHCP di casa lo sposta senza avvisare (visto: da .2 a .9), e l'indirizzo
+  # Il DHCP di casa lo sposta senza avvisare (gia' successo), e l'indirizzo
   # vecchio non resta vuoto - se lo prende un altro dispositivo. Da li' winfleet
   # parla con la lampadina invece che col PC. Si confronta l'uniqueid, non il
   # semplice "risponde": e' l'unica cosa che dice che dall'altra parte c'e'
