@@ -624,6 +624,18 @@ else
   fail=1
 fi
 
+# --- 13a. il nome del lavoro sullo schermo del PC ---------------------------
+# Un giro lanciato da una cartella mktemp mostrava quella cartella al posto del
+# nome del lavoro in «Ultimi lavori». La regola sta in schermo/nome-lavoro.js e
+# qui si esegue con node, senza PC.
+if /opt/homebrew/bin/bash mac/tests/nome-lavoro-schermo.sh > "$TMP/nomelavoro.out" 2>&1; then
+  say "ok   schermo del PC: «Ultimi lavori» non mostra mai la cartella temporanea"
+else
+  say "NO   schermo del PC, nome del lavoro:"
+  sed 's/^/       /' "$TMP/nomelavoro.out"
+  fail=1
+fi
+
 # --- 13b. IL PERCORSO VERO: icona -> finestra che mostra qualcosa ----------
 # Tutti i test qui sopra guardano i file di stato di winfleet: dicono cosa
 # winfleet CREDE, non che l'utente veda un'immagine. Questo lancia il .app del
