@@ -28,8 +28,8 @@
 # diventa una riga di esiti.jsonl (ultime 50) e il lavoro-*.json sparisce.
 # Questo file e' UTF-8 con BOM: le frasi per lo schermo hanno le lettere accentate, e
 # PowerShell 5.1 senza BOM le leggerebbe come ANSI. Il resto resta in ASCII.
-# Uso: wf-autosleep.ps1 [-Dry]
-param([switch]$Dry)
+# Uso: wf-autosleep.ps1 [-Dry] [-OrfaniMinuti N]
+param([switch]$Dry, [int]$OrfaniMinuti = 120)
 $dir = 'C:\winfleet'; $log = "$dir\autosleep.log"; $state = "$dir\autosleep.state"
 $misure = ''
 function Log($m) {
@@ -182,6 +182,38 @@ $r2 = CpuRaw
 $top = Get-Process | Where-Object { $_.Id -ne $PID -and $_.Name -ne 'Idle' -and $t0.ContainsKey($_.Id) -and $_.TotalProcessorTime } |
   ForEach-Object { [pscustomobject]@{ Name = $_.Name; Core = ($_.TotalProcessorTime.TotalSeconds - $t0[$_.Id]) / 5 } } |
   Sort-Object Core -Descending | Select-Object -First 1
+# Orfani: un bun o node la cui catena di padri finisce in un processo morto, senza sshd ne' altri tutori, che gira a vuoto.
+# Il 31/10 cinque bun di una suite sono sopravvissuti alla ssh caduta: 36 ore a 4,7 core, e il PC non dormiva.
+# Servono tutte: acceso da $OrfaniMinuti minuti, oltre mezzo core adesso e in media su tutta la vita, cosi' un
+# server fermo o una build staccata appena partita non si toccano. Si chiude l'albero dalla radice della catena.
+try {
+  $tutti = @{}; Get-CimInstance Win32_Process | ForEach-Object { $tutti[[int]$_.ProcessId] = $_ }
+  $radici = @{}
+  foreach ($c in $tutti.Values) {
+    if ($c.Name -notin 'bun.exe', 'node.exe') { continue }
+    $pr = Get-Process -Id $c.ProcessId -EA SilentlyContinue
+    if (-not $pr -or -not $t0.ContainsKey($pr.Id)) { continue }
+    $eta = ((Get-Date) - $c.CreationDate).TotalSeconds
+    if ($eta -lt $OrfaniMinuti * 60) { continue }
+    if (($pr.TotalProcessorTime.TotalSeconds - $t0[$pr.Id]) / 5 -lt 0.5 -or $pr.TotalProcessorTime.TotalSeconds / $eta -lt 0.5) { continue }
+    $cur = $c; $morto = $false; $tenuto = $false
+    while ($true) {
+      # Ogni catena finisce in un padre morto (wininit, explorer): vale solo se e' fatta tutta di shell e runtime,
+      # altrimenti un node lanciato da un task o da Esplora risorse passerebbe per orfano.
+      if ($cur.Name -notin 'bun.exe', 'node.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'sh.exe', 'bash.exe') { $tenuto = $true; break }
+      $pad = $tutti[[int]$cur.ParentProcessId]
+      # un pid riusato da un processo piu' giovane del figlio non e' il suo padre
+      if (-not $pad -or $pad.CreationDate -gt $cur.CreationDate) { $morto = $true; break }
+      $cur = $pad
+    }
+    if ($morto -and -not $tenuto) { $radici[[int]$cur.ProcessId] = $c.Name -replace '\.exe$', '' }
+  }
+  foreach ($r in $radici.Keys) {
+    if ($Dry) { Add-Content "$dir\orfani.log" ("{0:yyyy-MM-dd HH:mm} DRY radice {1} {2}" -f (Get-Date), $r, $radici[$r]); continue }
+    & taskkill.exe /T /F /PID $r 2>&1 | Out-Null
+    Add-Content "$dir\orfani.log" ("{0:yyyy-MM-dd HH:mm} chiuso radice {1} {2}" -f (Get-Date), $r, $radici[$r])
+  }
+} catch { Log "orfani non controllati: $($_.Exception.Message)" }
 if ($top -and $top.Core -ge 0.5) { $why += ("processo {0} a {1:N1} core" -f $top.Name, $top.Core) }
 $cpu = $null
 if ($r1 -and $r2 -and $r2.Timestamp_Sys100NS -gt $r1.Timestamp_Sys100NS) {
@@ -217,6 +249,11 @@ try {
     $(if ($null -eq $cpu) { '?' } else { [int][math]::Round($cpu) }), $g2[0], [int][math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)),
     [int][math]::Round(100 * (1 - $c.FreeSpace / $c.Size)), [int][math]::Round($c.FreeSpace / 1GB)
 } catch { $misure = '' }  # WMI che non risponde: niente misure in questo giro, la decisione non cambia
+# L'ultima chiusura delle 24 ore per l'hub, che legge solo questa riga
+$uo = Get-Content "$dir\orfani.log" -Tail 1 -EA SilentlyContinue
+if ($uo -match '^(\S+ (\d\d:\d\d)) chiuso radice \d+ (\S+)' -and ((Get-Date) - [datetime]$Matches[1]).TotalHours -lt 24 -and $misure) {
+  $misure += "; ultimo orfano chiuso alle $($Matches[2]): $($Matches[3])"
+}
 
 # powercfg /requests e' localizzato, ma l'ordine delle sezioni no: DISPLAY, SYSTEM, AWAYMODE,
 # EXECUTION, PERFBOOST, ACTIVELOCKSCREEN. Una richiesta vera e' una riga che comincia con "[".
