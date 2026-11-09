@@ -99,7 +99,7 @@ function Sync-Giri {
     $da = When $lav.da $lf.LastWriteTime
     if (($ora - $da).TotalHours -gt 6) { Remove-Item $lf.FullName -EA SilentlyContinue; continue }
     if ($ssh -eq 0 -and ($ora - $da).TotalSeconds -gt 120) { Add-Esito $lav 'interrotto' $ora; Remove-Item $lf.FullName -EA SilentlyContinue; continue }
-    $vivi += [ordered]@{ progetto = "$($lav.progetto)"; cosa = "$($lav.cosa)"; chi = "$($lav.chi)"; da = (Iso $da); secondi = [math]::Max(0, [int]($ora - $da).TotalSeconds) }
+    $vivi += [ordered]@{ progetto = "$($lav.progetto)"; repo = "$($lav.repo)"; cosa = "$($lav.cosa)"; chi = "$($lav.chi)"; da = (Iso $da); secondi = [math]::Max(0, [int]($ora - $da).TotalSeconds) }
   }
   return $vivi
 }
