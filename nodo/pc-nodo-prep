@@ -159,10 +159,11 @@ if ($nuovo) {{
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   git init -q $d
   git -C $d remote add origin {ps_quote(origin)}
-  # checkout identico al Mac: niente CRLF negli script che il nodo esegue
-  git -C $d config core.autocrlf false
   git -C $d config credential.interactive never
 }}
+# checkout identico al Mac (niente conversione in uscita) e commit sempre in LF: con «false» un file
+# scritto da uno strumento Windows entrava nel commit con CRLF (quadra 6bdfdf27, 09/11: +8841/-8677 per 164 righe vere)
+git -C $d config core.autocrlf input
 git -C $d fetch -q $b "+{ref}:{ref}"
 if ($LASTEXITCODE -ne 0) {{ throw "fetch dal bundle fallito" }}
 git -C $d symbolic-ref refs/remotes/origin/HEAD {ref}
