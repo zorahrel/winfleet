@@ -16,7 +16,13 @@
 #   - uno stream Parsec/Sunshine connesso, o l'encoder della GPU acceso;
 #   - CPU: 15% del totale, oppure un processo solo sopra mezzo core (un test single-thread su
 #     20 core e' il 5% del totale, e la soglia sul totale non lo vedrebbe);
-#   - GPU sopra 10% in due letture a 5 s (un campione singolo a 40% con la GPU ferma c'e');
+#   - GPU: un processo di LAVORO sopra il 10% di un motore della GPU, in media su 5 s (contatori
+#     «GPU Engine» per pid, come il Task Manager). Fino all'08/11 era nvidia-smi sul totale sopra
+#     il 10% in due letture: col desktop fermo dwm ed Epic lo tenevano al 15-35% (382 giri su 987
+#     in un giorno con la GPU come unico motivo, zero sospensioni) e il PC restava sveglio ~18 ore
+#     al giorno a vuoto. Non contano: desktop di Windows (dwm, explorer e affini), overlay dei
+#     driver, Epic, l'Edge dello schermo dell'agente (profilo schermo\edge-profilo), e Parsec/
+#     Sunshine quando nessuno e' collegato (uno stream vero tiene sveglio con la sua regola sotto);
 #   - una richiesta di alimentazione SYSTEM/AWAYMODE/EXECUTION (aggiornamenti, download):
 #     chi la chiede vuole il PC sveglio, e powercfg /requestsoverride resta il modo di zittirla.
 #
@@ -39,7 +45,9 @@ function Log($m) {
   # l'ultima decisione da sola, per pc-state sul Mac: un `type` via ssh dura decine di ms,
   # leggere la coda del log con powershell ne dura 2000 e conterebbe come lavoro
   Set-Content -Path "$dir\autosleep.now" -Value $r
-  if ((Get-Item $log -EA SilentlyContinue).Length -gt 512KB) { Get-Content $log -Tail 300 | Set-Content $log }
+  # Get-Content e Set-Content sullo stesso file in una pipeline: «file in uso», il taglio falliva a ogni giro
+  # e il log era arrivato a 3 MB (08/11). Prima si legge tutto, poi si riscrive.
+  if ((Get-Item $log -EA SilentlyContinue).Length -gt 2MB) { $t = @(Get-Content $log -Tail 3000); Set-Content $log $t }
 }
 $soglia = 20
 # Un file vuoto o illeggibile vale 0, e 0 vorrebbe dire "dormi al primo minuto fermo": si ignora.
@@ -173,11 +181,16 @@ if ($stream) { $why += "stream porta $(@($stream)[0].LocalPort)" }
 # questo i9 torna vuoto (27/10, render Blender a 1 core: vuoto, arrotondato a "cpu 0%", e la soglia
 # del 15% non poteva mai scattare). Grezzo = tempo di inattivita' in tick da 100 ns, non localizzato.
 function CpuRaw { try { Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter "Name='_Total'" -EA Stop } catch { $null } }
+# GPU per processo: RunningTime grezzo (tick da 100 ns, cumulativo) di ogni motore, per pid. Classe WMI non
+# localizzata, a differenza di Get-Counter '\GPU Engine(*)\...' che sul Windows italiano ha un altro nome.
+function GpuEng { try { $h = @{}; foreach ($e in Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUEngine -EA Stop) { $h[$e.Name] = @([double]$e.RunningTime, [double]$e.Timestamp_Sys100NS) }; $h } catch { $null } }
 $g1 = Gpu
+$ge1 = GpuEng
 $r1 = CpuRaw
 $t0 = @{}; Get-Process | ForEach-Object { if ($_.TotalProcessorTime) { $t0[$_.Id] = $_.TotalProcessorTime.TotalSeconds } }
 Start-Sleep -Seconds 5
 $g2 = Gpu
+$ge2 = GpuEng
 $r2 = CpuRaw
 $top = Get-Process | Where-Object { $_.Id -ne $PID -and $_.Name -ne 'Idle' -and $t0.ContainsKey($_.Id) -and $_.TotalProcessorTime } |
   ForEach-Object { [pscustomobject]@{ Name = $_.Name; Core = ($_.TotalProcessorTime.TotalSeconds - $t0[$_.Id]) / 5 } } |
@@ -222,19 +235,40 @@ if ($r1 -and $r2 -and $r2.Timestamp_Sys100NS -gt $r1.Timestamp_Sys100NS) {
 }
 if ($null -eq $cpu) { $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average }
 if ($cpu -ge 15) { $why += "cpu $cpu%" }
-# Con la GPU occupata si dice anche chi la usa: «GPU al 100%» da solo è stato chiesto due volte il 27/10 (un render
-# Blender, poi la demo di PoP lasciata aperta). pmon misura per processo, anche i giochi, e non è localizzato; il nome
-# lo dà Get-Process (pmon lo taglia a 15 lettere).
-function GpuUser {
-  $best = $null
-  foreach ($l in (& nvidia-smi pmon -c 1 -s u 2>$null)) {
-    if ($l -match '^\s*\d+\s+(\d+)\s+\S+\s+(\d+)\s') { if (-not $best -or [int]$Matches[2] -gt $best.Sm) { $best = @{ Pid = [int]$Matches[1]; Sm = [int]$Matches[2] } } }
+# GPU: conta solo chi lavora. Per ogni pid il motore piu' occupato nella finestra di 5 s (come la colonna GPU
+# del Task Manager); i processi del desktop, degli overlay e di Epic non sono lavoro. nvidia-smi resta nelle
+# misure, per il cruscotto. Senza i contatori (driver o WMI rotti) si torna alla regola di prima sul totale:
+# meglio un PC sveglio a vuoto che uno che dorme sotto un render.
+$gpuNoLavoro = 'dwm', 'explorer', 'csrss', 'System', 'Idle', 'ShellHost', 'ShellExperienceHost', 'StartMenuExperienceHost',
+  'SearchHost', 'TextInputHost', 'ApplicationFrameHost', 'LockApp', 'SystemSettings', 'CrossDeviceResume', 'Widgets',
+  'NVIDIA Overlay', 'NVIDIA Share', 'nvcontainer', 'ArmouryCrate', 'ArmourySocketServer'
+function GpuLavoro {
+  if (-not $ge1 -or -not $ge2) { return $null }
+  $per = @{}
+  foreach ($k in $ge2.Keys) {
+    if (-not $ge1.ContainsKey($k) -or $k -notmatch '^pid_(\d+)_') { continue }
+    $dt = $ge2[$k][1] - $ge1[$k][1]; $d = $ge2[$k][0] - $ge1[$k][0]
+    if ($dt -le 0 -or $d -le 0 -or $d -gt $dt * 1.05) { continue }  # contatori che si riavvolgono (dwm Copy) o pid riusato
+    $p = [int]$Matches[1]; $u = 100 * $d / $dt
+    if (-not $per.ContainsKey($p) -or $per[$p] -lt $u) { $per[$p] = $u }
   }
-  if (-not $best -or $best.Sm -lt 5) { return $null }
-  $p = Get-Process -Id $best.Pid -EA SilentlyContinue
-  if ($p) { $p.ProcessName } else { $null }
+  $schermo = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -EA SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*winfleet\schermo\edge-profilo*' } | ForEach-Object { [int]$_.ProcessId })
+  $best = [pscustomobject]@{ Name = ''; Pct = 0 }; $esclusi = 0
+  foreach ($p in $per.Keys) {
+    $n = (Get-Process -Id $p -EA SilentlyContinue).ProcessName
+    if (-not $n) { continue }
+    $fuori = ($n -in $gpuNoLavoro) -or ($n -like 'Epic*') -or ($n -like 'EOS*') -or ($p -in $schermo) -or
+      (-not $stream -and ($n -like 'parsec*' -or $n -like 'sunshine*'))
+    if ($fuori) { $esclusi = [math]::Max($esclusi, $per[$p]); continue }
+    if ($per[$p] -gt $best.Pct) { $best = [pscustomobject]@{ Name = $n; Pct = $per[$p] } }
+  }
+  $best | Add-Member -NotePropertyName Esclusi -NotePropertyValue $esclusi -PassThru
 }
-if ($g1[0] -ge 10 -and $g2[0] -ge 10) { $gu = GpuUser; $why += "gpu $($g2[0])%" + $(if ($gu) { " da $gu" } else { '' }) }
+$gl = GpuLavoro
+if ($gl) {
+  if ($gl.Pct -ge 10) { $why += ("gpu {0}% da {1}" -f [int][math]::Round($gl.Pct), $gl.Name) }
+} elseif ($g1[0] -ge 10 -and $g2[0] -ge 10) { $why += "gpu $($g2[0])% (contatori per processo assenti)" }
 if ($g1[1] -ge 5 -and $g2[1] -ge 5) { $why += "encoder $($g2[1])% (stream)" }
 
 # Le misure per chi guarda il PC dal Mac (pc-state -> hub -> tray), in coda a ogni riga del log
@@ -248,6 +282,8 @@ try {
   $misure = "misure: cpu {0}%; gpu {1}%; mem {2}%; disco {3}% ({4} GB liberi)" -f `
     $(if ($null -eq $cpu) { '?' } else { [int][math]::Round($cpu) }), $g2[0], [int][math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)),
     [int][math]::Round(100 * (1 - $c.FreeSpace / $c.Size)), [int][math]::Round($c.FreeSpace / 1GB)
+  # gpu lavoro = il processo di lavoro piu' occupato (la decisione); desktop = il massimo fra gli esclusi
+  if ($gl) { $misure += "; gpu lavoro {0}%; gpu desktop {1}%" -f [int][math]::Round($gl.Pct), [int][math]::Round($gl.Esclusi) }
 } catch { $misure = '' }  # WMI che non risponde: niente misure in questo giro, la decisione non cambia
 # L'ultima chiusura delle 24 ore per l'hub, che legge solo questa riga
 $uo = Get-Content "$dir\orfani.log" -Tail 1 -EA SilentlyContinue
