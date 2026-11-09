@@ -5,15 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PC di casa</title>
 <!--
-  Schermo del PC di casa: lavoro in corso, stato del PC, conto allo standby.
-  Tecnico e minimale: fondo piatto, filetti sottili, poche parole. Niente WebGL e niente animazioni
-  (la GPU resta a riposo, il PC puo' andare in standby). Gira da file:// senza rete.
-  Font (SIL OFL 1.1, file in fonts/ con le licenze):
-    ?font=1  Mona Sans (predefinito: numeri Expanded Black, etichette strette)
-    ?font=2  Hubot Sans
-    ?font=3  Archivo
-  Stato: stato.js (window.STATO), ricaricato ogni 2 s. ?stato=lavora|attesa legge le istantanee
-  stato-lavora.js / stato-attesa.js e le riporta all'ora attuale.
+  Schermo del PC di casa: cosa sta facendo il PC, per progetto, chi l'ha mandato e da quanto; da libero,
+  il conto alla rovescia verso lo standby di wf-autosleep.
+  Fondo a gradienti fermi (dipinto una volta), niente WebGL e niente animazioni: la GPU resta a riposo e
+  la pagina non conta come lavoro per wf-autosleep. Gira da file:// senza rete.
+  Dati, tutti scritti sul PC:
+    stato.js      (window.STATO, wf-autosleep)  giri di offload in corso, ultimi esiti, conto allo standby
+    dettaglio.js  (window.DETTAGLIO, wf-schermo) card di Topics in corsa sul nodo del PC, CPU/GPU/RAM
+  Ricaricati ogni 2 s. ?stato=lavora|attesa legge le istantanee stato-<x>.js e dettaglio-<x>.js e le
+  riporta all'ora attuale.
+  Font (SIL OFL 1.1, file in fonts/ con le licenze): ?font=1 Mona Sans (predefinito) · 2 Hubot Sans · 3 Archivo
   ?misura=1 scrive in <pre id="misura"> sovrapposizioni ed elementi fuori schermo.
 -->
 <style>
@@ -25,94 +26,131 @@
   font-weight:100 900;font-stretch:62% 125%;font-display:block}
 
 :root{
-  --nero:#0a0b0a; --carta:#eceae0; --grigio:#8c8b82; --filo:rgba(236,234,224,.16);
-  --lime:#d2f43a; --arancio:#ff6a1f; --rosso:#ff5a48;
+  --nero:#090b0a; --carta:#f1efe4; --grigio:#9a998e; --filo:rgba(241,239,228,.14);
+  --lime:#d2f43a; --arancio:#ff6a1f; --rosso:#ff5a48; --ciano:#5fe0c8;
   --accento:var(--lime);
-  /* 1vh = 10,8 px a 1080p. Etichette 2,8vh (30 px), testi 4,4vh */
-  --pad-x:6vw; --pad-y:6vh;
-  --et:2.8vh; --testo-t:4.4vh;
+  /* 1vh = 14,4 px a 1440p. Etichette 2,4vh, testi 4,2vh */
+  --pad-x:5vw; --pad-y:5.5vh;
+  --et:2.4vh; --testo-t:4.2vh;
   --display:"Mona Sans"; --corpo:"Mona Sans";
 }
 :root[data-font="2"]{ --display:"Hubot Sans"; --corpo:"Hubot Sans" }
 :root[data-font="3"]{ --display:"Archivo"; --corpo:"Archivo" }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:var(--nero);color:var(--carta)}
+html,body{width:100%;height:100%;overflow:hidden;color:var(--carta)}
+/* fondo vivo ma fermo: due luci larghe su un nero verde, dipinte una volta sola */
+html{background:var(--nero)}
 body{font-family:var(--corpo),"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-weight:600;
-  -webkit-font-smoothing:antialiased;cursor:none;user-select:none}
-body.attesa{--accento:var(--arancio)}
-ol{list-style:none}
+  -webkit-font-smoothing:antialiased;cursor:none;user-select:none;
+  background:
+    radial-gradient(70vw 80vh at 8% 0%, rgba(210,244,58,.16), transparent 70%),
+    radial-gradient(60vw 90vh at 100% 100%, rgba(40,170,140,.24), transparent 70%),
+    linear-gradient(165deg,#0e1512 0%,#080a09 60%,#0a0f0d 100%)}
+body.attesa{--accento:var(--arancio);
+  background:
+    radial-gradient(70vw 80vh at 8% 0%, rgba(255,106,31,.16), transparent 70%),
+    radial-gradient(60vw 90vh at 100% 100%, rgba(150,60,40,.22), transparent 70%),
+    linear-gradient(165deg,#15100d 0%,#0a0908 60%,#100c0a 100%)}
+ol,ul{list-style:none}
 .n{font-variant-numeric:tabular-nums lining-nums}
 
 #scena{position:fixed;inset:0;padding:var(--pad-y) var(--pad-x);display:flex;flex-direction:column;
   transition:transform 6s ease-in-out}
-/* etichetta tecnica: maiuscolo stretto, spaziato, grigio */
-.et{font-size:var(--et);font-weight:600;font-stretch:80%;letter-spacing:.16em;text-transform:uppercase;color:var(--grigio);line-height:1}
+.et{font-size:var(--et);font-weight:700;font-stretch:80%;letter-spacing:.16em;text-transform:uppercase;color:var(--grigio);line-height:1}
 
-.testa{display:flex;justify-content:space-between;align-items:center;padding-bottom:2.6vh;border-bottom:1px solid var(--filo)}
-.stato{display:flex;align-items:center;gap:1.1vw;color:var(--accento)}
+.testa{flex:none;display:flex;justify-content:space-between;align-items:center;padding-bottom:2.4vh;border-bottom:1px solid var(--filo)}
+.stato{display:flex;align-items:center;gap:1vw;color:var(--accento)}
 .stato i{width:1.5vh;height:1.5vh;background:var(--accento);display:block}
 .testa .dx{display:flex;gap:3vw;align-items:center}
+#conta{color:var(--carta)}
 #fermi{color:var(--rosso)}
 #ora{color:var(--carta)}
 
 .vista{flex:1;display:none;min-height:0;flex-direction:column;justify-content:center}
 .lavora #v-lavora,.attesa #v-attesa{display:flex}
 
-/* il numero grande: Expanded Black, e' l'unica cosa che conta */
 .grande{font-family:var(--display),sans-serif;font-weight:900;font-stretch:125%;line-height:.82;
   letter-spacing:-.025em;color:var(--carta);white-space:nowrap;width:max-content}
-.grande .u{font-size:.2em;font-weight:700;font-stretch:90%;letter-spacing:.04em;color:var(--accento);margin:0 .5em 0 .2em}
+.grande .u{font-size:.22em;font-weight:700;font-stretch:90%;letter-spacing:.04em;color:var(--accento);margin:0 .45em 0 .15em}
 .grande .u:last-child{margin-right:0}
 .grande .sep{color:var(--accento);letter-spacing:0;margin:0 .05em}
-#durata{font-size:23vh}
-#frase{font-size:var(--testo-t);font-weight:700;line-height:1.15;margin-top:5vh;max-width:80vw;
-  text-wrap:balance;overflow-wrap:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
-/* filetto di avanzamento del conto */
+/* ---------- al lavoro: un blocco per progetto, una riga per lavoro ---------- */
+#gruppi{display:flex;flex-direction:column;gap:4.2vh;min-height:0}
+.gruppo{min-width:0}
+.gruppo h2{display:flex;align-items:baseline;gap:1.2vw;font-family:var(--display),sans-serif;font-weight:900;font-stretch:125%;
+  text-transform:uppercase;letter-spacing:.01em;color:var(--accento);font-size:3.6vh;line-height:1;padding-bottom:1.4vh;
+  border-bottom:2px solid var(--accento)}
+.gruppo h2 .et{color:var(--grigio);font-family:var(--corpo),sans-serif}
+.riga{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:3vw;align-items:end;padding:2vh 0;border-bottom:1px solid var(--filo)}
+.riga .meta{display:flex;gap:.9vw;align-items:center;flex-wrap:nowrap;overflow:hidden;white-space:nowrap}
+.riga .meta .tipo{color:var(--nero);background:var(--carta);padding:.45vh .55vw .35vh;letter-spacing:.12em}
+.riga .meta .tipo.card{background:var(--ciano)}
+.riga .meta .attende{color:var(--arancio)}
+.riga .tit{font-size:var(--testo-t);font-weight:700;line-height:1.12;margin-top:1.3vh;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-wrap:balance}
+.riga .tempo{text-align:right}
+.riga .tempo .grande{font-size:8vh;margin-left:auto}
+.riga .tempo .et{margin-top:1.2vh}
+#altri{margin-top:2vh}
+/* un lavoro solo: tutto piu' grande, il tempo diventa il numero della schermata */
+.uno .gruppo h2{font-size:5vh}
+.uno .riga{grid-template-columns:1fr;border-bottom:0;padding-top:3vh}
+.uno .riga .tit{font-size:7vh;line-height:1.06;max-width:84vw}
+.uno .riga .tempo{text-align:left;margin-top:5vh;display:flex;align-items:baseline;gap:3vw}
+.uno .riga .tempo .grande{font-size:22vh;margin-left:0}
+/* tanti lavori: righe piu' basse */
+.tanti #gruppi{gap:2.6vh}
+.tanti .gruppo h2{font-size:2.8vh}
+.tanti .riga{padding:1.3vh 0}
+.tanti .riga .tit{font-size:3.2vh;-webkit-line-clamp:1}
+.tanti .riga .tempo .grande{font-size:5.2vh}
+
+/* ---------- libero ---------- */
 #barra{flex:none;height:.6vh;min-height:4px;background:var(--filo);margin-top:4vh;position:relative}
 #barra b{position:absolute;left:0;top:0;bottom:0;background:var(--accento)}
-.k{margin:3vh 0 3.4vh}
-
-/* riga dei dati: celle con etichetta sopra e valore sotto, separate da filetti */
-.celle{flex:none;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border-top:1px solid var(--filo)}
-.celle>div{padding:2.6vh 2vw 0 0;min-width:0}
-.celle>div+div{padding-left:2vw;border-left:1px solid var(--filo)}
-.celle .v{font-size:var(--testo-t);font-weight:700;line-height:1.1;margin-top:1.4vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.celle .v small{font-size:.6em;color:var(--grigio);font-weight:600;margin-left:.2em}
-.celle .m{height:.5vh;background:var(--filo);margin-top:1.4vh}
-.celle .m b{display:block;height:100%;background:var(--carta)}
-
-/* ultimi lavori: una riga l'uno */
-#ultimi{margin:4vh 0 3vh;border-top:1px solid var(--filo)}
-#ultimi li{display:grid;grid-template-columns:11vw 1fr auto;column-gap:2vw;align-items:baseline;
-  padding:1.9vh 0;border-bottom:1px solid var(--filo);font-size:var(--testo-t);font-weight:600;line-height:1.1}
+.k{margin:2vh 0 3.4vh}
+#perche{display:none;margin-top:4vh;max-width:80vw}
+#perche li{font-size:var(--testo-t);font-weight:700;line-height:1.15;padding:1.3vh 0 1.3vh 2.2vw;position:relative}
+#perche li::before{content:"";position:absolute;left:0;top:50%;width:1vw;height:3px;background:var(--accento)}
+.senza-conto #perche{display:block}
+.senza-conto #barra,.senza-conto #conto{display:none}
+#ultimi{margin:4vh 0 2vh;border-top:1px solid var(--filo)}
+#ultimi li{display:grid;grid-template-columns:7vw 16vw 1fr auto;column-gap:2vw;align-items:baseline;
+  padding:1.7vh 0;border-bottom:1px solid var(--filo);font-size:3.6vh;font-weight:600;line-height:1.1}
 #ultimi .ok{color:var(--lime)} #ultimi .ko{color:var(--rosso)}
 #ultimi .e{font-size:var(--et);font-weight:700;font-stretch:80%;letter-spacing:.14em;text-transform:uppercase}
+#ultimi .p{font-size:var(--et);font-weight:700;font-stretch:80%;letter-spacing:.12em;text-transform:uppercase;color:var(--grigio);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #ultimi .c{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #ultimi .d{color:var(--grigio)}
-#perche{display:none;font-size:var(--testo-t);font-weight:600;line-height:1.2;margin-top:5vh;max-width:70vw;text-wrap:balance}
-.senza-conto #perche{display:block}
-.senza-conto #barra{display:none}
-.senza-conto #conto .sep,.senza-conto #conto-u{display:none}
+
+/* ---------- misure in fondo ---------- */
+.celle{flex:none;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border-top:1px solid var(--filo)}
+.celle>div{padding:2.2vh 2vw 0 0;min-width:0}
+.celle>div+div{padding-left:2vw;border-left:1px solid var(--filo)}
+.celle .v{font-size:3.6vh;font-weight:700;line-height:1.1;margin-top:1.2vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.celle .v small{font-size:.6em;color:var(--grigio);font-weight:600;margin-left:.2em}
+.celle .m{height:.5vh;background:var(--filo);margin-top:1.2vh}
+.celle .m b{display:block;height:100%;background:var(--carta)}
 </style>
 </head>
 <body class="vuoto">
 <main id="scena">
   <header class="testa">
     <span class="et stato"><i></i><span id="testa-stato">PC di casa</span></span>
-    <span class="dx"><span class="et" id="fermi"></span><span class="et n" id="ora" style="color:var(--carta)">--:--</span></span>
+    <span class="dx"><span class="et" id="conta"></span><span class="et" id="fermi"></span><span class="et n" id="ora">--:--</span></span>
   </header>
 
   <section class="vista" id="v-lavora">
-    <div class="grande" id="durata"></div>
-    <p id="frase"></p>
+    <div id="gruppi"></div>
+    <p class="et" id="altri"></p>
   </section>
 
   <section class="vista" id="v-attesa">
     <p class="et k" id="k-attesa">Standby tra</p>
-    <div class="grande" id="conto" style="font-size:30vh"></div>
+    <div class="grande" id="conto" style="font-size:28vh"></div>
     <div id="barra"><b id="barra-in"></b></div>
-    <p id="perche"></p>
+    <ul id="perche"></ul>
     <ol id="ultimi"></ol>
   </section>
 
@@ -126,39 +164,39 @@ const FONT = ['1','2','3'].includes(q.get('font')) ? q.get('font') : '1';
 document.documentElement.dataset.font = FONT;
 const DEMO = ['lavora','attesa'].includes(q.get('stato')) ? q.get('stato') : null;
 const FILE = DEMO ? `stato-${DEMO}.js` : 'stato.js';
+const FILE_D = DEMO ? `dettaglio-${DEMO}.js` : 'dettaglio.js';
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pulisci = t => String(t || '').trim().replace(/[.\s]+$/, '');
-/* avvolge le cifre in .n: tabular-nums solo lì */
 const cifre = t => esc(t).replace(/\d+/g, d => `<span class="n">${d}</span>`);
 
 /* ---------- dati ----------
-   scarto: in modo istantanea (?stato=) l'ora dei dati è nel passato, la riportiamo al caricamento;
-   con stato.js vero è lo stesso PC che lo scrive, quindi scarto = 0 e vale l'orologio di sistema. */
-let dati = null, firma = '', scarto = 0, mancante = false;
+   scarto: in modo istantanea (?stato=) l'ora dei dati e' nel passato, la riportiamo al caricamento;
+   con i file veri e' lo stesso PC che li scrive, quindi scarto = 0 e vale l'orologio di sistema. */
+let dati = null, det = null, firma = '', scarto = 0;
 const adesso = () => Date.now() - scarto;
 
 function prendi(){
-  const S = window.STATO;
+  const S = window.STATO, D = window.DETTAGLIO;
   if (!S || typeof S !== 'object') return;
-  const f = JSON.stringify(S);
+  const f = JSON.stringify([S, D && D.carte, D && D.risorse]);
   if (f === firma) return;
   if (DEMO && !dati) scarto = Date.now() - (Date.parse(S.ora) || Date.now());
-  firma = f; dati = S; mancante = false;
+  firma = f; dati = S; det = D && typeof D === 'object' ? D : null;
   disegna();
 }
-function carica(){
+function carica1(file, poi){
   const s = document.createElement('script');
-  s.src = FILE + '?t=' + Date.now();
-  s.onload = () => { s.remove(); prendi(); };
-  s.onerror = () => { s.remove(); if (!dati) { mancante = true; disegna(); } };
+  s.src = file + '?t=' + Date.now();
+  s.onload = s.onerror = () => { s.remove(); poi(); };
   document.head.appendChild(s);
 }
+function carica(){ carica1(FILE_D, () => carica1(FILE, () => { prendi(); if (!dati) disegna(); })); }
 
-/* ---------- formati ---------- */
+/* ---------- parole ---------- */
 const hhmm = ms => { const d = new Date(ms); return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); };
-function durataHTML(s){
+function tempoHTML(s){
   s = Math.max(0, Math.floor(s));
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
   const n = v => `<span class="n">${v}</span>`, u = v => `<span class="u">${v}</span>`;
@@ -168,34 +206,55 @@ function durataHTML(s){
 }
 function lunghezza(s){
   s = Math.round(s);
-  if (s < 60) return `${s}\u00a0s`;
+  if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60), r = s % 60;
-  return r ? `${m}\u00a0min ${r}\u00a0s` : `${m}\u00a0min`;
+  return r ? `${m} min ${r} s` : `${m} min`;
 }
-function fa(s){
-  if (s < 90) return 'poco fa';
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}\u00a0minuti\u00a0fa`;
-  const h = Math.round(m / 60);
-  return h === 1 ? 'un’ora fa' : `${h} ore fa`;
+/* «topics-app» -> «Topics», «claude usage hub» -> «Claude usage hub» */
+function progettoNome(p){
+  p = String(p || '').trim();
+  if (!p || (window.NomeLavoro && NomeLavoro.cartellaTemporanea(p))) return 'Senza progetto';
+  if (/^topics([ _-]?app)?$/i.test(p)) return 'Topics';
+  p = p.replace(/[_-]+/g, ' ');
+  return p.charAt(0).toUpperCase() + p.slice(1);
 }
-function ultimiDi(s){ return Array.isArray(s.esiti) ? s.esiti : (Array.isArray(s.ultimi) ? s.ultimi : []); }
-function lavoriDi(s){
-  const l = Array.isArray(s.lavori) && s.lavori.length ? s.lavori : (s.lavoro ? [s.lavoro] : []);
-  return l.slice().sort((a, b) => (Date.parse(a.da) || 0) - (Date.parse(b.da) || 0));
+/* «claude-code:claude-sonnet-5-5» -> «Sonnet 5.5», «codex:gpt-5.5» -> «GPT 5.5» */
+function modelloNome(m){
+  m = String(m || '');
+  const via = m.includes(':') ? m.split(':')[0] : '';
+  const n = (m.includes(':') ? m.split(':').slice(1).join(':') : m).replace(/^claude-/, '');
+  const nome = [], ver = [];
+  for (const x of n.split('-')) if (x) (/^\d+(\.\d+)?$/.test(x) ? ver : nome).push(x);
+  const w = nome.map(x => /^gpt$/i.test(x) ? 'GPT' : x.charAt(0).toUpperCase() + x.slice(1)).join(' ');
+  return (w + (ver.length ? ' ' + ver.join('.') : '')).trim() || via;
+}
+const SFORZO = {low:'sforzo basso', medium:'sforzo medio', high:'sforzo alto', xhigh:'sforzo molto alto', max:'sforzo massimo'};
+
+/* i lavori in corso, tutti in una forma: {tipo, progetto, titolo, chi, da, ...} */
+function lavori(){
+  const out = [];
+  const L = Array.isArray(dati.lavori) && dati.lavori.length ? dati.lavori : (dati.lavoro ? [dati.lavoro] : []);
+  for (const l of L) {
+    const nome = window.NomeLavoro ? NomeLavoro.nomeLavoro(l) : { titolo: l.cosa, progetto: l.progetto };
+    out.push({ tipo: 'offload', progetto: progettoNome(nome.progetto), titolo: pulisci(nome.titolo) || 'Un lavoro mandato dal Mac',
+      chi: l.chi ? `mandato da ${l.chi}` : 'mandato dal Mac', da: Date.parse(l.da) });
+  }
+  /* le card valgono solo se dettaglio.js e' fresco: con il guardiano fermo sarebbero vecchie */
+  const fresco = det && (adesso() - (Date.parse(det.ora) || 0)) < 90000;
+  if (fresco && Array.isArray(det.carte)) for (const c of det.carte) {
+    const note = [modelloNome(c.modello), SFORZO[c.sforzo] || ''].filter(Boolean).join(' · ');
+    out.push({ tipo: 'card', progetto: progettoNome(c.progetto), titolo: pulisci(c.titolo) || 'Una card di Topics',
+      chi: note, da: Date.parse(c.da), attende: !!c.attende,
+      figlie: c.figlie ? `${c.figlieFatte || 0}/${c.figlie} sotto-card` : '' });
+  }
+  return out.sort((a, b) => (a.da || 0) - (b.da || 0));
 }
 
 /* ---------- disegno ---------- */
 let soglia = 20, fineAlle = null;
 const cella = (k, v, m) => `<div><p class="et">${k}</p><p class="v">${v}</p>${m == null ? '' : `<div class="m"><b style="width:${Math.max(0, Math.min(100, m))}%"></b></div>`}</div>`;
-function celle(s, L, altri){
-  const r = s.risorse || {}, c = [];
-  if (L) {
-    const da = Date.parse(L.da);
-    if (!isNaN(da)) c.push(cella('Dalle', cifre(hhmm(da + scarto))));
-    c.push(cella('Da', esc(L.chi || 'un agente')));
-    if (altri) c.push(cella('In coda', cifre(altri)));
-  }
+function celle(extra){
+  const r = (det && det.risorse) || dati.risorse || {}, c = extra.slice();
   if (r.cpu != null) c.push(cella('CPU', cifre(Math.round(r.cpu)) + '<small>%</small>', r.cpu));
   if (r.gpu != null) c.push(cella('GPU', cifre(Math.round(r.gpu)) + '<small>%</small>', r.gpu));
   if (r.ram_usata_gb != null && r.ram_totale_gb) c.push(cella('RAM', cifre(Math.round(r.ram_usata_gb)) + '<small>/ ' + cifre(Math.round(r.ram_totale_gb)) + ' GB</small>', 100 * r.ram_usata_gb / r.ram_totale_gb));
@@ -203,24 +262,39 @@ function celle(s, L, altri){
 }
 const contoHTML = s => {
   const m = Math.floor(s / 60), r = Math.floor(s % 60);
-  return `<span class="n">${m}</span><span class="sep">:</span><span class="n">${String(r).padStart(2,'0')}</span><span class="u" id="conto-u">min</span>`;
+  return `<span class="n">${m}</span><span class="sep">:</span><span class="n">${String(r).padStart(2,'0')}</span><span class="u">min</span>`;
 };
+const MAX_RIGHE = 6;
+function rigaHTML(l){
+  const meta = `<span class="tipo ${l.tipo}">${l.tipo === 'card' ? 'Card di Topics' : 'Dal Mac'}</span><span>${cifre(l.chi)}</span>` +
+    (l.figlie ? `<span>· ${cifre(l.figlie)}</span>` : '') + (l.attende ? '<span class="attende">· aspetta una risposta</span>' : '');
+  const dalle = isNaN(l.da) ? '' : 'dalle ' + cifre(hhmm(l.da + scarto));
+  return `<div class="riga"><div><p class="et meta">${meta}</p><p class="tit">${cifre(l.titolo)}</p></div>` +
+    `<div class="tempo"><div class="grande" data-da="${isNaN(l.da) ? '' : l.da}"></div><p class="et">${dalle}</p></div></div>`;
+}
+function disegnaLavori(L){
+  const gruppi = new Map();
+  for (const l of L.slice(0, MAX_RIGHE)) { if (!gruppi.has(l.progetto)) gruppi.set(l.progetto, []); gruppi.get(l.progetto).push(l); }
+  $('gruppi').innerHTML = [...gruppi].map(([p, righe]) =>
+    `<section class="gruppo"><h2>${esc(p)}${righe.length > 1 ? `<span class="et">${righe.length} lavori</span>` : ''}</h2>${righe.map(rigaHTML).join('')}</section>`).join('');
+  $('altri').textContent = L.length > MAX_RIGHE ? `e altri ${L.length - MAX_RIGHE}` : '';
+}
 function disegna(){
   if (!dati) {
     document.body.className = 'attesa vuoto senza-conto';
-    $('testa-stato').textContent = 'PC di casa';
+    $('testa-stato').textContent = 'PC di casa'; $('conta').textContent = '';
     $('k-attesa').textContent = 'In attesa di dati';
-    $('conto').innerHTML = ''; $('perche').textContent = ''; $('ultimi').innerHTML = ''; $('celle').innerHTML = '';
+    $('perche').innerHTML = ''; $('ultimi').innerHTML = ''; $('celle').innerHTML = '';
     return;
   }
-  const s = dati, lav = lavoriDi(s), esiti = ultimiDi(s);
-  if (lav.length) {
-    document.body.className = 'lavora';
-    const L = lav[0];
-    const mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(L) : { titolo: L.cosa, progetto: L.progetto };
+  const s = dati, inCorso = lavori();
+  if (inCorso.length) {
+    const n = inCorso.length, np = new Set(inCorso.map(l => l.progetto)).size;
+    document.body.className = 'lavora ' + (n === 1 ? 'uno' : n >= 4 ? 'tanti' : 'pochi');
     $('testa-stato').textContent = 'Al lavoro';
-    $('frase').innerHTML = cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac');
-    celle(s, L, lav.length - 1 + (s.coda || []).length);
+    $('conta').innerHTML = n === 1 ? '' : cifre(`${n} lavori · ${np} ${np === 1 ? 'progetto' : 'progetti'}`);
+    disegnaLavori(inCorso);
+    celle([cella('Standby', 'no, sta lavorando')]);
   } else {
     const sp = s.sospensione || {};
     soglia = sp.soglia_minuti || s.sogliaMinuti || 20;
@@ -228,30 +302,32 @@ function disegna(){
     else if (sp.minuti_mancanti != null) fineAlle = (Date.parse(s.ora) || adesso()) + sp.minuti_mancanti * 60000;
     else fineAlle = null;
     document.body.className = 'attesa' + (fineAlle == null ? ' senza-conto' : '');
-    $('testa-stato').textContent = 'Libero';
-    const motivo = sp.perche_sveglio || (Array.isArray(s.motivi) && s.motivi.join(', ')) || '';
-    $('k-attesa').textContent = fineAlle == null ? 'Resta acceso' : 'Standby tra';
-    $('perche').innerHTML = fineAlle == null ? cifre(motivo || 'Qualcosa lo tiene sveglio.') : '';
-    if (fineAlle == null) $('conto').innerHTML = '';
+    $('testa-stato').textContent = 'Libero'; $('conta').textContent = '';
+    const motivi = Array.isArray(s.motivi) && s.motivi.length ? s.motivi : (sp.perche_sveglio ? [sp.perche_sveglio] : []);
+    $('k-attesa').textContent = fineAlle == null ? 'Resta acceso perché' : 'Standby tra';
+    $('perche').innerHTML = fineAlle == null ? (motivi.length ? motivi : ['Qualcosa lo tiene sveglio']).slice(0, 5).map(m => `<li>${cifre(pulisci(m))}</li>`).join('') : '';
+    const esiti = Array.isArray(s.esiti) ? s.esiti : (Array.isArray(s.ultimi) ? s.ultimi : []);
     $('ultimi').innerHTML = esiti.slice(0, 3).map(u => {
-      const ok = u.esito === 'ok', mostra = window.NomeLavoro ? NomeLavoro.nomeLavoro(u) : { titolo: u.cosa };
+      const ok = u.esito === 'ok', nome = window.NomeLavoro ? NomeLavoro.nomeLavoro(u) : { titolo: u.cosa, progetto: u.progetto };
       const et = ok ? 'ok' : u.esito === 'interrotto' ? 'stop' : 'ko';
-      return `<li><span class="e ${ok ? 'ok' : 'ko'}">${et}</span><span class="c">${cifre(pulisci(mostra.titolo) || 'Un lavoro mandato dal Mac')}</span><span class="d">${cifre(lunghezza(u.secondi || 0))}</span></li>`;
+      return `<li><span class="e ${ok ? 'ok' : 'ko'}">${et}</span><span class="p">${esc(progettoNome(nome.progetto))}</span><span class="c">${cifre(pulisci(nome.titolo) || 'Un lavoro mandato dal Mac')}</span><span class="d">${cifre(lunghezza(u.secondi || 0))}</span></li>`;
     }).join('');
-    celle(s, null, 0);
+    celle([]);
   }
   tic();
 }
 
-/* ogni secondo: orologio, dati fermi, durata, conto alla rovescia */
+/* ogni secondo: orologio, dati fermi, tempi dei lavori, conto alla rovescia */
 function tic(){
   $('ora').innerHTML = cifre(hhmm(Date.now()));
   if (!dati) { $('fermi').textContent = ''; return; }
   const vecchio = adesso() - (Date.parse(dati.ora) || adesso());
   $('fermi').textContent = vecchio > 120000 ? `dati fermi da ${Math.floor(vecchio / 60000)} min` : '';
   if (document.body.classList.contains('lavora')) {
-    const L = lavoriDi(dati)[0];
-    $('durata').innerHTML = durataHTML((adesso() - Date.parse(L.da)) / 1000);
+    for (const el of document.querySelectorAll('[data-da]')) {
+      const da = Number(el.dataset.da);
+      el.innerHTML = da ? tempoHTML((adesso() - da) / 1000) : '';
+    }
     return;
   }
   if (fineAlle == null) return;
@@ -296,7 +372,6 @@ function misura(){
       if (ox > 1 && oy > 1) sovra.push(`${a.t} × ${b.t} (${ox.toFixed(0)}×${oy.toFixed(0)} px)`);
     }
   }
-  
   const out = {W, H, font: FONT, stato: document.body.className,
     fontCaricati: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family),
     testi: testi.length, sovrapposizioni: sovra, fuori,
@@ -307,7 +382,6 @@ function misura(){
 }
 
 /* ---------- avvio ---------- */
-/* i font si caricano solo quando un testo li usa: li chiediamo subito */
 const famiglia = {'1': 'Mona Sans', '2': 'Hubot Sans', '3': 'Archivo'}[FONT];
 const pronti = document.fonts
   ? Promise.all([900, 700, 600].map(w => document.fonts.load(`${w} 40px "${famiglia}"`))).catch(() => {})

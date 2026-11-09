@@ -152,8 +152,54 @@ function Leggi-Soglia {
 # L'ultima riga di stato.js dice se un lavoro e' in corso: con un lavoro la GPU non e' tutta nostra
 # e la lettura non conta per la cintura.
 function Lavori-In-Corso {
-  try { (Get-Content "$dir\schermo\stato.js" -Raw -EA Stop) -notmatch '"lavori":\s*\[\s*\]' } catch { $false }
+  $off = try { (Get-Content "$dir\schermo\stato.js" -Raw -EA Stop) -notmatch '"lavori":\s*\[\s*\]' } catch { $false }
+  # anche una card di Topics in corsa sul nodo: il suo agente puo' aprire un browser che usa la GPU
+  $carte = try { (Get-Content "$dir\schermo\dettaglio.js" -Raw -EA Stop) -match '"carte":\[\{' } catch { $false }
+  $off -or $carte
 }
+
+# Dettaglio per la pagina (dettaglio.js, window.DETTAGLIO): le card di Topics in corsa sul nodo di questo
+# PC (topics-server su 127.0.0.1:3333, lo stesso dato con cui wf-autosleep resta sveglio) e CPU, GPU e
+# RAM. Tutto locale: l'hub del Mac (:3360) ascolta solo sul suo loopback e la Topics del Mac via
+# tailscale serve chiede il login, quindi nessuna porta nuova. Scritto ogni 10 s mentre lo schermo e'
+# mostrato e subito prima di mostrarlo; la pagina lo scarta se ha piu' di 90 s.
+$script:progetti = @{}; $script:progettiAt = [datetime]::MinValue
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+# Invoke-RestMethod di PowerShell 5.1 legge il JSON senza charset come Latin-1: le lettere accentate dei
+# titoli uscirebbero storpiate. Si leggono i byte e si decodificano in UTF-8.
+function Nodo-Json($path) {
+  $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:3333$path"
+  $ms = New-Object System.IO.MemoryStream; $r.RawContentStream.Position = 0; $r.RawContentStream.CopyTo($ms)
+  $utf8.GetString($ms.ToArray()) | ConvertFrom-Json
+}
+function Nome-Progetto($id) {
+  if (((Get-Date) - $script:progettiAt).TotalMinutes -ge 5) {
+    $script:progettiAt = Get-Date
+    try { $m = @{}; foreach ($p in @((Nodo-Json '/api/projects').projects)) { $m["$($p.id)"] = "$($p.name)" }; $script:progetti = $m } catch { }
+  }
+  $n = $script:progetti["$id"]
+  if (-not $n) { $n = "$id" -replace '-[a-z0-9]{6}$', '' }
+  $n
+}
+function Scrivi-Dettaglio {
+  try {
+    $carte = @()
+    try {
+      $carte = @(@((Nodo-Json '/api/all-boards/tasks?status=in_progress').tasks) | Where-Object { $_ } | ForEach-Object {
+        [ordered]@{ titolo = "$($_.text)"; progetto = (Nome-Progetto $_.projectId); modello = "$($_.model)"; sforzo = "$($_.effort)"
+                    da = "$($_.inProgressAt)"; stato = "$($_.dispatchState)"; attende = [bool]$_.awaitingAnswer
+                    figlie = [int]$_.subtaskCount; figlieFatte = [int]$_.subtaskDoneCount } })
+    } catch { }  # nodo spento: nessuna card
+    $os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
+    $cpu = (Get-CimInstance Win32_Processor -EA SilentlyContinue | Measure-Object LoadPercentage -Average).Average
+    $ris = [ordered]@{ cpu = [int]$cpu; gpu = [int](Gpu-Util)[0] }
+    if ($os) { $ris.ram_usata_gb = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1); $ris.ram_totale_gb = [math]::Round($os.TotalVisibleMemorySize / 1MB) }
+    $json = [ordered]@{ ora = (Get-Date).ToString("yyyy-MM-dd'T'HH:mm:sszzz"); carte = $carte; risorse = $ris } | ConvertTo-Json -Depth 5 -Compress
+    [IO.File]::WriteAllText("$dir\schermo\dettaglio.js.tmp", "window.DETTAGLIO = $json;`n", $utf8)
+    Move-Item "$dir\schermo\dettaglio.js.tmp" "$dir\schermo\dettaglio.js" -Force
+  } catch { Log "dettaglio.js non scritto: $($_.Exception.Message)" }
+}
+$ultimoDett = [datetime]::MinValue
 
 # Livelli della cintura GPU: 0 = auto (la pagina scende da sola), 1 = tetto 6 fps, 2 = fondo fermo.
 $parametri = @('', '?fps=6', '?fermo=1')
@@ -224,6 +270,8 @@ while ($true) {
       }
     }
 
+    if (($ora - $ultimoDett).TotalSeconds -ge 10) { $ultimoDett = $ora; Scrivi-Dettaglio }
+
     # cintura GPU: una lettura ogni 10 s, senza lavori in corso; 12 letture = mediana sotto il 5%
     if (($ora - $ultimaGpu).TotalSeconds -ge 10) {
       $ultimaGpu = $ora
@@ -269,6 +317,7 @@ while ($true) {
     $nonMostro = $null
     if ($falliti -ge 3) { $pausaFino = $ora.AddMinutes(10); $falliti = 0; Log 'Edge non parte: pausa di 10 minuti'; continue }
     Log "mostro la schermata (input fermo da $idle s)"
+    Scrivi-Dettaglio; $ultimoDett = Get-Date
     if (Edge-Apri $parametri[$livello]) {
       $visibile = $true; $baseDw = $li.dwTime; $dal = $ora; $ultimoCheck = $ora; $ultimaGpu = $ora
       $loggatoReq = $false; $fgRubato = 0; $spinte = 0; $gpuLetture.Clear()
