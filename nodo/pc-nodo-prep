@@ -213,7 +213,148 @@ try {{
     log(f"{name}: {out.strip().splitlines()[-1] if out.strip() else 'ok'}")
 
 
+NODO_DIR = os.path.dirname(os.path.abspath(__file__))
+STAMP = os.path.join(HOME, ".cache/winfleet/strumenti.stamp")
+RELEASE_REPO = "armonia/topics-app"
+MACHINE_ID = os.environ.get("PC_NODO_MACHINE_ID", "fbe3f00f-474e-4d05-8ae4-57ec1bafd759")
+MAC_DB = os.environ.get("PC_NODO_MAC_DB", os.path.join(HOME, "Projects/topics-app/data/topics.db"))
+
+
+def copy_scripts():
+    """Elenco e script vivono nel repo sul Mac: il PC ne ha sempre la copia di adesso."""
+    files = [os.path.join(NODO_DIR, f) for f in ("strumenti.txt", "strumenti-pc.ps1", "installa.ps1", "aggiorna-nodo.ps1")]
+    s = run(["scp", "-q", "-o", "BatchMode=yes", *files, f"{host_ssh()}:{PC_ROOT.replace(chr(92), '/')}/"], timeout=120)
+    if s.returncode != 0:
+        raise RuntimeError(f"copia degli script sul PC fallita: {s.stderr.strip()[-200:]}")
+
+
+def tools_stamp():
+    import hashlib
+    with open(os.path.join(NODO_DIR, "strumenti.txt"), "rb") as f:
+        h = hashlib.sha256(f.read()).hexdigest()[:16]
+    return f"{time.strftime('%Y-%m-%d')} {h}"
+
+
+def ensure_tools(force=False, verify_only=False):
+    """strumenti-pc.ps1 sul PC: al massimo una volta al giorno o quando l'elenco cambia.
+    Ritorna (exit, testo)."""
+    stamp = tools_stamp()
+    if not force and not verify_only and os.path.exists(STAMP) and open(STAMP).read().strip() == stamp:
+        return 0, "strumenti gia' controllati oggi"
+    flag = " -SoloVerifica" if verify_only else ""
+    code, out, err = ps(f"& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{PC_ROOT}\\strumenti-pc.ps1'{flag}; exit $LASTEXITCODE", timeout=900)
+    if code == 0 and not verify_only:
+        os.makedirs(os.path.dirname(STAMP), exist_ok=True)
+        with open(STAMP, "w") as f:
+            f.write(stamp)
+    return code, (out + err).strip()
+
+
+def latest_release():
+    """Ultima release non-draft e non-prerelease (releases/latest le esclude gia')."""
+    r = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/latest", "--jq", ".tag_name"], timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"gh releases/latest fallito: {r.stderr.strip()[-200:]}")
+    return r.stdout.strip().replace("tauri-v", "").lstrip("v")
+
+
+def installed_version():
+    code, out, _ = ps("(Get-Item \"$env:LOCALAPPDATA\\Topics\\app.exe\").VersionInfo.FileVersion", timeout=60)
+    return out.strip() if code == 0 else ""
+
+
+def vtuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
+
+
+def node_busy(exclude_task=None):
+    """Una card sta davvero lavorando sul PC? Il segno vero e' un claude/codex vivo sul PC;
+    la riga in_progress della board da sola non basta (una card in waiting non ha processi)."""
+    code, out, _ = ps("@(Get-Process claude,codex -ErrorAction SilentlyContinue).Count", timeout=60)
+    if code == 0 and out.strip() not in ("", "0"):
+        return f"{out.strip()} processi claude/codex vivi sul PC"
+    try:
+        import sqlite3
+        db = sqlite3.connect(f"file:{MAC_DB}?mode=ro", uri=True, timeout=5)
+        rows = db.execute("select id from tasks where machine_id=? and status='in_progress' and dispatch_state='working'", (MACHINE_ID,)).fetchall()
+        rows = [r[0] for r in rows if not (exclude_task and r[0].startswith(exclude_task))]
+        if rows:
+            return f"card in lavorazione sul PC: {', '.join(r[:8] for r in rows)}"
+    except Exception as e:
+        log(f"board non leggibile ({e}): mi fido dei processi")
+    return ""
+
+
+def ensure_version(exclude_task=None):
+    """Porta il nodo all'ultima release, solo a nodo fermo. Ritorna la versione letta dopo."""
+    want = latest_release()
+    have = installed_version()
+    if have and vtuple(have) >= vtuple(want):
+        return have
+    busy = node_busy(exclude_task)
+    if busy:
+        log(f"nodo {have} < {want} ma non aggiorno: {busy}")
+        return have
+    log(f"aggiorno il nodo {have} -> {want}")
+    arg = f"-NoProfile -ExecutionPolicy Bypass -File {PC_ROOT}\\aggiorna-nodo.ps1 -Version {want}"
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$u = "$env:COMPUTERNAME\\$env:USERNAME"
+$a = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument {ps_quote('//B //Nologo C:' + chr(92) + 'winfleet' + chr(92) + 'wf-run-hidden.vbs powershell.exe ' + arg)}
+$pr = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited
+$st = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+Register-ScheduledTask -TaskName 'topics-nodo-aggiorna' -Action $a -Principal $pr -Settings $st -Force | Out-Null
+Start-ScheduledTask -TaskName 'topics-nodo-aggiorna'
+'avviato'
+"""
+    code, out, err = ps(script, timeout=120)
+    if code != 0:
+        raise RuntimeError(f"task di aggiornamento non avviato: {(err or out).strip()[-300:]}")
+    deadline = time.time() + 240  # l'hook ha 300 s
+    while time.time() < deadline:
+        time.sleep(15)
+        have = installed_version()
+        if have and vtuple(have) >= vtuple(want):
+            break
+    _, tail, _ = ps(f"Get-Content '{PC_ROOT}\\installa.log' -Tail 3", timeout=60)
+    log(f"dopo l'aggiornamento: {have or '?'} ({tail.strip().replace(chr(10), ' | ')})")
+    return have
+
+
+def maintain(exclude_task=None):
+    """Strumenti e versione: un guasto qui non deve fermare la card, lo dice e basta."""
+    try:
+        copy_scripts()
+        code, txt = ensure_tools()
+        if code != 0:
+            log("strumenti: " + " ".join(l for l in txt.splitlines() if l.startswith("MANCA")))
+        ensure_version(exclude_task)
+    except Exception as e:
+        log(f"manutenzione saltata: {e}")
+
+
+def barra():
+    """Exit 0 se il PC ha tutti gli strumenti dell'elenco e l'ultima release, 1 col motivo."""
+    copy_scripts()
+    code, txt = ensure_tools(verify_only=True)
+    motivi = [l for l in txt.splitlines() if l.startswith("MANCA")]
+    if code != 0 and not motivi:
+        motivi = [f"strumenti-pc.ps1 exit {code}: {txt[-200:]}"]
+    want, have = latest_release(), installed_version()
+    if not have or vtuple(have) < vtuple(want):
+        motivi.append(f"Topics del nodo {have or 'assente'}, ultima release {want}")
+    if motivi:
+        print("KO: " + "; ".join(motivi))
+        sys.exit(1)
+    print(f"OK: strumenti completi, Topics {have} = ultima {want}")
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--barra":
+        return barra()
+    if len(sys.argv) > 1 and sys.argv[1] == "--manutenzione":
+        wake_and_wait()
+        return maintain()
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -231,6 +372,8 @@ def main():
         fail("pc-nodo-prep: payload senza origin_url o cwd")
     t0 = time.time()
     wake_and_wait()
+    maintain(exclude_task=payload.get("task_id"))
+    wake_and_wait()  # un aggiornamento riavvia il nodo: aspetto che il tunnel risponda di nuovo
     pc_dir, name = sync_repo(origin, repo)
     ensure_project(pc_dir, name)
     log(f"pronto in {time.time() - t0:.0f} s")

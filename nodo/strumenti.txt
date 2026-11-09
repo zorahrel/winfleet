@@ -1,0 +1,22 @@
+# Strumenti di una macchina di lavoro (nodo Topics sul PC, server offload Hetzner, macchina nuova).
+# Elenco unico: lo leggono strumenti-pc.ps1 (Windows, via pc-nodo-prep) e il cloud-init di
+# ~/.claude/setup/bin/offload-hetzner (Linux). Una riga per strumento, colonne separate da spazi:
+#   nome  comando-da-cercare  id-winget  pacchetto-apt  pacchetto-npm
+# "-" = non si installa da quella fonte. Su Windows vince winget, poi npm; su Linux apt, poi npm.
+# node e bun su Linux li mette offload-setup con la versione del Mac (stessi risultati dei test).
+git       git      Git.Git                   git               -
+gh        gh       GitHub.cli                gh                -
+jq        jq       jqlang.jq                 jq                -
+rg        rg       BurntSushi.ripgrep.MSVC   ripgrep           -
+sqlite3   sqlite3  SQLite.SQLite             sqlite3           -
+python    python   Python.Python.3.12        python3           -
+uv        uv       astral-sh.uv              -                 -
+node      node     OpenJS.NodeJS.LTS         -                 -
+bun       bun      Oven-sh.Bun               -                 -
+pnpm      pnpm     pnpm.pnpm                 -                 pnpm
+claude    claude   -                         -                 @anthropic-ai/claude-code
+codex     codex    -                         -                 @openai/codex
+# rsync non esiste su winget: sul PC i file arrivano con scp e git bundle, serve solo sui Linux.
+rsync     rsync    -                         rsync             -
+unzip     unzip    -                         unzip             -
+make      make     -                         build-essential   -
