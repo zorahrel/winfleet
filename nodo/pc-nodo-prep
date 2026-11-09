@@ -118,6 +118,19 @@ def default_branch(repo):
 
 
 def sync_repo(origin, repo):
+    # Con 4 posti sul PC piu' card partono nello stesso secondo: senza lucchetto scrivevano tutte
+    # lo stesso dl\<repo>.bundle e facevano fetch insieme sullo stesso repo, e falliva ognuna
+    # («fetch dal bundle fallito», 4 card alle 23:39 del 09/11). Una alla volta per repo; chi
+    # arriva dopo trova il PC gia' allineato e salta il bundle.
+    import fcntl
+    os.makedirs(os.path.expanduser("~/.cache/winfleet"), exist_ok=True)
+    lock_path = os.path.expanduser(f"~/.cache/winfleet/sync-{re.sub(r'[^A-Za-z0-9._-]', '_', origin)}.lock")
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _sync_repo(origin, repo)
+
+
+def _sync_repo(origin, repo):
     key = repo_key(origin)
     if not key:
         fail(f"pc-nodo-prep: origin non riconosciuto: {origin}")
@@ -146,7 +159,7 @@ def sync_repo(origin, repo):
             b = run(cmd, timeout=300)
             if b.returncode != 0:
                 fail(f"pc-nodo-prep: git bundle fallito: {b.stderr.strip()[-300:]}")
-            remote_bundle = PC_ROOT + "\\dl\\" + name + ".bundle"
+            remote_bundle = PC_ROOT + "\\dl\\" + f"{name}-{os.getpid()}.bundle"
             s = run(["scp", "-q", "-o", "BatchMode=yes", bundle, f"{host_ssh()}:{remote_bundle.replace(chr(92), '/')}"], timeout=600)
             if s.returncode != 0:
                 fail(f"pc-nodo-prep: copia del bundle sul PC fallita: {s.stderr.strip()[-300:]}")
