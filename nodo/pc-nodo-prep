@@ -243,8 +243,12 @@ def copy_scripts():
 
 def tools_stamp():
     import hashlib
-    with open(os.path.join(NODO_DIR, "strumenti.txt"), "rb") as f:
-        h = hashlib.sha256(f.read()).hexdigest()[:16]
+    # anche lo script: una cura nuova (es. il login git degli agenti) gira subito
+    d = hashlib.sha256()
+    for name in ("strumenti.txt", "strumenti-pc.ps1"):
+        with open(os.path.join(NODO_DIR, name), "rb") as f:
+            d.update(f.read())
+    h = d.hexdigest()[:16]
     return f"{time.strftime('%Y-%m-%d')} {h}"
 
 

@@ -35,4 +35,39 @@ foreach ($riga in Get-Content $Elenco) {
   "MANCA ${nome}: comando '$cmd' non trovato" + $(if ($SoloVerifica) { "" } else { " neanche dopo l'installazione" })
   $manca++
 }
+# Login di git per gli agenti. Il gitconfig di sistema di Git for Windows usa
+# l'helper "manager" (GCM su wincredman), che dal processo dell'agente non legge
+# ne' salva: "Unable to persist credentials", e ogni fetch fallisce (09/11, card
+# vuote rimandate al Mac). gh e' gia' loggato: diventa lui l'helper per github.com.
+if (-not $SoloVerifica -and (Presente "gh")) { gh auth setup-git --hostname github.com *> $null }
+
+# Verifica con l'ambiente ripulito dell'agente (agent-env.ts di topics-app):
+# solo queste variabili, prompt spenti.
+$keep = 'PATH','APPDATA','LOCALAPPDATA','USERPROFILE','HOMEDRIVE','HOMEPATH','SystemRoot','SystemDrive','windir','ComSpec','PATHEXT','TEMP','TMP','ProgramData','ProgramFiles','ProgramFiles(x86)','ProgramW6432','CommonProgramFiles','USERNAME','USERDOMAIN','COMPUTERNAME','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','OS'
+function ComeAgente($exe, $argomenti) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $exe; $psi.Arguments = $argomenti
+  $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  $psi.EnvironmentVariables.Clear()
+  foreach ($k in $keep) { $v = [Environment]::GetEnvironmentVariable($k); if ($v) { $psi.EnvironmentVariables[$k] = $v } }
+  $psi.EnvironmentVariables['HOME'] = $env:USERPROFILE
+  $psi.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+  $psi.EnvironmentVariables['GCM_INTERACTIVE'] = 'Never'
+  $p = [Diagnostics.Process]::Start($psi)
+  $out = $p.StandardOutput.ReadToEnd() + $p.StandardError.ReadToEnd()
+  if (-not $p.WaitForExit(60000)) { $p.Kill(); return @(124, "timeout") }
+  return @($p.ExitCode, $out)
+}
+$gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
+$git = (Get-Command git -ErrorAction SilentlyContinue).Source
+if ($gh -and $git) {
+  $r = ComeAgente $gh "auth status"
+  if ($r[0] -ne 0) { "MANCA gh-login-agente: gh auth status rc=$($r[0])"; $manca++ } else { "OK gh-login-agente" }
+  $repo = Get-ChildItem (Join-Path (Split-Path $Elenco) "repos") -Directory -ErrorAction SilentlyContinue |
+    Get-ChildItem -Directory | Where-Object { Test-Path (Join-Path $_.FullName ".git") } | Select-Object -First 1
+  if ($repo) {
+    $r = ComeAgente $git "-C `"$($repo.FullName)`" ls-remote origin HEAD"
+    if ($r[0] -ne 0) { "MANCA git-login-agente: git ls-remote origin in $($repo.Name) rc=$($r[0]): $(($r[1] -split "`n")[0])"; $manca++ } else { "OK git-login-agente ($($repo.Name))" }
+  }
+}
 if ($manca) { exit 1 } else { exit 0 }
