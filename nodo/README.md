@@ -1,6 +1,6 @@
 # Accendere il PC come nodo di Topics
 
-Una pagina, sette passi. Gli script sono in questa cartella.
+Una pagina, otto passi. Gli script sono in questa cartella.
 
 1. **PC: installare e registrare il nodo.**
    Prerequisito: il PC deve avere l'identità git globale (`git config --global user.name` e `git config --global user.email`), altrimenti le card del nodo non possono committare e la consegna esce vuota.
@@ -22,13 +22,17 @@ Una pagina, sette passi. Gli script sono in questa cartella.
    Scrivilo in `E:\topics-nodo\modello.env` (`ANTHROPIC_BASE_URL=http://127.0.0.1:3394`, `ANTHROPIC_AUTH_TOKEN=...`) e riavvia il server del nodo.
    Il token non va mai in un file del repo.
 
-5. **Hook.**
+5. **Strumenti e versione (da soli).**
+   `strumenti.txt` è l'elenco unico degli strumenti di una macchina di lavoro: lo legge `strumenti-pc.ps1` (winget/npm sul PC) e il cloud-init di `~/.claude/setup/bin/offload-hetzner` (apt/npm). `pc-nodo-prep` prima di ogni card installa ciò che manca (una volta al giorno o a elenco cambiato) e, a nodo senza claude/codex vivi, aggiorna Topics all'ultima release col task Interactive `topics-nodo-aggiorna` (`aggiorna-nodo.ps1`).
+   Barra: `python3 pc-nodo-prep --barra` (exit 0 = strumenti completi e versione ultima). A mano: `python3 pc-nodo-prep --manutenzione`.
+
+6. **Hook.**
    `~/.topics/hooks.json`: evento `node-run` → `python3 <winfleet>/nodo/pc-nodo-prep`, `timeoutMs` 300000.
    Per i nodi che non sono il PC (Cloud Claude) lo script esce 0.
 
-6. **Board.**
+7. **Board.**
    `PATCH /api/boards/<boardId>/settings {"dispatchMachineId":"<id>"}`. Vale solo per le card nuove.
    Mettilo solo su board git il cui lavoro sta sul ramo di default: il nodo parte sempre da origin/HEAD.
 
-7. **Sonno.**
+8. **Sonno.**
    `host/wf-autosleep.ps1` conta come lavoro le card in corso sul nodo, quindi il PC non va a dormire mentre ne gira una.
