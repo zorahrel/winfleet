@@ -270,7 +270,8 @@ def vtuple(v):
 def node_busy(exclude_task=None):
     """Una card sta davvero lavorando sul PC? Il segno vero e' un claude/codex vivo sul PC;
     la riga in_progress della board da sola non basta (una card in waiting non ha processi)."""
-    code, out, _ = ps("@(Get-Process claude,codex -ErrorAction SilentlyContinue).Count", timeout=60)
+    # il CLI claude gira come "<versione>.exe" (es. 2.1.310) da ...\claude\versions: Get-Process claude non lo vede
+    code, out, _ = ps("@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -match '\\\\claude\\\\versions\\\\|codex' -or $_.Name -match '^(claude|codex)' }).Count", timeout=60)
     if code == 0 and out.strip() not in ("", "0"):
         return f"{out.strip()} processi claude/codex vivi sul PC"
     try:
