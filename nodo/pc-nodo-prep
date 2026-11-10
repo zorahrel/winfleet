@@ -235,7 +235,7 @@ MAC_DB = os.environ.get("PC_NODO_MAC_DB", os.path.join(HOME, "Projects/topics-ap
 
 def copy_scripts():
     """Elenco e script vivono nel repo sul Mac: il PC ne ha sempre la copia di adesso."""
-    files = [os.path.join(NODO_DIR, f) for f in ("strumenti.txt", "strumenti-pc.ps1", "installa.ps1", "aggiorna-nodo.ps1", "card-jail.ps1")]
+    files = [os.path.join(NODO_DIR, f) for f in ("strumenti.txt", "strumenti-pc.ps1", "installa.ps1", "aggiorna-nodo.ps1", "card-jail.ps1", "riparte-da-solo.ps1")]
     s = run(["scp", "-q", "-o", "BatchMode=yes", *files, f"{host_ssh()}:{PC_ROOT.replace(chr(92), '/')}/"], timeout=120)
     if s.returncode != 0:
         raise RuntimeError(f"copia degli script sul PC fallita: {s.stderr.strip()[-200:]}")
@@ -397,6 +397,10 @@ def barra():
     code, out, _ = ps("@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'card-jail\\.ps1' -and $_.CommandLine -notmatch '-Test' }).Count", timeout=60)
     if out.strip() in ("", "0"):
         motivi.append("gabbia delle card (card-jail.ps1) non attiva")
+    # il PC deve tornare raggiungibile da solo dopo un riavvio (10/11: fermo all'accesso)
+    code, out, _ = ps(f"& '{PC_ROOT}\\riparte-da-solo.ps1'; exit $LASTEXITCODE", timeout=90)
+    if code != 0:
+        motivi.append("non riparte da solo: " + ", ".join(l[4:] for l in out.splitlines() if l.startswith("KO")))
     want, have = latest_release(), installed_version()
     if not have or vtuple(have) < vtuple(want):
         motivi.append(f"Topics del nodo {have or 'assente'}, ultima release {want}")
