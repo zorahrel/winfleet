@@ -7,8 +7,7 @@
 #         lo e' gia' quello di ssh): sshd e Tailscale automatici e avviati,
 #         Tailscale unattended (resta collegato anche senza nessuno loggato).
 # senza   solo il controllo: stampa OK/KO per voce, exit 1 se una non regge al boot.
-# L'accesso automatico NON lo scrive: vuole la password di Attilio, quindi qui si
-# misura soltanto, e se manca e' una riga per lui.
+# L'accesso automatico non serve: nodo e gabbia partono al boot come S4U.
 param([switch]$Cura)
 $ko = @()
 function Check($nome, $ok, $perche) { if ($ok) { "OK  $nome" } else { "KO  ${nome}: $perche"; $script:ko += $nome } }
@@ -41,12 +40,11 @@ if ($Cura -and $fw) { Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Profile
 $fw = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 Check 'firewall 22 su ogni profilo' ($fw -and $fw.Enabled -eq 'True' -and "$($fw.Profile)" -eq 'Any') "regola $(if ($fw) { "$($fw.Profile)/$($fw.Enabled)" } else { 'assente' })"
 
-# accesso automatico: senza, wf-agent, gabbia e topics-nodo (task all'accesso) non partono
-$wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-Check 'accesso automatico' ($wl.AutoAdminLogon -eq '1' -and $wl.DefaultUserName) "AutoAdminLogon=$($wl.AutoAdminLogon) (serve la password di Attilio: Sysinternals Autologon)"
-
+# nodo al boot senza accesso: topics-nodo e topics-card-jail girano S4U all'avvio, cosi'
+# l'accesso automatico (e la password di Attilio) non serve piu'.
 foreach ($t in 'topics-nodo', 'topics-card-jail') {
   $st = Get-ScheduledTask $t -ErrorAction SilentlyContinue
-  Check "task $t all'accesso" ($st -and ($st.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' })) 'manca o senza trigger AtLogOn'
+  $boot = $st -and ($st.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' })
+  Check "nodo parte al boot senza accesso ($t)" ($boot -and $st.Principal.LogonType -eq 'S4U') "trigger/LogonType: $(if ($st) { "$($st.Triggers.CimClass.CimClassName) $($st.Principal.LogonType)" } else { 'task assente' }) (registra-nodo.ps1 / registra-card-jail.ps1)"
 }
 if ($ko.Count) { exit 1 }
