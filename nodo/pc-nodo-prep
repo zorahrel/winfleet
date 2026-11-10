@@ -86,7 +86,7 @@ def repo_key(origin):
 def wake_and_wait():
     if os.path.exists(WINWAKE):
         try:
-            r = run([WINWAKE], timeout=150)
+            r = run([WINWAKE], timeout=180)
         except subprocess.TimeoutExpired:
             fail("pc-nodo-prep: il PC non si e' svegliato in 150 s (winwake)")
         if r.returncode != 0:
