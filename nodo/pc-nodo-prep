@@ -235,7 +235,7 @@ MAC_DB = os.environ.get("PC_NODO_MAC_DB", os.path.join(HOME, "Projects/topics-ap
 
 def copy_scripts():
     """Elenco e script vivono nel repo sul Mac: il PC ne ha sempre la copia di adesso."""
-    files = [os.path.join(NODO_DIR, f) for f in ("strumenti.txt", "strumenti-pc.ps1", "installa.ps1", "aggiorna-nodo.ps1")]
+    files = [os.path.join(NODO_DIR, f) for f in ("strumenti.txt", "strumenti-pc.ps1", "installa.ps1", "aggiorna-nodo.ps1", "card-jail.ps1")]
     s = run(["scp", "-q", "-o", "BatchMode=yes", *files, f"{host_ssh()}:{PC_ROOT.replace(chr(92), '/')}/"], timeout=120)
     if s.returncode != 0:
         raise RuntimeError(f"copia degli script sul PC fallita: {s.stderr.strip()[-200:]}")
@@ -339,8 +339,44 @@ Start-ScheduledTask -TaskName 'topics-nodo-aggiorna'
     return have
 
 
+REAP_PS = r"""
+# Orfani delle card finite: find/bash/sh/node il cui padre non c'e' piu', nati da oltre 10 minuti.
+# Solo orfani: una bash aperta a mano da chi usa il PC ha ancora il suo terminale come padre.
+$all = @(Get-CimInstance Win32_Process); $pids = @{}; foreach ($p in $all) { $pids[[int]$p.ProcessId] = $p }
+$limite = (Get-Date).AddMinutes(-10)
+foreach ($p in $all) {
+  if ($p.Name -notmatch '^(find|bash|sh|node|xargs|grep)\.exe$') { continue }
+  $padre = $pids[[int]$p.ParentProcessId]
+  if ($padre -and $padre.CreationDate -le $p.CreationDate) { continue }
+  if ($p.CreationDate -gt $limite) { continue }
+  Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+  $r = "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) chiuso orfano $($p.Name) pid $($p.ProcessId) handle $($p.HandleCount): $($p.CommandLine)"
+  $r | Add-Content 'E:\topics-nodo\logs\orfani.log'; $r
+}
+# la gabbia residente deve esserci
+if (-not (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'card-jail\.ps1' -and $_.CommandLine -notmatch '-Test' })) {
+  Start-ScheduledTask -TaskName 'topics-card-jail' -ErrorAction SilentlyContinue; 'gabbia riavviata'
+}
+"""
+
+
+def reap_orphans():
+    """Chiude i processi rimasti da card finite e dice cosa ha chiuso. Il 10/11 un find
+    orfano ha tenuto 9,66 milioni di handle e portato il pool paginato a 30 GB."""
+    code, out, err = ps(REAP_PS, timeout=90)
+    for line in out.splitlines():
+        if line.strip():
+            log(line.strip())
+    if code != 0:
+        log(f"pulizia orfani fallita: {(err or out).strip()[-200:]}")
+
+
 def maintain(exclude_task=None):
     """Strumenti e versione: un guasto qui non deve fermare la card, lo dice e basta."""
+    try:
+        reap_orphans()
+    except Exception as e:
+        log(f"pulizia orfani saltata: {e}")
     try:
         copy_scripts()
         code, txt = ensure_tools()
@@ -358,6 +394,9 @@ def barra():
     motivi = [l for l in txt.splitlines() if l.startswith("MANCA")]
     if code != 0 and not motivi:
         motivi = [f"strumenti-pc.ps1 exit {code}: {txt[-200:]}"]
+    code, out, _ = ps("@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'card-jail\\.ps1' -and $_.CommandLine -notmatch '-Test' }).Count", timeout=60)
+    if out.strip() in ("", "0"):
+        motivi.append("gabbia delle card (card-jail.ps1) non attiva")
     want, have = latest_release(), installed_version()
     if not have or vtuple(have) < vtuple(want):
         motivi.append(f"Topics del nodo {have or 'assente'}, ultima release {want}")
