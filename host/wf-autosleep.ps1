@@ -192,9 +192,11 @@ Start-Sleep -Seconds 5
 $g2 = Gpu
 $ge2 = GpuEng
 $r2 = CpuRaw
-$top = Get-Process | Where-Object { $_.Id -ne $PID -and $_.Name -ne 'Idle' -and $t0.ContainsKey($_.Id) -and $_.TotalProcessorTime } |
-  ForEach-Object { [pscustomobject]@{ Name = $_.Name; Core = ($_.TotalProcessorTime.TotalSeconds - $t0[$_.Id]) / 5 } } |
-  Sort-Object Core -Descending | Select-Object -First 1
+# Tutti con la loro memoria (working set, come il Task Manager): il primo decide, i primi 8 vanno all'hub
+$procAll = @(Get-Process | Where-Object { $_.Id -ne $PID -and $_.Name -ne 'Idle' -and $t0.ContainsKey($_.Id) -and $_.TotalProcessorTime } |
+  ForEach-Object { [pscustomobject]@{ Name = $_.Name; Core = ($_.TotalProcessorTime.TotalSeconds - $t0[$_.Id]) / 5; Mem = $_.WorkingSet64 } } |
+  Sort-Object @{ Expression = 'Core'; Descending = $true }, @{ Expression = 'Mem'; Descending = $true })
+$top = $procAll | Select-Object -First 1
 # Orfani: un bun o node la cui catena di padri finisce in un processo morto, senza sshd ne' altri tutori, che gira a vuoto.
 # Il 31/10 cinque bun di una suite sono sopravvissuti alla ssh caduta: 36 ore a 4,7 core, e il PC non dormiva.
 # Servono tutte: acceso da $OrfaniMinuti minuti, oltre mezzo core adesso e in media su tutta la vita, cosi' un
@@ -289,6 +291,11 @@ try {
 $uo = Get-Content "$dir\orfani.log" -Tail 1 -EA SilentlyContinue
 if ($uo -match '^(\S+ (\d\d:\d\d)) chiuso radice \d+ (\S+)' -and ((Get-Date) - [datetime]$Matches[1]).TotalHours -lt 24 -and $misure) {
   $misure += "; ultimo orfano chiuso alle $($Matches[2]): $($Matches[3])"
+}
+# I processi che pesano, per la tray (16/11: «sottomenu come il MacBook»): sempre per ultimi, l'hub legge fino a fine riga.
+# cpu in percento di un core sui 5 s di sopra, memoria in MB: solo interi.
+if ($misure -and $procAll.Count) {
+  $misure += "; processi: " + (($procAll | Select-Object -First 8 | ForEach-Object { "{0} {1}% {2}MB" -f ($_.Name -replace '\s+/\s+', '-'), [int][math]::Round(100 * $_.Core), [int][math]::Round($_.Mem / 1MB) }) -join ' / ')
 }
 
 # powercfg /requests e' localizzato, ma l'ordine delle sezioni no: DISPLAY, SYSTEM, AWAYMODE,
