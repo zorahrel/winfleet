@@ -229,6 +229,21 @@ try {
     Add-Content "$dir\orfani.log" ("{0:yyyy-MM-dd HH:mm} chiuso radice {1} {2}" -f (Get-Date), $r, $radici[$r])
   }
 } catch { Log "orfani non controllati: $($_.Exception.Message)" }
+# sshd -R senza figli: il 21/11 27 processi di preautenticazione, nati in 12 minuti da client caduti a meta'
+# handshake (sonde ssh con ConnectTimeout corto su un PC sotto carico), giravano a vuoto a 1 core ciascuno e
+# rallentavano tutto. Una connessione sana ha subito il suo sshd -z figlio, quindi un -R senza figli da piu' di
+# 10 minuti non serve a nessuno. Il servizio sshd (senza -R) non si tocca.
+try {
+  $ssh = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'sshd.exe' })
+  foreach ($c in $ssh) {
+    if ($c.CommandLine -notmatch ' -R\s*$') { continue }
+    if (((Get-Date) - $c.CreationDate).TotalMinutes -lt 10) { continue }
+    if (@($ssh | Where-Object { $_.ParentProcessId -eq $c.ProcessId }).Count -gt 0) { continue }
+    if ($Dry) { Add-Content "$dir\orfani.log" ("{0:yyyy-MM-dd HH:mm} DRY sshd -R {1}" -f (Get-Date), $c.ProcessId); continue }
+    & taskkill.exe /F /PID $c.ProcessId 2>&1 | Out-Null
+    Add-Content "$dir\orfani.log" ("{0:yyyy-MM-dd HH:mm} chiuso sshd -R {1}" -f (Get-Date), $c.ProcessId)
+  }
+} catch { Log "sshd orfani non controllati: $($_.Exception.Message)" }
 if ($top -and $top.Core -ge 0.5) { $why += ("processo {0} a {1:N1} core" -f $top.Name, $top.Core) }
 $cpu = $null
 if ($r1 -and $r2 -and $r2.Timestamp_Sys100NS -gt $r1.Timestamp_Sys100NS) {
