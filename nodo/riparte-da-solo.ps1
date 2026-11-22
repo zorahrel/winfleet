@@ -1,7 +1,7 @@
 # Il PC deve tornare raggiungibile da solo dopo un riavvio, senza mani sopra.
 # Perche': il 10/11 un riavvio (tampone per il pool paginato) l'ha lasciato fermo
 # all'accesso, senza sshd ne' Tailscale: 8 card bloccate e un gesto fisico chiesto
-# ad Attilio.
+# all'utente.
 #
 # -Cura   mette a posto cio' che si puo' mettere da qui (serve PowerShell elevato,
 #         lo e' gia' quello di ssh): sshd e Tailscale automatici e avviati,
@@ -41,7 +41,7 @@ $fw = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyCon
 Check 'firewall 22 su ogni profilo' ($fw -and $fw.Enabled -eq 'True' -and "$($fw.Profile)" -eq 'Any') "regola $(if ($fw) { "$($fw.Profile)/$($fw.Enabled)" } else { 'assente' })"
 
 # nodo al boot senza accesso: topics-nodo e topics-card-jail girano S4U all'avvio, cosi'
-# l'accesso automatico (e la password di Attilio) non serve piu'.
+# l'accesso automatico (e la password dell'utente) non serve piu'.
 foreach ($t in 'topics-nodo', 'topics-card-jail') {
   $st = Get-ScheduledTask $t -ErrorAction SilentlyContinue
   $boot = $st -and ($st.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' })

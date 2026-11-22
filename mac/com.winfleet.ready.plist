@@ -6,7 +6,7 @@
     <string>com.winfleet.ready</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/zorahrel/Projects/winfleet/bin/winfleet</string>
+        <string>/Users/USER/Projects/winfleet/bin/winfleet</string>
         <string>ready</string>
     </array>
     <!-- Non al login: al login il PC di la' puo' essere spento e la rete non
@@ -34,8 +34,8 @@
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/zorahrel/.config/winfleet/ready.log</string>
+    <string>/Users/USER/.config/winfleet/ready.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/zorahrel/.config/winfleet/ready.log</string>
+    <string>/Users/USER/.config/winfleet/ready.log</string>
 </dict>
 </plist>

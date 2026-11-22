@@ -4,7 +4,7 @@
 #   on      = toglie il flag, riattiva il task e lo avvia
 #   status  = stato di task, guardiano, Edge e flag
 # Da ssh:  powershell -NoProfile -ExecutionPolicy Bypass -File C:\winfleet\wf-schermo-ctl.ps1 off
-# Si chiude solo l'Edge col profilo C:\winfleet\schermo\edge-profilo: quello di Attilio non si tocca.
+# Si chiude solo l'Edge col profilo C:\winfleet\schermo\edge-profilo: quello dell'utente non si tocca.
 param([Parameter(Mandatory = $true)][ValidateSet('on', 'off', 'status')][string]$Azione)
 $flag = 'C:\winfleet\schermo.off'
 

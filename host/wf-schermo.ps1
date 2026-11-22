@@ -4,7 +4,7 @@
 # powershell.exe nudo alloca una console visibile; il task e' clonato da quello di wf-idleguard
 # da wf-schermo-install.ps1, quindi stesso utente, stesso trigger al logon).
 #
-# Quando compare: input della console fermo da 2 minuti (120 s, Attilio 30/10) (GetLastInputInfo, lo stesso dato di
+# Quando compare: input della console fermo da 2 minuti (120 s, dal 30/10) (GetLastInputInfo, lo stesso dato di
 # wf-idleguard) E nessuno stream E nessuna app a schermo intero in primo piano.
 #  - L'input di uno stream (Sunshine/Parsec) e' INIETTATO e non resetta il timer: per questo lo
 #    stream si cerca a parte, con la stessa regola di wf-autosleep (connessione TCP stabilita sulle
@@ -15,7 +15,7 @@
 # Quando sparisce: al primo input vero (si guarda dwTime di GetLastInputInfo, che cambia a ogni
 # tocco; si controlla ogni mezzo secondo), per stream, per un'altra finestra che prende il primo
 # piano (poi 5 minuti di pausa), o dopo un risveglio dal sonno. Si chiudono SOLO i processi Edge
-# col profilo C:\winfleet\schermo\edge-profilo: l'Edge di Attilio non si tocca.
+# col profilo C:\winfleet\schermo\edge-profilo: l'Edge dell'utente non si tocca.
 #
 # Non deve tenere sveglio il PC: la pagina non chiede veglia (powercfg /requests lo si logga una
 # volta per ogni comparsa) e scende da sola di fps. Qui sopra c'e' la seconda cintura: con lo schermo
@@ -117,7 +117,7 @@ function Edge-Exe {
 }
 
 # Chiude l'albero del processo che abbiamo lanciato e poi tutto cio' che ha il nostro profilo.
-# Mai "taskkill /im msedge.exe": spegnerebbe anche l'Edge di Attilio.
+# Mai "taskkill /im msedge.exe": spegnerebbe anche l'Edge dell'utente.
 $script:edge = $null
 function Edge-Chiudi {
   if ($script:edge) {

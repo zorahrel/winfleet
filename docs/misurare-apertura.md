@@ -55,7 +55,7 @@ Ognuna di queste e' stata misurata, non supposta:
 - **Non e' quello che passiamo a Moonlight.** Nome mDNS o indirizzo IP diretto:
   42 e 44 secondi. L'attesa non riguarda l'host a cui ci si connette.
 - **Non e' mDNS del Mac.** `getaddrinfo("PCdiCasa.local")` risponde in 8 ms e
-  restituisce l'IPv4 giusto. `dns-sd` mostra che l'host annuncia solo 192.168.1.50.
+  restituisce l'IPv4 giusto. `dns-sd` mostra che l'host annuncia solo 192.168.1.42.
 - **Non e' un host "fantasma" nelle preferenze.** Ce n'era uno senza nome ne'
   indirizzo, rimosso: nessun cambiamento.
 - **Non e' `manualaddress`.** Toglierlo peggiora (111 secondi). Ripristinato.
@@ -74,7 +74,7 @@ Gli IPv6 dell'host non rispondono:
 ```
 fd00::1122:3344:5566:7788   MORTO (2019ms)
 fe80::aabb:ccdd:eeff:0011   MORTO (2031ms)
-192.168.1.50                 ok    (42ms)
+192.168.1.42                 ok    (42ms)
 ```
 
 E `getaddrinfo` restituisce i due IPv6 PRIMA dell'IPv4.
