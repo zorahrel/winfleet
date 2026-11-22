@@ -35,20 +35,29 @@ Say "installer: $((Get-Item $file).Length) byte"
 # Il guscio si rilancia da solo dopo un aggiornamento, e il watchdog (task
 # pianificato) rilancia il server: senza fermarli prima, topics-server.exe si
 # riapre tra lo stop e la scrittura di NSIS e l'installer esce 5 (accesso negato).
-$serverExe = Join-Path $env:LOCALAPPDATA "Topics\topics-server.exe"
-$serverBefore = if (Test-Path $serverExe) { (Get-FileHash $serverExe -Algorithm SHA256).Hash } else { "" }
+# Sidecar del bundle (externalBin in tauri.conf.json): tutti vanno chiusi e tutti sostituiti.
+$sidecars = @("topics-server", "pty-bridge", "webrtc-bridge")
+function Get-Hashes {
+  $h = @{}
+  foreach ($s in $sidecars) {
+    $f = Join-Path $env:LOCALAPPDATA "Topics\$s.exe"
+    $h[$s] = if (Test-Path $f) { (Get-FileHash $f -Algorithm SHA256).Hash } else { "" }
+  }
+  return $h
+}
+$hashBefore = Get-Hashes
 $tasks = @("topics-watchdog", "topics-nodo")
 foreach ($t in $tasks) { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue }
 function Stop-Topics {
   # Anche i ponti `topics-server.exe --topics-mcp-bridge`: tengono il file aperto.
   $end = (Get-Date).AddSeconds(60)
   do {
-    $procs = @(Get-Process app, topics-server -ErrorAction SilentlyContinue)
+    $procs = @(Get-Process app, topics-server, pty-bridge, webrtc-bridge -ErrorAction SilentlyContinue)
     if ($procs.Count -eq 0) { return $true }
     $procs | Stop-Process -Force -ErrorAction SilentlyContinue
     $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
   } while ((Get-Date) -lt $end)
-  return (@(Get-Process app, topics-server -ErrorAction SilentlyContinue).Count -eq 0)
+  return (@(Get-Process app, topics-server, pty-bridge, webrtc-bridge -ErrorAction SilentlyContinue).Count -eq 0)
 }
 if (-not (Stop-Topics)) { Say "KO processi ancora vivi dopo 60 s" }
 $p = Start-Process -FilePath $file -ArgumentList "/S" -PassThru -Wait
@@ -69,15 +78,12 @@ $idx = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Topics") -Recurse -Filter ind
 Say "public: $($idx.DirectoryName)"
 # Il watchdog rilancia il nodo; topics-nodo lo riavvia aggiorna-nodo.ps1.
 Start-ScheduledTask -TaskName "topics-watchdog" -ErrorAction SilentlyContinue
-$serverAfter = if (Test-Path $serverExe) { (Get-FileHash $serverExe -Algorithm SHA256).Hash } else { "" }
-$serverOk = $serverAfter -and ($serverAfter -ne $serverBefore -or -not $serverBefore)
-Say "server: $(if ($serverOk) { 'sostituito' } else { 'NON sostituito' })"
-# Verdetto: contano i byte arrivati (server sostituito + versione giusta), non l'exit.
-# L'exit 5 dell'installer viene dall'hook POSTINSTALL (installer-hooks.nsh): riapre i
-# sidecar in scrittura e, se uno e' bloccato, imposta 5. Dopo la copia il guscio
-# rilanciato dal template riapre topics-server/pty-bridge, quindi il blocco e' dopo
-# la copia e non la prova di un file saltato. Un file davvero saltato lo prende il
-# confronto dell'hash del server qui sotto.
-if ($p.ExitCode -ne 0) { Say "nota: installer exit $($p.ExitCode) ma i file sono arrivati" }
-if ($serverOk -and $after -like "$Version*") { Say "OK"; exit 0 }
+$hashAfter = Get-Hashes
+$stale = @($sidecars | Where-Object { -not $hashAfter[$_] -or $hashAfter[$_] -eq $hashBefore[$_] })
+# Su una versione gia' installata gli hash restano uguali: e' informativo, non decide.
+Say "sidecar non cambiati: $(if ($stale.Count) { $stale -join ', ' } else { 'nessuno' })"
+# Verdetto: exit 0 dell'installer. L'exit 5 viene dall'hook POSTINSTALL
+# (installer-hooks.nsh) e significa che un sidecar e' ancora bloccato e NON e' stato
+# sostituito (misurato il 22/11: pty-bridge.exe vivo nella sessione 0): aggiornamento a meta', KO.
+if ($p.ExitCode -eq 0 -and $after -like "$Version*") { Say "OK"; exit 0 }
 Say "KO exit $($p.ExitCode), voluta $Version, trovata '$after'"; exit 1
