@@ -30,6 +30,8 @@ if (-not (Test-Path $file)) {
 }
 Say "installer: $((Get-Item $file).Length) byte"
 
+# Nota: i processi della sessione S4U (server del nodo, ponti MCP) da qui non si
+# chiudono: li ferma chi lancia questo task via ssh (pc-nodo-prep, ensure_version).
 # Il guscio si rilancia da solo dopo un aggiornamento, e il watchdog (task
 # pianificato) rilancia il server: senza fermarli prima, topics-server.exe si
 # riapre tra lo stop e la scrittura di NSIS e l'installer esce 5 (accesso negato).

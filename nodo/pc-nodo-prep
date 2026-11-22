@@ -317,6 +317,19 @@ def ensure_version(exclude_task=None):
     arg = f"-NoProfile -ExecutionPolicy Bypass -File {PC_ROOT}\\aggiorna-nodo.ps1 -Version {want}"
     script = f"""
 $ErrorActionPreference = 'Stop'
+# Il server e i ponti MCP girano nella sessione 0 (task S4U topics-nodo): dal task
+# Interactive dell'aggiornamento Stop-Process non li raggiunge, da ssh si. Quindi
+# si fermano QUI, con il watchdog che altrimenti li rilancia, prima di far partire l'installer.
+foreach ($t in 'topics-watchdog', 'topics-nodo') {{ Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue }}
+$end = (Get-Date).AddSeconds(60)
+do {{
+  $left = @(Get-Process app, topics-server -ErrorAction SilentlyContinue)
+  if ($left.Count -eq 0) {{ break }}
+  $left | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep 2
+}} while ((Get-Date) -lt $end)
+$left = @(Get-Process app, topics-server -ErrorAction SilentlyContinue)
+if ($left.Count -gt 0) {{ throw ('processi ancora vivi: ' + (($left | ForEach-Object {{ $_.Id }}) -join ',')) }}
 $u = "$env:COMPUTERNAME\\$env:USERNAME"
 $a = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument {ps_quote('//B //Nologo C:' + chr(92) + 'winfleet' + chr(92) + 'wf-run-hidden.vbs powershell.exe ' + arg)}
 $pr = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited
