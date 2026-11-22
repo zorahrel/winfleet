@@ -321,6 +321,9 @@ $ErrorActionPreference = 'Stop'
 # Interactive dell'aggiornamento Stop-Process non li raggiunge, da ssh si. Quindi
 # si fermano QUI, con il watchdog che altrimenti li rilancia, prima di far partire l'installer.
 foreach ($t in 'topics-watchdog', 'topics-nodo') {{ Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue }}
+# avvia-nodo.ps1 e il watchdog sono cicli while($true) che sopravvivono allo stop del task
+# e rilanciano il server: si chiudono per primi, poi app e topics-server.
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {{ $_.CommandLine -match 'avvia-nodo\\.ps1|win-node-watchdog\\.ps1' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
 $end = (Get-Date).AddSeconds(60)
 do {{
   $left = @(Get-Process app, topics-server -ErrorAction SilentlyContinue)

@@ -72,5 +72,12 @@ Start-ScheduledTask -TaskName "topics-watchdog" -ErrorAction SilentlyContinue
 $serverAfter = if (Test-Path $serverExe) { (Get-FileHash $serverExe -Algorithm SHA256).Hash } else { "" }
 $serverOk = $serverAfter -and ($serverAfter -ne $serverBefore -or -not $serverBefore)
 Say "server: $(if ($serverOk) { 'sostituito' } else { 'NON sostituito' })"
-if ($p.ExitCode -eq 0 -and $serverOk -and $after -like "$Version*") { Say "OK"; exit 0 }
+# Verdetto: contano i byte arrivati (server sostituito + versione giusta), non l'exit.
+# L'exit 5 dell'installer viene dall'hook POSTINSTALL (installer-hooks.nsh): riapre i
+# sidecar in scrittura e, se uno e' bloccato, imposta 5. Dopo la copia il guscio
+# rilanciato dal template riapre topics-server/pty-bridge, quindi il blocco e' dopo
+# la copia e non la prova di un file saltato. Un file davvero saltato lo prende il
+# confronto dell'hash del server qui sotto.
+if ($p.ExitCode -ne 0) { Say "nota: installer exit $($p.ExitCode) ma i file sono arrivati" }
+if ($serverOk -and $after -like "$Version*") { Say "OK"; exit 0 }
 Say "KO exit $($p.ExitCode), voluta $Version, trovata '$after'"; exit 1
