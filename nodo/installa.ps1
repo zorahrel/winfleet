@@ -30,11 +30,25 @@ if (-not (Test-Path $file)) {
 }
 Say "installer: $((Get-Item $file).Length) byte"
 
-# Il guscio si rilancia da solo dopo un aggiornamento: fermo tutto prima.
-foreach ($n in @("app", "topics-server")) {
-  Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Il guscio si rilancia da solo dopo un aggiornamento, e il watchdog (task
+# pianificato) rilancia il server: senza fermarli prima, topics-server.exe si
+# riapre tra lo stop e la scrittura di NSIS e l'installer esce 5 (accesso negato).
+$serverExe = Join-Path $env:LOCALAPPDATA "Topics\topics-server.exe"
+$serverBefore = if (Test-Path $serverExe) { (Get-FileHash $serverExe -Algorithm SHA256).Hash } else { "" }
+$tasks = @("topics-watchdog", "topics-nodo")
+foreach ($t in $tasks) { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue }
+function Stop-Topics {
+  # Anche i ponti `topics-server.exe --topics-mcp-bridge`: tengono il file aperto.
+  $end = (Get-Date).AddSeconds(60)
+  do {
+    $procs = @(Get-Process app, topics-server -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { return $true }
+    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+    $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+  } while ((Get-Date) -lt $end)
+  return (@(Get-Process app, topics-server -ErrorAction SilentlyContinue).Count -eq 0)
 }
-Start-Sleep 3
+if (-not (Stop-Topics)) { Say "KO processi ancora vivi dopo 60 s" }
 $p = Start-Process -FilePath $file -ArgumentList "/S" -PassThru -Wait
 Say "installer exit $($p.ExitCode)"
 
@@ -48,9 +62,13 @@ while ((Get-Date) -lt $deadline) {
 Say "dopo: $after"
 # Se l'installer ha riaperto il guscio, lo richiudo: il nodo non ha finestra.
 Start-Sleep 5
-foreach ($n in @("app", "topics-server")) {
-  Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
+[void](Stop-Topics)
 $idx = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Topics") -Recurse -Filter index.html -ErrorAction SilentlyContinue | Select-Object -First 1
 Say "public: $($idx.DirectoryName)"
-if ($after -like "$Version*") { Say "OK"; exit 0 } else { Say "KO voluta $Version, trovata '$after'"; exit 1 }
+# Il watchdog rilancia il nodo; topics-nodo lo riavvia aggiorna-nodo.ps1.
+Start-ScheduledTask -TaskName "topics-watchdog" -ErrorAction SilentlyContinue
+$serverAfter = if (Test-Path $serverExe) { (Get-FileHash $serverExe -Algorithm SHA256).Hash } else { "" }
+$serverOk = $serverAfter -and ($serverAfter -ne $serverBefore -or -not $serverBefore)
+Say "server: $(if ($serverOk) { 'sostituito' } else { 'NON sostituito' })"
+if ($p.ExitCode -eq 0 -and $serverOk -and $after -like "$Version*") { Say "OK"; exit 0 }
+Say "KO exit $($p.ExitCode), voluta $Version, trovata '$after'"; exit 1
