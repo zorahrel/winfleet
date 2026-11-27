@@ -32,9 +32,9 @@
        watchdog del driver da solo quando smette di ricevere il ping, cioe'
        quando wf-vdd.ps1 muore - punto 3.
 
-  Cosa NON tocca, di proposito: `wf-idleguard` (senza, il PC si sospende in mezzo
-  a una partita in streaming) e `wf-nolock` (senza, la sessione si blocca da
-  sola). Sono guardiani del PC, non di winfleet.
+  Cosa NON tocca, di proposito: `wf-nolock` (senza, la sessione si blocca da
+  sola e i monitor virtuali vanno neri), ne' i task di gestione del PC, che
+  non sono di winfleet.
 
 .PARAMETER Action
   off | on | status
@@ -55,7 +55,7 @@ $LOG = 'C:\winfleet\power.log'
 function Note($m) { "$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')  $m" | Add-Content $LOG -EA SilentlyContinue }
 
 # I task di winfleet, quelli che si spengono e si riaccendono.
-# wf-idleguard e wf-nolock NON sono qui: vedi sopra.
+# wf-nolock NON e' qui: vedi sopra.
 $TASKS = @(
   'winfleet-agent', 'winfleet-tray', 'winfleet-vdd', 'winfleet-vdd-guard',
   'winfleet-cursor-guard',
