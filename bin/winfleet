@@ -2591,6 +2591,10 @@ cmd_host_clean(){
   # di rete per file.
   local buoni; buoni="$(ls "$src"/*.ps1 2>/dev/null | xargs -n1 basename | tr '\n' ',' | sed 's/,$//')"
   [ -n "$buoni" ] || die "Nessuno script in host/: non saprei cosa tenere."
+  # Script nati a mano sul PC e lanciati dai task wf-setres, wf-ipad-guard e
+  # ipad-stream: non stanno nel repo, ma il loro task e' vivo. Senza questa riga
+  # host-clean li spostava nel cestino e i tre task puntavano al vuoto.
+  buoni="$buoni,wf-setres.ps1,wf-ipad.ps1,wf-ipad-guard.ps1"
 
   local elenco
   elenco="$(ssh "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST_SSH" \
@@ -2681,7 +2685,10 @@ cmd_host_clean(){
   # sarebbero spariti al primo host-clean e il PC sarebbe tornato acceso a vuoto.
   # wf-schermo (la schermata a tutto campo, schermo/deploy.sh) vale lo stesso: senza,
   # il primo host-clean la farebbe sparire e il PC tornerebbe a mostrare il desktop.
-  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock,wf-idleguard,wf-autosleep,wf-powerlog,wf-schermo"
+  # wf-setres (risoluzione) e wf-ipad-guard (streaming verso l'iPad) sono stati creati
+  # a mano sul PC, i loro script non stanno nel repo: fuori da questa lista il primo
+  # host-clean li toglieva (trovato il 26/11 rileggendo la lista contro i task veri).
+  local task_veri="winfleet-agent,winfleet-cursor-guard,winfleet-cursor-hide,winfleet-cursor-restore,winfleet-place0,winfleet-place1,winfleet-place2,winfleet-place3,winfleet-sun0,winfleet-sun1,winfleet-sun2,winfleet-sun3,winfleet-tray,winfleet-tray-show,winfleet-vdd,winfleet-vdd-guard,wf-nolock,wf-idleguard,wf-autosleep,wf-powerlog,wf-schermo,wf-setres,wf-ipad-guard"
 
   #
   # Il lavoro lo fa uno SCRIPT sull'host (host/wf-task-clean.ps1), non un
